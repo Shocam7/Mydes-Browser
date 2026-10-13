@@ -1,0 +1,6 @@
+{
+  "name": "Mydes Browser",
+  "description": "A lightweight, distraction-free web browser with gesture notches, tab management, and fast private browsing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

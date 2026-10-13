@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Simple bold text logo 'M' for Mydes Browser centered inside 66dp safe zone -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M 32,76 L 32,32 L 44,32 L 54,52 L 64,32 L 76,32 L 76,76 L 65,76 L 65,45 L 56.5,62 L 51.5,62 L 43,45 L 43,76 Z" />
+</vector>
