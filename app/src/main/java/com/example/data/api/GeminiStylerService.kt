@@ -1,5 +1,6 @@
 package com.example.data.api
 
+import android.content.Context
 import com.example.BuildConfig
 import com.squareup.moshi.Json
 import com.squareup.moshi.JsonClass
@@ -29,7 +30,14 @@ data class Content(
 
 @JsonClass(generateAdapter = true)
 data class Part(
-    val text: String
+    val text: String? = null,
+    @param:Json(name = "inlineData") val inlineData: InlineData? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class InlineData(
+    @param:Json(name = "mimeType") val mimeType: String,
+    val data: String
 )
 
 @JsonClass(generateAdapter = true)
@@ -48,7 +56,7 @@ data class Candidate(
 )
 
 interface GeminiApi {
-    @POST("v1beta/models/gemini-3.5-flash:generateContent")
+    @POST("v1beta/models/gemini-3.8-flash:generateContent")
     suspend fun generateContent(
         @Query("key") apiKey: String,
         @Body request: GeminiRequest
@@ -60,6 +68,8 @@ class GeminiStylerService {
     private val moshi = Moshi.Builder()
         .add(KotlinJsonAdapterFactory())
         .build()
+
+    private val requestAdapter = moshi.adapter(GeminiRequest::class.java)
 
     private val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(60, TimeUnit.SECONDS)
@@ -79,6 +89,7 @@ class GeminiStylerService {
      * Sends the styling request to Gemini and returns executable JavaScript.
      */
     suspend fun generateUserScript(
+        context: Context,
         userPrompt: String,
         websiteName: String,
         websiteUrl: String
@@ -101,7 +112,6 @@ class GeminiStylerService {
             1. Return ONLY pure executable JavaScript code. Do NOT output markdown code blocks (no ``` or ```javascript), no headers, and no commentary.
             2. Wrap the script in an immediately invoked function expression:
                (function() {
-                   // Clean up any previously injected Mydes style
                    var existing = document.getElementById('mydes-ai-styler-style');
                    if (existing) existing.remove();
 
@@ -109,8 +119,6 @@ class GeminiStylerService {
                    style.id = 'mydes-ai-styler-style';
                    style.textContent = `... comprehensive custom CSS here ...`;
                    document.head.appendChild(style);
-
-                   // Optional DOM manipulation or particle/canvas effects if relevant
                })();
             3. Make the CSS strong with `!important` flags where needed to override the host site's existing styles.
             4. Keep the core functionality, links, and text readable and usable.
@@ -123,33 +131,108 @@ class GeminiStylerService {
             systemInstruction = Content(parts = listOf(Part(text = systemPrompt))),
             generationConfig = GenerationConfig(temperature = 0.5f)
         )
+        val requestJson = try { requestAdapter.toJson(request) } catch (_: Exception) { request.toString() }
 
         try {
             if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
-                // If the user has not configured the key in AI Studio Secrets panel yet,
-                // provide high quality fallback scripts for popular prompts so the feature works out of the box
                 val fallback = getFallbackScript(userPrompt, websiteName)
                 if (fallback != null) {
+                    ApiRequestLogger.logRequest(context, "generateUserScript", websiteName, websiteUrl, userPrompt, requestJson, fallback, true)
                     return@withContext Result.success(fallback)
                 }
-                return@withContext Result.failure(
-                    Exception("Please set your GEMINI_API_KEY in the Secrets panel in AI Studio.")
-                )
+                val err = "Please set your GEMINI_API_KEY in the Secrets panel in AI Studio."
+                ApiRequestLogger.logRequest(context, "generateUserScript", websiteName, websiteUrl, userPrompt, requestJson, err, false)
+                return@withContext Result.failure(Exception(err))
             }
 
             val response = api.generateContent(apiKey, request)
             val rawOutput = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
-                ?: return@withContext Result.failure(Exception("Gemini returned an empty response."))
+                ?: run {
+                    val err = "Gemini returned an empty response."
+                    ApiRequestLogger.logRequest(context, "generateUserScript", websiteName, websiteUrl, userPrompt, requestJson, err, false)
+                    return@withContext Result.failure(Exception(err))
+                }
 
-            // Strip markdown backticks if present
             val cleanedScript = cleanScriptOutput(rawOutput)
+            ApiRequestLogger.logRequest(context, "generateUserScript", websiteName, websiteUrl, userPrompt, requestJson, cleanedScript, true)
             Result.success(cleanedScript)
         } catch (e: Exception) {
-            // Check for smart offline/prototype fallback
             val fallback = getFallbackScript(userPrompt, websiteName)
             if (fallback != null) {
+                ApiRequestLogger.logRequest(context, "generateUserScript", websiteName, websiteUrl, userPrompt, requestJson, fallback, true)
                 Result.success(fallback)
             } else {
+                ApiRequestLogger.logRequest(context, "generateUserScript", websiteName, websiteUrl, userPrompt, requestJson, e.message ?: "Error", false)
+                Result.failure(e)
+            }
+        }
+    }
+
+    /**
+     * Feedback loop: takes screenshot of current rendering, screen dimensions, and optimizes the user script accordingly.
+     */
+    suspend fun generateUserScriptWithFeedback(
+        context: Context,
+        userPrompt: String,
+        websiteName: String,
+        websiteUrl: String,
+        screenshotBase64: String?,
+        screenWidth: Int,
+        screenHeight: Int
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val apiKey = BuildConfig.GEMINI_API_KEY
+
+        val systemPrompt = """
+            You are an expert web UI/UX designer and client-side user-script engineer for Mydes Browser.
+            The user is viewing the website: "$websiteName" ($websiteUrl) with screen dimensions ${screenWidth}x${screenHeight}px.
+            The user wants to visually customize and restyle this website with the prompt: "$userPrompt".
+
+            CRITICAL LAYOUT & SELECTOR RULES:
+            1. BE EXTREMELY CAREFUL WITH SELECTORS: Do NOT apply universal styles, thick borders, or large padding/margins globally to generic tags like `div`, `article`, `section`, or `li`. On content-heavy, e-commerce, or complex sites (like Amazon, eBay, YouTube, Reddit), doing so destroys grid layouts, product cards, and flex containers.
+            2. Target specific elements: Use precise selectors (e.g. `.s-result-item`, `[data-component-type="s-search-result"]`, `.card`, `.product-item`, `article`, `header`, `footer`) rather than blanket container styling.
+            3. Screenshot Feedback Analysis: If an attached screenshot is provided, analyze the rendered result. If the layout is broken, cluttered, or elements overlap, fix the CSS rules and selectors immediately in this optimized version.
+            4. Return ONLY pure executable JavaScript wrapped in an IIFE setting 'mydes-ai-styler-style' style element. No markdown blocks, no commentary.
+        """.trimIndent()
+
+        val parts = mutableListOf<Part>()
+        parts.add(Part(text = "Please analyze the attached screenshot (if any) and screen dimensions (${screenWidth}x${screenHeight}) for $websiteName, and provide an optimized, flawless user-script for prompt: $userPrompt"))
+        
+        if (!screenshotBase64.isNullOrBlank()) {
+            parts.add(Part(inlineData = InlineData(mimeType = "image/jpeg", data = screenshotBase64)))
+        }
+
+        val request = GeminiRequest(
+            contents = listOf(Content(parts = parts)),
+            systemInstruction = Content(parts = listOf(Part(text = systemPrompt))),
+            generationConfig = GenerationConfig(temperature = 0.4f)
+        )
+        val requestJson = try { requestAdapter.toJson(request) } catch (_: Exception) { request.toString() }
+
+        try {
+            if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
+                val fallback = getFallbackScript(userPrompt, websiteName) ?: "(function(){})();"
+                ApiRequestLogger.logRequest(context, "generateUserScriptWithFeedback", websiteName, websiteUrl, userPrompt, requestJson, fallback, true)
+                return@withContext Result.success(fallback)
+            }
+
+            val response = api.generateContent(apiKey, request)
+            val rawOutput = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
+                ?: run {
+                    val err = "Gemini returned empty response."
+                    ApiRequestLogger.logRequest(context, "generateUserScriptWithFeedback", websiteName, websiteUrl, userPrompt, requestJson, err, false)
+                    return@withContext Result.failure(Exception(err))
+                }
+
+            val cleaned = cleanScriptOutput(rawOutput)
+            ApiRequestLogger.logRequest(context, "generateUserScriptWithFeedback", websiteName, websiteUrl, userPrompt, requestJson, cleaned, true)
+            Result.success(cleaned)
+        } catch (e: Exception) {
+            val fallback = getFallbackScript(userPrompt, websiteName)
+            if (fallback != null) {
+                ApiRequestLogger.logRequest(context, "generateUserScriptWithFeedback", websiteName, websiteUrl, userPrompt, requestJson, fallback, true)
+                Result.success(fallback)
+            } else {
+                ApiRequestLogger.logRequest(context, "generateUserScriptWithFeedback", websiteName, websiteUrl, userPrompt, requestJson, e.message ?: "Error", false)
                 Result.failure(e)
             }
         }
@@ -157,9 +240,9 @@ class GeminiStylerService {
 
     /**
      * Adapts and refines the existing website theme for a specific newly loaded webpage on the same site.
-     * Runs asynchronously in the background.
      */
     suspend fun adaptUserScriptForWebpage(
+        context: Context,
         basePrompt: String,
         baseScript: String,
         pageTitle: String,
@@ -176,22 +259,12 @@ class GeminiStylerService {
             Webpage URL: "$pageUrl"
 
             Your task is to adapt and update the client-side JavaScript user-script for this specific webpage.
-            Ensure that the theme ("$basePrompt") remains completely coherent, cohesive, and visually integrated on this new webpage, taking into account any specific elements, headers, cards, tables, content containers, navigation bars, or layout structures present on this page.
+            Ensure that the theme ("$basePrompt") remains completely coherent, cohesive, and visually integrated on this new webpage.
 
             CRITICAL CODE REQUIREMENTS:
             1. Return ONLY pure executable JavaScript code. Do NOT output markdown code blocks (no ``` or ```javascript), no headers, and no commentary.
-            2. Wrap the script in an immediately invoked function expression:
-               (function() {
-                   var existing = document.getElementById('mydes-ai-styler-style');
-                   if (existing) existing.remove();
-
-                   var style = document.createElement('style');
-                   style.id = 'mydes-ai-styler-style';
-                   style.textContent = `... comprehensive custom CSS here ...`;
-                   document.head.appendChild(style);
-               })();
-            3. Use `!important` flags where necessary to override the host site's existing styles.
-            4. Keep all page text, inputs, buttons, and links accessible and readable.
+            2. Wrap the script in an immediately invoked function expression setting 'mydes-ai-styler-style'.
+            3. Use `!important` flags where necessary. Keep text readable.
         """.trimIndent()
 
         val promptSummary = if (baseScript.length > 500) baseScript.take(500) + "..." else baseScript
@@ -202,27 +275,34 @@ class GeminiStylerService {
             systemInstruction = Content(parts = listOf(Part(text = systemPrompt))),
             generationConfig = GenerationConfig(temperature = 0.4f)
         )
+        val requestJson = try { requestAdapter.toJson(request) } catch (_: Exception) { request.toString() }
 
         try {
             if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
                 val fallback = adaptFallbackScript(baseScript, basePrompt, pageTitle)
+                ApiRequestLogger.logRequest(context, "adaptUserScriptForWebpage", domain, pageUrl, basePrompt, requestJson, fallback, true)
                 return@withContext Result.success(fallback)
             }
 
             val response = api.generateContent(apiKey, request)
             val rawOutput = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
-                ?: return@withContext Result.failure(Exception("Gemini returned empty response."))
+                ?: run {
+                    val fallback = adaptFallbackScript(baseScript, basePrompt, pageTitle)
+                    ApiRequestLogger.logRequest(context, "adaptUserScriptForWebpage", domain, pageUrl, basePrompt, requestJson, fallback, true)
+                    return@withContext Result.success(fallback)
+                }
 
             val cleanedScript = cleanScriptOutput(rawOutput)
+            ApiRequestLogger.logRequest(context, "adaptUserScriptForWebpage", domain, pageUrl, basePrompt, requestJson, cleanedScript, true)
             Result.success(cleanedScript)
         } catch (e: Exception) {
             val fallback = adaptFallbackScript(baseScript, basePrompt, pageTitle)
+            ApiRequestLogger.logRequest(context, "adaptUserScriptForWebpage", domain, pageUrl, basePrompt, requestJson, fallback, true)
             Result.success(fallback)
         }
     }
 
     private fun adaptFallbackScript(baseScript: String, prompt: String, pageTitle: String): String {
-        // If baseScript is already an executable IIFE, inject a small comment/header marker and return
         if (baseScript.contains("mydes-ai-styler-style")) {
             return baseScript
         }
@@ -250,165 +330,40 @@ class GeminiStylerService {
             .trim()
     }
 
-    /**
-     * High-fidelity scripted fallbacks for instant demo and prototype validation
-     */
     private fun getFallbackScript(prompt: String, websiteName: String): String? {
-        val lower = prompt.lowercase()
+        val p = prompt.lowercase()
         return when {
-            lower.contains("solar system") || lower.contains("space") || lower.contains("galaxy") -> {
-                """
+            p.contains("masonry") || p.contains("art") || p.contains("wall") -> """
                 (function() {
                     var existing = document.getElementById('mydes-ai-styler-style');
                     if (existing) existing.remove();
                     var style = document.createElement('style');
                     style.id = 'mydes-ai-styler-style';
-                    style.textContent = `
-                        body, html {
-                            background: radial-gradient(ellipse at bottom, #1B2735 0%, #090A0F 100%) !important;
-                            color: #E0E6ED !important;
-                            font-family: 'Courier New', monospace !important;
-                        }
-                        div, section, article, main, header, nav {
-                            background-color: rgba(15, 23, 42, 0.75) !important;
-                            border: 1px solid rgba(56, 189, 248, 0.3) !important;
-                            border-radius: 16px !important;
-                            box-shadow: 0 0 15px rgba(56, 189, 248, 0.2) !important;
-                            backdrop-filter: blur(8px) !important;
-                        }
-                        a, button {
-                            color: #38BDF8 !important;
-                            text-shadow: 0 0 8px rgba(56, 189, 248, 0.6) !important;
-                        }
-                        img, video {
-                            border-radius: 50% !important;
-                            border: 2px solid #FCD34D !important;
-                            box-shadow: 0 0 20px rgba(252, 211, 77, 0.5) !important;
-                            transition: transform 0.5s ease !important;
-                        }
-                        img:hover {
-                            transform: scale(1.05) rotate(5deg) !important;
-                        }
-                        h1, h2, h3 {
-                            color: #FCD34D !important;
-                            text-shadow: 0 0 12px rgba(252, 211, 77, 0.7) !important;
-                            letter-spacing: 2px !important;
-                        }
-                    `;
+                    style.textContent = '''
+                        body { background: #121214 !important; color: #f1f1f5 !important; font-family: -apple-system, sans-serif !important; }
+                        img { border-radius: 12px !important; box-shadow: 0 8px 24px rgba(0,0,0,0.5) !important; transition: transform 0.3s ease !important; }
+                        img:hover { transform: scale(1.02) !important; }
+                        .s-result-item, article, .card, .product-item { background: #1e1e24 !important; border: 1px solid #2a2a35 !important; border-radius: 16px !important; padding: 12px !important; margin-bottom: 16px !important; box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important; }
+                        h1, h2, h3, h4 { color: #ffffff !important; letter-spacing: -0.5px !important; }
+                    ''';
                     document.head.appendChild(style);
                 })();
-                """.trimIndent()
-            }
-            lower.contains("masonry") || lower.contains("art") || lower.contains("wall") || lower.contains("gallery") -> {
-                """
+            """.trimIndent()
+            p.contains("solar") || p.contains("space") || p.contains("cyber") -> """
                 (function() {
                     var existing = document.getElementById('mydes-ai-styler-style');
                     if (existing) existing.remove();
                     var style = document.createElement('style');
                     style.id = 'mydes-ai-styler-style';
-                    style.textContent = `
-                        body {
-                            background: #F4EFEA !important;
-                            color: #2D251E !important;
-                            font-family: 'Georgia', serif !important;
-                            padding: 24px !important;
-                        }
-                        div, article, section, li {
-                            border: 4px solid #3E2723 !important;
-                            border-radius: 6px !important;
-                            background: #FFFDF9 !important;
-                            box-shadow: 8px 8px 0px rgba(62, 39, 35, 0.8) !important;
-                            margin: 16px 8px !important;
-                            padding: 16px !important;
-                            transition: transform 0.3s ease !important;
-                        }
-                        div:hover, article:hover {
-                            transform: translateY(-4px) !important;
-                            box-shadow: 12px 12px 0px rgba(62, 39, 35, 0.9) !important;
-                        }
-                        h1, h2, h3 {
-                            font-family: 'Playfair Display', 'Georgia', serif !important;
-                            font-style: italic !important;
-                            color: #3E2723 !important;
-                            border-bottom: 2px solid #D7CCC8 !important;
-                            padding-bottom: 8px !important;
-                        }
-                        a {
-                            color: #8D6E63 !important;
-                            font-weight: bold !important;
-                        }
-                        img {
-                            border: 3px solid #8D6E63 !important;
-                            border-radius: 4px !important;
-                            filter: sepia(0.2) contrast(1.1) !important;
-                        }
-                    `;
+                    style.textContent = '''
+                        body { background: #08090d !important; color: #00e5ff !important; font-family: monospace !important; }
+                        .s-result-item, article, .card, div { border-color: #00e5ff33 !important; }
+                        a { color: #00e5ff !important; text-shadow: 0 0 8px rgba(0,229,255,0.4) !important; }
+                    ''';
                     document.head.appendChild(style);
                 })();
-                """.trimIndent()
-            }
-            lower.contains("cyberpunk") || lower.contains("neon") -> {
-                """
-                (function() {
-                    var existing = document.getElementById('mydes-ai-styler-style');
-                    if (existing) existing.remove();
-                    var style = document.createElement('style');
-                    style.id = 'mydes-ai-styler-style';
-                    style.textContent = `
-                        body {
-                            background: #0D0221 !important;
-                            color: #00F0FF !important;
-                            font-family: 'Consolas', monospace !important;
-                        }
-                        div, section, article {
-                            background: rgba(13, 2, 33, 0.85) !important;
-                            border: 2px solid #FF0055 !important;
-                            box-shadow: 0 0 10px #FF0055, inset 0 0 10px rgba(255, 0, 85, 0.3) !important;
-                        }
-                        h1, h2, h3 {
-                            color: #FFE600 !important;
-                            text-shadow: 0 0 8px #FFE600 !important;
-                            text-transform: uppercase !important;
-                        }
-                        a {
-                            color: #00F0FF !important;
-                            text-shadow: 0 0 5px #00F0FF !important;
-                        }
-                    `;
-                    document.head.appendChild(style);
-                })();
-                """.trimIndent()
-            }
-            else -> {
-                // Creative dynamic adaptive transformation
-                """
-                (function() {
-                    var existing = document.getElementById('mydes-ai-styler-style');
-                    if (existing) existing.remove();
-                    var style = document.createElement('style');
-                    style.id = 'mydes-ai-styler-style';
-                    style.textContent = `
-                        body {
-                            background: #18191C !important;
-                            color: #F0F2F5 !important;
-                            font-family: system-ui, -apple-system, sans-serif !important;
-                        }
-                        div, section, article {
-                            border-radius: 14px !important;
-                            border: 1px solid rgba(255, 255, 255, 0.1) !important;
-                            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4) !important;
-                        }
-                        h1, h2, h3 {
-                            color: #60A5FA !important;
-                        }
-                        a {
-                            color: #38BDF8 !important;
-                        }
-                    `;
-                    document.head.appendChild(style);
-                })();
-                """.trimIndent()
-            }
+            """.trimIndent()
+            else -> null
         }
     }
 }

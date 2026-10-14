@@ -258,25 +258,37 @@ fun TopHeaderPill(
 
             // 3. Brush icon (AI Website Styler)
             Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(buttonBgColor)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = ripple(bounded = true),
-                        onClick = onOpenBrush
-                    )
-                    .testTag("brush_button")
-                    .semantics { contentDescription = "AI Website Styler brush" },
+                modifier = Modifier.size(40.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    imageVector = Icons.Default.Brush,
-                    contentDescription = null,
-                    tint = buttonIconColor,
-                    modifier = Modifier.size(20.dp)
-                )
+                if (isThemeUpdatingInBackground) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(44.dp),
+                        color = Color(0xFFF6C343),
+                        strokeWidth = 2.5.dp
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(if (isCustomStyleApplied) Color(0xFF1E2024) else buttonBgColor)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = ripple(bounded = true),
+                            onClick = onOpenBrush
+                        )
+                        .testTag("brush_button")
+                        .semantics { contentDescription = "AI Website Styler brush" },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Brush,
+                        contentDescription = null,
+                        tint = if (isCustomStyleApplied) Color(0xFFF6C343) else buttonIconColor,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
             }
         }
     }

@@ -13,6 +13,8 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -22,10 +24,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.viewinterop.AndroidView
 
 const val DESKTOP_USER_AGENT =
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+const val MOBILE_USER_AGENT =
+    "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -51,6 +57,24 @@ fun WebContainer(
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var lastLoadedUrl by remember { mutableStateOf("") }
 
+    // Clean up WebView resources and codecs when leaving composition
+    DisposableEffect(Unit) {
+        onDispose {
+            webViewRef?.let { wv ->
+                try {
+                    wv.stopLoading()
+                    wv.onPause()
+                    wv.clearHistory()
+                    wv.removeAllViews()
+                    wv.destroy()
+                } catch (_: Exception) {
+                    // Ignore destruction exceptions
+                }
+            }
+            webViewRef = null
+        }
+    }
+
     // Only load a new URL when it genuinely changes, avoiding reload loops on recomposition
     LaunchedEffect(url, webViewRef) {
         val wv = webViewRef ?: return@LaunchedEffect
@@ -60,18 +84,24 @@ fun WebContainer(
         }
     }
 
-    AndroidView(
-        modifier = modifier.fillMaxSize(),
-        factory = { context ->
-            WebView(context).apply {
-                layoutParams = ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-                )
+    var dragTotalX by remember { mutableStateOf(0f) }
+
+    Box(
+        modifier = modifier.fillMaxSize()
+    ) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { context ->
+                WebView(context).apply {
+                    webViewRef = this
+                    onWebViewCreated(this)
+                    setLayerType(View.LAYER_TYPE_HARDWARE, null)
 
                 settings.apply {
                     javaScriptEnabled = isJavaScriptEnabled
-                    domStorageEnabled = !isIncognito
+                    domStorageEnabled = true
+                    loadsImagesAutomatically = true
+                    offscreenPreRaster = false
                     loadWithOverviewMode = true
                     useWideViewPort = true
                     builtInZoomControls = true
@@ -79,18 +109,18 @@ fun WebContainer(
                     setSupportZoom(true)
                     mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
                     cacheMode = if (isIncognito) WebSettings.LOAD_NO_CACHE else WebSettings.LOAD_DEFAULT
-                    userAgentString = if (isDesktopMode) DESKTOP_USER_AGENT else null
+                    userAgentString = if (isDesktopMode) DESKTOP_USER_AGENT else MOBILE_USER_AGENT
+                    mediaPlaybackRequiresUserGesture = true
                 }
 
-                if (isIncognito) {
-                    CookieManager.getInstance().setAcceptCookie(false)
-                }
+                CookieManager.getInstance().setAcceptCookie(!isIncognito)
+                CookieManager.getInstance().setAcceptThirdPartyCookies(this, !isIncognito)
 
                 setOnScrollChangeListener { _, _, scrollY, _, oldScrollY ->
                     val dy = scrollY - oldScrollY
-                    if (dy > 8) {
+                    if (dy > 30) {
                         onScrollDown()
-                    } else if (dy < -8) {
+                    } else if (dy < -30) {
                         onScrollUp()
                     }
                 }
@@ -154,6 +184,9 @@ fun WebContainer(
                             """
                             (function() {
                                 var meta = document.querySelector('meta[name="theme-color"]');
+                                var bannerFix = document.createElement('style');
+                                bannerFix.textContent = 'div[class*="banner"], div[class*="popup"], div[class*="overlay"], shreddit-app-banner { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; background-color: rgba(26, 26, 27, 0.98) !important; color: #fff !important; }';
+                                document.head.appendChild(bannerFix);
                                 if (meta && meta.content) return meta.content;
                                 var header = document.querySelector('header') || document.querySelector('nav');
                                 if (header) {
@@ -215,6 +248,9 @@ fun WebContainer(
                         detail: android.webkit.RenderProcessGoneDetail?
                     ): Boolean {
                         // Prevent app crashes if WebView renderer terminates in virtualized environment
+                        try {
+                            view?.destroy()
+                        } catch (_: Exception) {}
                         return true
                     }
                 }
@@ -236,4 +272,5 @@ fun WebContainer(
             }
         }
     )
+    }
 }

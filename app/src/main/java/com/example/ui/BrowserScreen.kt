@@ -27,12 +27,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,6 +50,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.example.ui.components.AiStylerPillBar
+import com.example.ui.components.ApiRequestLogsSheet
 import com.example.ui.components.BookmarksSheet
 import com.example.ui.components.DownloadsSheet
 import com.example.ui.components.FindInPageBar
@@ -85,6 +88,7 @@ fun BrowserScreen(
     val isHistoryOpen by viewModel.isHistoryOpen.collectAsState()
     val isDownloadsOpen by viewModel.isDownloadsOpen.collectAsState()
     val isSettingsOpen by viewModel.isSettingsOpen.collectAsState()
+    val isApiLogsOpen by viewModel.isApiLogsOpen.collectAsState()
     val isFindInPageOpen by viewModel.isFindInPageOpen.collectAsState()
     val findInPageQuery by viewModel.findInPageQuery.collectAsState()
     val isReadingMode by viewModel.isReadingMode.collectAsState()
@@ -97,6 +101,7 @@ fun BrowserScreen(
     val aiStylerErrorMessage by viewModel.aiStylerErrorMessage.collectAsState()
     val pendingUserScriptToInject by viewModel.pendingUserScriptToInject.collectAsState()
     val isCustomStyleApplied by viewModel.isCustomStyleApplied.collectAsState()
+    val isThemeUpdatingInBackground by viewModel.isThemeUpdatingInBackground.collectAsState()
 
     var activeWebView by remember { mutableStateOf<WebView?>(null) }
 
@@ -195,29 +200,34 @@ fun BrowserScreen(
                     onNavigate = { viewModel.navigateActiveTab(it) }
                 )
             } else {
-                WebContainer(
-                    url = currentTab.url,
-                    isIncognito = isIncognito,
-                    isDesktopMode = currentTab.isDesktopMode,
-                    isJavaScriptEnabled = isJavaScriptEnabled,
-                    isTrackerBlockerEnabled = isTrackerBlockerEnabled,
-                    isReadingMode = isReadingMode,
-                    onUrlChanged = { viewModel.onUrlChanged(currentTab.id, it) },
-                    onTitleChanged = { viewModel.onTitleChanged(currentTab.id, it) },
-                    onProgressChanged = { viewModel.onProgressChanged(currentTab.id, it) },
-                    onLoadingStateChanged = { viewModel.onLoadingStateChanged(currentTab.id, it) },
-                    onNavigationStateChanged = { _, _ -> },
-                    onColorExtracted = { viewModel.onColorExtracted(currentTab.id, it) },
-                    onWebViewCreated = { activeWebView = it },
-                    onScrollDown = {
-                        if (!isOptionsMenuExpanded && !isStartPage && !isAiStylerPillVisible) {
-                            controlsVisible = false
+                key(currentTab.id) {
+                    WebContainer(
+                        url = currentTab.url,
+                        isIncognito = isIncognito,
+                        isDesktopMode = currentTab.isDesktopMode,
+                        isJavaScriptEnabled = isJavaScriptEnabled,
+                        isTrackerBlockerEnabled = isTrackerBlockerEnabled,
+                        isReadingMode = isReadingMode,
+                        onUrlChanged = { viewModel.onUrlChanged(currentTab.id, it) },
+                        onTitleChanged = { viewModel.onTitleChanged(currentTab.id, it) },
+                        onProgressChanged = { viewModel.onProgressChanged(currentTab.id, it) },
+                        onLoadingStateChanged = { viewModel.onLoadingStateChanged(currentTab.id, it) },
+                        onNavigationStateChanged = { _, _ -> },
+                        onColorExtracted = { viewModel.onColorExtracted(currentTab.id, it) },
+                        onWebViewCreated = { activeWebView = it; viewModel.registerActiveWebView(it) },
+                        onPageLoaded = { url, title -> viewModel.onPageLoaded(currentTab.id, url, title) },
+                        onScrollDown = {
+                            if (controlsVisible) {
+                                if (!isOptionsMenuExpanded && !isStartPage && !isAiStylerPillVisible) {
+                                    controlsVisible = false
+                                }
+                            }
+                        },
+                        onScrollUp = {
+                            onUpwardScrollDetected()
                         }
-                    },
-                    onScrollUp = {
-                        onUpwardScrollDetected()
-                    }
-                )
+                    )
+                }
             }
         }
 
@@ -283,26 +293,38 @@ fun BrowserScreen(
             ) {
                 // Standalone top-right Brush (Click to open AI Website Styler)
                 Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .shadow(3.dp, CircleShape)
-                        .clip(CircleShape)
-                        .background(if (isAiStylerPillVisible) Color(0xFF1E2024) else Color(0xFFE4E6EA))
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = ripple(bounded = true),
-                            onClick = { viewModel.toggleAiStylerPill() }
-                        )
-                        .testTag("standalone_brush_button")
-                        .semantics { contentDescription = "AI Website Styler brush" },
+                    modifier = Modifier.size(44.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Brush,
-                        contentDescription = null,
-                        tint = if (isAiStylerPillVisible) Color(0xFFF6C343) else Color(0xFF33373D),
-                        modifier = Modifier.size(20.dp)
-                    )
+                    if (isThemeUpdatingInBackground) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(48.dp),
+                            color = Color(0xFFF6C343),
+                            strokeWidth = 2.5.dp
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .shadow(3.dp, CircleShape)
+                            .clip(CircleShape)
+                            .background(if (isAiStylerPillVisible || isCustomStyleApplied) Color(0xFF1E2024) else Color(0xFFE4E6EA))
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = ripple(bounded = true),
+                                onClick = { viewModel.toggleAiStylerPill() }
+                            )
+                            .testTag("standalone_brush_button")
+                            .semantics { contentDescription = "AI Website Styler brush" },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Brush,
+                            contentDescription = null,
+                            tint = if (isAiStylerPillVisible || isCustomStyleApplied) Color(0xFFF6C343) else Color(0xFF33373D),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                 }
 
                 // Plus button below the brush icon (Tap: new tab; Long-press: pulls out incognito button)
@@ -321,6 +343,8 @@ fun BrowserScreen(
                 onNavigate = { viewModel.navigateActiveTab(it) },
                 onOpenSettings = { viewModel.toggleSettings() },
                 onOpenBrush = { viewModel.toggleAiStylerPill() },
+                isThemeUpdatingInBackground = isThemeUpdatingInBackground,
+                isCustomStyleApplied = isCustomStyleApplied,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .statusBarsPadding()
@@ -458,7 +482,14 @@ fun BrowserScreen(
                 isTrackerBlockerEnabled = isTrackerBlockerEnabled,
                 onToggleTrackerBlocker = { viewModel.toggleTrackerBlocker(it) },
                 onClearBrowsingData = { viewModel.clearBrowsingData() },
+                onOpenApiLogs = { viewModel.toggleApiLogs() },
                 onDismiss = { viewModel.toggleSettings() }
+            )
+        }
+
+        if (isApiLogsOpen) {
+            ApiRequestLogsSheet(
+                onDismiss = { viewModel.toggleApiLogs() }
             )
         }
     }

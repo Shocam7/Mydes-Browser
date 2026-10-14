@@ -31,7 +31,7 @@ class MainActivity : ComponentActivity() {
 
         viewModel = ViewModelProvider(
             this,
-            BrowserViewModel.provideFactory(browserRepository, websiteColorRepository)
+            BrowserViewModel.provideFactory(application, browserRepository, websiteColorRepository)
         )[BrowserViewModel::class.java]
 
         setContent {

@@ -1,5 +1,6 @@
 package com.example.ui.viewmodel
 
+import android.app.Application
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -8,6 +9,7 @@ import android.webkit.CookieManager
 import android.webkit.WebStorage
 import android.widget.Toast
 import androidx.compose.ui.graphics.Color
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -27,9 +29,10 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 class BrowserViewModel(
+    application: Application,
     private val browserRepository: BrowserRepository,
     private val websiteColorRepository: WebsiteColorRepository
-) : ViewModel() {
+) : AndroidViewModel(application) {
 
     private val _tabs = MutableStateFlow<List<TabItem>>(listOf(TabItem()))
     val tabs: StateFlow<List<TabItem>> = _tabs.asStateFlow()
@@ -71,6 +74,13 @@ class BrowserViewModel(
 
     private val _isSettingsOpen = MutableStateFlow(false)
     val isSettingsOpen: StateFlow<Boolean> = _isSettingsOpen.asStateFlow()
+
+    private val _isApiLogsOpen = MutableStateFlow(false)
+    val isApiLogsOpen: StateFlow<Boolean> = _isApiLogsOpen.asStateFlow()
+
+    fun toggleApiLogs() {
+        _isApiLogsOpen.value = !_isApiLogsOpen.value
+    }
 
     private val _isFindInPageOpen = MutableStateFlow(false)
     val isFindInPageOpen: StateFlow<Boolean> = _isFindInPageOpen.asStateFlow()
@@ -152,6 +162,7 @@ class BrowserViewModel(
         viewModelScope.launch {
             val siteName = if (tab.title.isNotBlank()) tab.title else tab.url
             val result = geminiStylerService.generateUserScript(
+                context = getApplication(),
                 userPrompt = prompt,
                 websiteName = siteName,
                 websiteUrl = tab.url
@@ -168,9 +179,67 @@ class BrowserViewModel(
                     _websiteThemes.value = _websiteThemes.value + (domain to theme)
                 }
                 _pendingUserScriptToInject.value = script
+
+                // Feedback loop: take screenshot after render delay and optimize layout/selectors
+                val wv = activeWebViewRef
+                if (wv != null) {
+                    kotlinx.coroutines.delay(800L)
+                    captureWebViewScreenshot(wv) { screenshotBase64 ->
+                        if (!screenshotBase64.isNullOrBlank()) {
+                            viewModelScope.launch {
+                                val width = wv.width.coerceAtLeast(1080)
+                                val height = wv.height.coerceAtLeast(1920)
+                                val optimizedResult = geminiStylerService.generateUserScriptWithFeedback(
+                                    context = getApplication(),
+                                    userPrompt = prompt,
+                                    websiteName = siteName,
+                                    websiteUrl = tab.url,
+                                    screenshotBase64 = screenshotBase64,
+                                    screenWidth = width,
+                                    screenHeight = height
+                                )
+                                optimizedResult.onSuccess { optScript ->
+                                    val currentTheme = _websiteThemes.value[domain]
+                                    if (currentTheme != null) {
+                                        val updatedTheme = currentTheme.copy(
+                                            baseScript = optScript,
+                                            pageScripts = currentTheme.pageScripts + (tab.url to optScript)
+                                        )
+                                        _websiteThemes.value = _websiteThemes.value + (domain to updatedTheme)
+                                    }
+                                    _pendingUserScriptToInject.value = optScript
+                                }
+                            }
+                        }
+                    }
+                }
             }.onFailure { err ->
                 _aiStylerErrorMessage.value = err.message ?: "Failed to generate styling."
             }
+        }
+    }
+
+    private var activeWebViewRef: android.webkit.WebView? = null
+
+    fun registerActiveWebView(webView: android.webkit.WebView?) {
+        activeWebViewRef = webView
+    }
+
+    private fun captureWebViewScreenshot(webView: android.webkit.WebView, onCaptured: (String?) -> Unit) {
+        try {
+            val width = if (webView.width > 0) webView.width else 1080
+            val height = if (webView.height > 0) webView.height else 1920
+            val bitmap = android.graphics.Bitmap.createBitmap(width, height, android.graphics.Bitmap.Config.ARGB_8888)
+            val canvas = android.graphics.Canvas(bitmap)
+            webView.draw(canvas)
+            val outputStream = java.io.ByteArrayOutputStream()
+            bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 75, outputStream)
+            val byteArray = outputStream.toByteArray()
+            val base64 = android.util.Base64.encodeToString(byteArray, android.util.Base64.NO_WRAP)
+            bitmap.recycle()
+            onCaptured(base64)
+        } catch (e: Exception) {
+            onCaptured(null)
         }
     }
 
@@ -220,6 +289,7 @@ class BrowserViewModel(
                 try {
                     val pageName = if (title.isNotBlank()) title else url
                     val result = geminiStylerService.adaptUserScriptForWebpage(
+                        context = getApplication(),
                         basePrompt = activeTheme.prompt,
                         baseScript = activeTheme.baseScript,
                         pageTitle = pageName,
@@ -512,12 +582,13 @@ class BrowserViewModel(
 
     companion object {
         fun provideFactory(
+            application: Application,
             browserRepository: BrowserRepository,
             websiteColorRepository: WebsiteColorRepository
         ): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                return BrowserViewModel(browserRepository, websiteColorRepository) as T
+                return BrowserViewModel(application, browserRepository, websiteColorRepository) as T
             }
         }
     }
