@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.Javascript
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -33,6 +34,8 @@ import androidx.compose.material3.DividerDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -58,10 +61,13 @@ fun SettingsSheet(
     onToggleTrackerBlocker: (Boolean) -> Unit,
     onClearBrowsingData: () -> Unit,
     onOpenApiLogs: () -> Unit,
+    customApiKey: String,
+    onUpdateCustomApiKey: (String) -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var clearDataSuccess by remember { mutableStateOf(false) }
+    var apiKeyInput by remember(customApiKey) { mutableStateOf(customApiKey) }
 
     Box(
         modifier = modifier
@@ -123,6 +129,78 @@ fun SettingsSheet(
                     title = "Search Engine",
                     subtitle = "Google Search (Default)"
                 )
+
+                HorizontalDivider(color = Color(0x1AFFFFFF), modifier = Modifier.padding(vertical = 12.dp))
+
+                // Section: Gemini API Key (Testing Phase)
+                Column(
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.VpnKey,
+                            contentDescription = null,
+                            tint = Color(0xFF64B5F6),
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                text = "Gemini API Key (Testing Phase)",
+                                color = Color.White,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "Enter your custom API key for AI website styling",
+                                color = Color(0xFF8E9297),
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = apiKeyInput,
+                            onValueChange = { apiKeyInput = it },
+                            placeholder = { Text("AIzaSy...", color = Color(0xFF666666)) },
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Color(0xFF4285F4),
+                                unfocusedBorderColor = Color(0xFF3A3D44),
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                cursorColor = Color(0xFF4285F4),
+                                focusedContainerColor = Color(0xFF282B30),
+                                unfocusedContainerColor = Color(0xFF282B30)
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("api_key_input")
+                        )
+
+                        Button(
+                            onClick = { onUpdateCustomApiKey(apiKeyInput) },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF4285F4),
+                                contentColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.testTag("save_api_key_button")
+                        ) {
+                            Text("Save", fontSize = 12.sp)
+                        }
+                    }
+                }
 
                 HorizontalDivider(color = Color(0x1AFFFFFF), modifier = Modifier.padding(vertical = 12.dp))
 

@@ -34,6 +34,21 @@ class BrowserViewModel(
     private val websiteColorRepository: WebsiteColorRepository
 ) : AndroidViewModel(application) {
 
+    private val _customApiKey = MutableStateFlow("")
+    val customApiKey: StateFlow<String> = _customApiKey.asStateFlow()
+
+    init {
+        val prefs = application.getSharedPreferences("mydes_prefs", Context.MODE_PRIVATE)
+        _customApiKey.value = prefs.getString("custom_api_key", "") ?: ""
+    }
+
+    fun updateCustomApiKey(key: String) {
+        _customApiKey.value = key
+        val prefs = getApplication<Application>().getSharedPreferences("mydes_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("custom_api_key", key.trim()).apply()
+        Toast.makeText(getApplication(), "API Key saved", Toast.LENGTH_SHORT).show()
+    }
+
     private val _tabs = MutableStateFlow<List<TabItem>>(listOf(TabItem()))
     val tabs: StateFlow<List<TabItem>> = _tabs.asStateFlow()
 

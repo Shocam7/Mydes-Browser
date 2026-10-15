@@ -94,6 +94,7 @@ fun BrowserScreen(
     val isReadingMode by viewModel.isReadingMode.collectAsState()
     val isJavaScriptEnabled by viewModel.isJavaScriptEnabled.collectAsState()
     val isTrackerBlockerEnabled by viewModel.isTrackerBlockerEnabled.collectAsState()
+    val customApiKey by viewModel.customApiKey.collectAsState()
 
     // AI Website Styler states
     val isAiStylerPillVisible by viewModel.isAiStylerPillVisible.collectAsState()
@@ -483,6 +484,8 @@ fun BrowserScreen(
                 onToggleTrackerBlocker = { viewModel.toggleTrackerBlocker(it) },
                 onClearBrowsingData = { viewModel.clearBrowsingData() },
                 onOpenApiLogs = { viewModel.toggleApiLogs() },
+                customApiKey = customApiKey,
+                onUpdateCustomApiKey = { viewModel.updateCustomApiKey(it) },
                 onDismiss = { viewModel.toggleSettings() }
             )
         }
