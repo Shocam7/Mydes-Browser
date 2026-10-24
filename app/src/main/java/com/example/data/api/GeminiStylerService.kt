@@ -32,6 +32,8 @@ import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.math.roundToInt
+import okhttp3.ResponseBody
+import retrofit2.http.Streaming
 
 /*
  * v6 - "Universal Generative UI Synthesis Engine"
@@ -74,7 +76,14 @@ data class GenerationConfig(
     val temperature: Float = 0.7f,
     val maxOutputTokens: Int? = null,
     val responseMimeType: String? = null,
-    val topP: Float? = null
+    val topP: Float? = null,
+    val thinkingConfig: ThinkingConfig? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class ThinkingConfig(
+    // 0 turns off extended reasoning; -1 enables dynamic thinking
+    val thinkingBudget: Int? = 0
 )
 
 @JsonClass(generateAdapter = true)
@@ -90,6 +99,14 @@ interface GeminiApi {
         @Header("x-goog-api-key") apiKey: String,
         @Body request: GeminiRequest
     ): GeminiResponse
+
+    @Streaming
+    @POST("v1beta/models/{model}:streamGenerateContent?alt=sse")
+    suspend fun streamGenerateContent(
+        @Path("model") model: String,
+        @Header("x-goog-api-key") apiKey: String,
+        @Body request: GeminiRequest
+    ): ResponseBody
 }
 
 // ───────────────────── Color & Contrast Utilities ─────────────────────
@@ -1109,8 +1126,10 @@ class GeminiStylerService {
 
     private val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(90, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)   // Resets on every SSE chunk received
         .writeTimeout(30, TimeUnit.SECONDS)
+        .pingInterval(15, TimeUnit.SECONDS)   // Prevents ISP CGNAT from killing the socket
+        .retryOnConnectionFailure(true)
         .build()
 
     private val api = Retrofit.Builder()
@@ -1222,22 +1241,17 @@ class GeminiStylerService {
         topP: Float,
         maxTokens: Int
     ): String {
-        fun req(jsonMode: Boolean) = GeminiRequest(
+        val req = GeminiRequest(
             contents = listOf(Content(parts = parts)),
             systemInstruction = Content(listOf(Part(text = system))),
             generationConfig = GenerationConfig(
                 temperature = temperature,
                 topP = topP,
                 maxOutputTokens = maxTokens,
-                responseMimeType = if (jsonMode) "application/json" else null
+                responseMimeType = "application/json"
             )
         )
-        val response = try {
-            callGemini(model, req(true), apiKey)
-        } catch (e: HttpException) {
-            if (e.code() == 400) callGemini(model, req(false), apiKey) else throw e
-        }
-        return response.candidates?.firstOrNull()?.content?.parts?.mapNotNull { it.text }?.joinToString("").orEmpty()
+        return callGeminiStream(model, req, apiKey)
     }
 
     private suspend fun designBrief(
@@ -1375,7 +1389,8 @@ class GeminiStylerService {
                 temperature = if (isReview) 0.25f else 0.75f,
                 topP = 0.95f,
                 maxOutputTokens = if (isReview) 2048 else 8192,
-                responseMimeType = if (jsonMode) "application/json" else null
+                responseMimeType = if (jsonMode) "application/json" else null,
+                thinkingConfig = ThinkingConfig(thinkingBudget = 0) // <--- Disables silent reasoning delay
             )
         )
 
@@ -1392,12 +1407,7 @@ class GeminiStylerService {
         }.take(if (LOG_SYSTEM_PROMPT) 30_000 else 12_000)
 
         try {
-            val response = try {
-                callGemini(SYNTHESIS_MODEL, buildReq(true), apiKey)
-            } catch (e: HttpException) {
-                if (e.code() == 400) callGemini(SYNTHESIS_MODEL, buildReq(false), apiKey) else throw e
-            }
-            val raw = response.candidates?.firstOrNull()?.content?.parts?.mapNotNull { it.text }?.joinToString("").orEmpty()
+            val raw = callGeminiStream(SYNTHESIS_MODEL, buildReq(true), apiKey)
             val blueprint: UIBlueprint? = if (isReview) {
                 applyReviewPatch(previous!!, raw, cleanPrompt)
             } else {
@@ -1529,19 +1539,63 @@ OUTPUT: ONLY one valid JSON object, no markdown fences:
         return customKey
     }
 
-    private suspend fun callGemini(model: String, request: GeminiRequest, apiKey: String): GeminiResponse {
-        var last: Exception? = null
-        for (wait in longArrayOf(0, 3_000, 8_000)) {
+    private suspend fun callGeminiStream(
+        model: String,
+        request: GeminiRequest,
+        apiKey: String
+    ): String = withContext(Dispatchers.IO) {
+        var lastException: Exception? = null
+
+        for (wait in longArrayOf(0, 2_000, 5_000)) {
             if (wait > 0) delay(wait)
             try {
-                return api.generateContent(model, apiKey, request)
-            } catch (e: HttpException) {
-                last = e
-                val retryable = e.code() == 429 || e.code() in 500..599
+                val responseBody = api.streamGenerateContent(model, apiKey, request)
+                val fullText = StringBuilder()
+
+                responseBody.byteStream().bufferedReader().use { reader ->
+                    var line = reader.readLine()
+                    while (line != null) {
+                        if (line.startsWith("data: ")) {
+                            val jsonStr = line.removePrefix("data: ").trim()
+                            if (jsonStr.isNotEmpty() && jsonStr != "[DONE]") {
+                                try {
+                                    val chunk = JSONObject(jsonStr)
+                                    val candidates = chunk.optJSONArray("candidates")
+                                    if (candidates != null && candidates.length() > 0) {
+                                        val parts = candidates.getJSONObject(0)
+                                            .optJSONObject("content")
+                                            ?.optJSONArray("parts")
+                                        if (parts != null) {
+                                            for (i in 0 until parts.length()) {
+                                                val partText = parts.getJSONObject(i).optString("text", "")
+                                                fullText.append(partText)
+                                            }
+                                        }
+                                    }
+                                } catch (_: Exception) {
+                                    // Skip individual chunk JSON parse errors
+                                }
+                            }
+                        }
+                        line = reader.readLine()
+                    }
+                }
+
+                val result = fullText.toString()
+                if (result.isNotBlank()) return@withContext result
+                throw IllegalStateException("Empty streamed response from $model")
+
+            } catch (e: Exception) {
+                lastException = e
+                val retryable = when (e) {
+                    is HttpException -> e.code() == 429 || e.code() in 500..599
+                    is java.io.IOException -> true // Network/socket hiccups
+                    else -> false
+                }
                 if (!retryable) throw e
             }
         }
-        throw last ?: IllegalStateException("Gemini request failed on model $model")
+        throw lastException ?: IllegalStateException("Streaming failed on model $model")
     }
 
     private fun describe(e: Exception): String {
