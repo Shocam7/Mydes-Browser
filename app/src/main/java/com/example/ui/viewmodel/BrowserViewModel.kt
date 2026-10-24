@@ -118,6 +118,9 @@ class BrowserViewModel(
     private val _isTrackerBlockerEnabled = MutableStateFlow(true)
     val isTrackerBlockerEnabled: StateFlow<Boolean> = _isTrackerBlockerEnabled.asStateFlow()
 
+    private val _isFullScreenMode = MutableStateFlow(false)
+    val isFullScreenMode: StateFlow<Boolean> = _isFullScreenMode.asStateFlow()
+
     // AI Website Styler (Gemini) states & Website-Wide Theming
     private val geminiStylerService = GeminiStylerService()
 
@@ -217,13 +220,20 @@ class BrowserViewModel(
 
         viewModelScope.launch {
             val siteName = if (tab.title.isNotBlank()) tab.title else tab.url
+            // Live DOM outline so the art-director pass designs around what the page is actually made of
+            val preOutline = try {
+                activeWebViewRef?.evaluateJsSuspend(MydesRuntime.OUTLINE_PROBE_JS)
+            } catch (_: Exception) {
+                null
+            }
             val result = geminiStylerService.generateUserScript(
                 context = getApplication(),
                 userPrompt = prompt,
                 websiteName = siteName,
                 websiteUrl = tab.url,
                 // The user pressed "apply": always design something new instead of replaying the cached design
-                forceFresh = true
+                forceFresh = true,
+                outlineJson = preOutline
             )
             _isAiStylerLoading.value = false
             result.onSuccess { script ->
@@ -257,8 +267,14 @@ class BrowserViewModel(
                     )
                     val insertedId = browserRepository.saveGeneratedTheme(initialThemeEntity)
 
-                    // Review pass: the service sees the first blueprint + a screenshot and only fixes real defects
-                    if (!screenshotBase64.isNullOrBlank()) {
+                    // Review pass: measured contrast/overflow audit + screenshot (when the capture is real).
+                    // The service can only APPEND fix CSS, so the design itself is never removed or simplified.
+                    val audit = try {
+                        wv.evaluateJsSuspend(MydesRuntime.CONTRAST_AUDIT_JS)
+                    } catch (_: Exception) {
+                        null
+                    }
+                    if (!screenshotBase64.isNullOrBlank() || !audit.isNullOrBlank()) {
                         val width = wv.width.coerceAtLeast(1080)
                         val height = wv.height.coerceAtLeast(1920)
                         val outline = try {
@@ -274,11 +290,14 @@ class BrowserViewModel(
                             screenshotBase64 = screenshotBase64,
                             screenWidth = width,
                             screenHeight = height,
-                            outlineJson = outline
+                            outlineJson = outline,
+                            auditJson = audit
                         )
                         optimizedResult.onSuccess { optScript ->
                             // The user may have navigated to another site while the review was running
                             if (extractDomain(activeTab.value?.url ?: "") != domain) return@onSuccess
+                            // Nothing needed fixing: keep what the user already sees (no re-inject, no flicker)
+                            if (optScript == script) return@onSuccess
 
                             val currentTheme = _websiteThemes.value[domain]
                             if (currentTheme != null) {
@@ -328,17 +347,74 @@ class BrowserViewModel(
         activeWebViewRef = webView
     }
 
-    private fun captureWebViewBitmap(webView: android.webkit.WebView): android.graphics.Bitmap? {
+    /**
+     * Captures what is really on screen. PixelCopy works with hardware-accelerated WebViews; View.draw() is only a
+     * fallback because it often returns a blank bitmap there. A blank bitmap is never returned (null instead), so the
+     * review never "looks" at an empty picture.
+     */
+    private suspend fun captureWebViewBitmap(webView: android.webkit.WebView): android.graphics.Bitmap? {
+        val viaPixelCopy = captureViaPixelCopy(webView)
+        if (viaPixelCopy != null && !isMostlyBlank(viaPixelCopy)) return viaPixelCopy
+        val viaDraw = captureViaDraw(webView)
+        if (viaDraw != null && !isMostlyBlank(viaDraw)) return viaDraw
+        return null
+    }
+
+    private suspend fun captureViaPixelCopy(webView: android.webkit.WebView): android.graphics.Bitmap? {
+        if (android.os.Build.VERSION.SDK_INT < 26 || webView.width <= 0 || webView.height <= 0) return null
+        var ctx: android.content.Context = webView.context
+        while (ctx is android.content.ContextWrapper && ctx !is android.app.Activity) ctx = ctx.baseContext
+        val window = (ctx as? android.app.Activity)?.window ?: return null
+        val loc = IntArray(2)
+        webView.getLocationInWindow(loc)
+        val bmp = android.graphics.Bitmap.createBitmap(webView.width, webView.height, android.graphics.Bitmap.Config.ARGB_8888)
+        val rect = android.graphics.Rect(loc[0], loc[1], loc[0] + webView.width, loc[1] + webView.height)
+        return kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+            try {
+                android.view.PixelCopy.request(
+                    window, rect, bmp,
+                    { result ->
+                        if (cont.isActive) cont.resumeWith(Result.success(if (result == android.view.PixelCopy.SUCCESS) bmp else null))
+                    },
+                    android.os.Handler(android.os.Looper.getMainLooper())
+                )
+            } catch (e: Exception) {
+                if (cont.isActive) cont.resumeWith(Result.success(null))
+            }
+        }
+    }
+
+    private fun captureViaDraw(webView: android.webkit.WebView): android.graphics.Bitmap? {
         return try {
             val width = if (webView.width > 0) webView.width else 1080
             val height = if (webView.height > 0) webView.height else 1920
             val bitmap = android.graphics.Bitmap.createBitmap(width, height, android.graphics.Bitmap.Config.ARGB_8888)
-            val canvas = android.graphics.Canvas(bitmap)
-            webView.draw(canvas)
+            webView.draw(android.graphics.Canvas(bitmap))
             bitmap
         } catch (e: Exception) {
             null
         }
+    }
+
+    /** A real page has some tonal range; a failed capture is one flat colour. */
+    private fun isMostlyBlank(bmp: android.graphics.Bitmap): Boolean {
+        var lo = 255
+        var hi = 0
+        val sx = (bmp.width / 24).coerceAtLeast(1)
+        val sy = (bmp.height / 48).coerceAtLeast(1)
+        var y = 0
+        while (y < bmp.height) {
+            var x = 0
+            while (x < bmp.width) {
+                val p = bmp.getPixel(x, y)
+                val l = (android.graphics.Color.red(p) * 299 + android.graphics.Color.green(p) * 587 + android.graphics.Color.blue(p) * 114) / 1000
+                if (l < lo) lo = l
+                if (l > hi) hi = l
+                x += sx
+            }
+            y += sy
+        }
+        return hi - lo < 14
     }
 
     private fun saveScreenshotToFile(bitmap: android.graphics.Bitmap): String? {
@@ -373,17 +449,6 @@ class BrowserViewModel(
         if (toEncode !== bitmap) toEncode.recycle()
         val byteArray = outputStream.toByteArray()
         return android.util.Base64.encodeToString(byteArray, android.util.Base64.NO_WRAP)
-    }
-
-    private fun captureWebViewScreenshot(webView: android.webkit.WebView, onCaptured: (String?) -> Unit) {
-        val bitmap = captureWebViewBitmap(webView)
-        if (bitmap != null) {
-            val b64 = bitmapToBase64(bitmap)
-            bitmap.recycle()
-            onCaptured(b64)
-        } else {
-            onCaptured(null)
-        }
     }
 
     fun resetCustomStyle() {
@@ -678,6 +743,10 @@ class BrowserViewModel(
 
     fun toggleTrackerBlocker(enabled: Boolean) {
         _isTrackerBlockerEnabled.value = enabled
+    }
+
+    fun toggleFullScreenMode(enabled: Boolean) {
+        _isFullScreenMode.value = enabled
     }
 
     fun copyActiveLink(context: Context) {

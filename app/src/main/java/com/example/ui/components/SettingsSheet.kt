@@ -20,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Javascript
 import androidx.compose.material.icons.filled.Search
@@ -59,6 +60,8 @@ fun SettingsSheet(
     onToggleJavaScript: (Boolean) -> Unit,
     isTrackerBlockerEnabled: Boolean,
     onToggleTrackerBlocker: (Boolean) -> Unit,
+    isFullScreenMode: Boolean,
+    onToggleFullScreenMode: (Boolean) -> Unit,
     onClearBrowsingData: () -> Unit,
     onOpenApiLogs: () -> Unit,
     customApiKey: String,
@@ -128,6 +131,17 @@ fun SettingsSheet(
                     icon = Icons.Default.Search,
                     title = "Search Engine",
                     subtitle = "Google Search (Default)"
+                )
+
+                HorizontalDivider(color = Color(0x1AFFFFFF), modifier = Modifier.padding(vertical = 12.dp))
+
+                // Section: Fullscreen Mode
+                SettingsSwitchRow(
+                    icon = Icons.Default.Fullscreen,
+                    title = "Fullscreen Mode",
+                    subtitle = "Immersive fullscreen (hides system bars, on by default)",
+                    checked = isFullScreenMode,
+                    onCheckedChange = onToggleFullScreenMode
                 )
 
                 HorizontalDivider(color = Color(0x1AFFFFFF), modifier = Modifier.padding(vertical = 12.dp))

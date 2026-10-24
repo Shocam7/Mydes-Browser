@@ -1,7 +1,12 @@
 package com.example.ui
 
+import android.app.Activity
+import android.content.ContextWrapper
 import android.webkit.WebView
 import androidx.activity.compose.BackHandler
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
@@ -94,7 +99,24 @@ fun BrowserScreen(
     val isReadingMode by viewModel.isReadingMode.collectAsState()
     val isJavaScriptEnabled by viewModel.isJavaScriptEnabled.collectAsState()
     val isTrackerBlockerEnabled by viewModel.isTrackerBlockerEnabled.collectAsState()
+    val isFullScreenMode by viewModel.isFullScreenMode.collectAsState()
     val customApiKey by viewModel.customApiKey.collectAsState()
+
+    val activity = context.findActivity()
+    LaunchedEffect(isFullScreenMode, activity) {
+        activity?.window?.let { window ->
+            val controller = WindowCompat.getInsetsController(window, window.decorView)
+            if (isFullScreenMode) {
+                controller.hide(WindowInsetsCompat.Type.systemBars())
+                controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            } else {
+                controller.show(WindowInsetsCompat.Type.systemBars())
+            }
+        }
+    }
+
+    val topInsetsModifier = if (isFullScreenMode) Modifier else Modifier.statusBarsPadding()
+    val bottomInsetsModifier = if (isFullScreenMode) Modifier else Modifier.navigationBarsPadding()
 
     // AI Website Styler states
     val isAiStylerPillVisible by viewModel.isAiStylerPillVisible.collectAsState()
@@ -249,7 +271,7 @@ fun BrowserScreen(
             plateauColor = if (isIncognito) Color.White else Color.Black,
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .statusBarsPadding()
+                .then(topInsetsModifier)
         )
 
         // 4. Top Header Controls:
@@ -260,7 +282,7 @@ fun BrowserScreen(
             Box(
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .statusBarsPadding()
+                    .then(topInsetsModifier)
                     .padding(start = 16.dp, top = 8.dp)
                     .offset(x = settingsOffsetX)
                     .size(44.dp)
@@ -288,7 +310,7 @@ fun BrowserScreen(
             Column(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .statusBarsPadding()
+                    .then(topInsetsModifier)
                     .padding(end = 16.dp, top = 8.dp)
                     .offset(x = brushOffsetX),
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -350,7 +372,7 @@ fun BrowserScreen(
                 isCustomStyleApplied = isCustomStyleApplied,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .statusBarsPadding()
+                    .then(topInsetsModifier)
             )
         }
 
@@ -361,7 +383,7 @@ fun BrowserScreen(
             exit = fadeOut() + slideOutVertically(),
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .statusBarsPadding()
+                .then(topInsetsModifier)
                 .padding(top = 54.dp)
         ) {
             FindInPageBar(
@@ -403,7 +425,7 @@ fun BrowserScreen(
             onHelp = { viewModel.showHelp(context) },
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .navigationBarsPadding()
+                .then(bottomInsetsModifier)
                 .offset(x = optionsOffsetX)
                 .padding(end = 16.dp, bottom = 68.dp)
         )
@@ -414,7 +436,7 @@ fun BrowserScreen(
             onClick = { viewModel.toggleOptionsMenu() },
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .navigationBarsPadding()
+                .then(bottomInsetsModifier)
                 .offset(x = optionsOffsetX)
                 .padding(end = 16.dp, bottom = 10.dp)
         )
@@ -438,7 +460,7 @@ fun BrowserScreen(
             onDismiss = { viewModel.closeAiStylerPill() },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
+                .then(bottomInsetsModifier)
                 .padding(bottom = 12.dp)
         )
 
@@ -491,6 +513,8 @@ fun BrowserScreen(
                 onToggleJavaScript = { viewModel.toggleJavaScript(it) },
                 isTrackerBlockerEnabled = isTrackerBlockerEnabled,
                 onToggleTrackerBlocker = { viewModel.toggleTrackerBlocker(it) },
+                isFullScreenMode = isFullScreenMode,
+                onToggleFullScreenMode = { viewModel.toggleFullScreenMode(it) },
                 onClearBrowsingData = { viewModel.clearBrowsingData() },
                 onOpenApiLogs = { viewModel.toggleApiLogs() },
                 customApiKey = customApiKey,
@@ -506,3 +530,10 @@ fun BrowserScreen(
         }
     }
 }
+
+private fun android.content.Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+

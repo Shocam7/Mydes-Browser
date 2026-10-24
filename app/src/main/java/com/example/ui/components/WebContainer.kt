@@ -188,7 +188,7 @@ fun WebContainer(
                             (function() {
                                 var meta = document.querySelector('meta[name="theme-color"]');
                                 var bannerFix = document.createElement('style');
-                                bannerFix.textContent = 'div[class*="banner"], div[class*="popup"], div[class*="overlay"], shreddit-app-banner { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; background-color: rgba(26, 26, 27, 0.98) !important; color: #fff !important; }';
+                                bannerFix.textContent = 'div[class*="banner"], div[class*="popup"], shreddit-app-banner { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; background-color: rgba(26, 26, 27, 0.98) !important; color: #fff !important; }';
                                 document.head.appendChild(bannerFix);
                                 if (meta && meta.content) return meta.content;
                                 var header = document.querySelector('header') || document.querySelector('nav');

@@ -143,6 +143,17 @@ object Hex {
  * interactive assistive/creative HUD overlays, and custom JS choreography, backed by safe palette tokens
  * so the runtime's contrast guard keeps all text legible.
  */
+/**
+ * Removes ::before/::after rules that inject readable words (e.g. content:"> SYS.RECORD"). Models like to bolt
+ * invented captions/labels onto every card; the page's own text should be the only text. Icons, bullets and
+ * attr() content are kept because they contain no 3+ letter word.
+ */
+internal fun stripInventedLabels(css: String): String =
+    css.replace(
+        Regex("""[^{}]*::?(?:before|after)\s*\{[^{}]*content\s*:\s*(["'])[^"'{}]*[A-Za-z]{3,}[^"'{}]*\1[^{}]*\}""", RegexOption.IGNORE_CASE),
+        ""
+    )
+
 data class UIBlueprint(
     val id: String,
     val name: String,
@@ -160,10 +171,12 @@ data class UIBlueprint(
     val customJs: String,
     val concept: String = "",
     val needsHud: Boolean = false,
-    val hudReason: String = ""
+    val hudReason: String = "",
+    val fingerprint: String = ""
 ) {
     fun toJson(): String = JSONObject()
         .put("concept", concept)
+        .put("fingerprint", fingerprint)
         .put("needsHud", needsHud)
         .put("hudReason", hudReason)
         .put("id", id)
@@ -226,7 +239,7 @@ data class UIBlueprint(
                 ink = ink,
                 accent = accent,
                 remapSurfaces = j.optBoolean("remapSurfaces", true),
-                customCss = j.optString("customCss", ""),
+                customCss = stripInventedLabels(j.optString("customCss", "")),
                 backdropHtml = j.optString("backdropHtml", ""),
                 // The HUD is opt-in. If the model did not explicitly justify it, it is dropped here,
                 // so a stray footer/dock can never appear just because the model felt like adding one.
@@ -234,7 +247,8 @@ data class UIBlueprint(
                 customJs = j.optString("customJs", ""),
                 concept = j.optString("concept", "").take(300),
                 needsHud = needsHud,
-                hudReason = j.optString("hudReason", "").take(200)
+                hudReason = j.optString("hudReason", "").take(200),
+                fingerprint = j.optString("fingerprint", "").take(120)
             )
         }
     }
@@ -389,7 +403,7 @@ function applySheets() {
     ';--m-fg:'+cfg.fg+';--m-ink:'+cfg.ink+';--m-accent:'+cfg.accent+';--m-rx:0deg;--m-ry:0deg;--m-scroll:0px;}\n' +
     'html{background-color:var(--m-bg)!important;color:var(--m-fg)!important;}\n' +
     'html body{background-color:transparent!important;color:var(--m-fg)!important;position:relative;z-index:1;}\n' +
-    '#__mydes_backdrop{position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none!important;z-index:0;overflow:hidden;transform:translateZ(0);will-change:transform;}\n' +
+    '#__mydes_backdrop{position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none!important;z-index:-1;overflow:hidden;transform:translateZ(0);will-change:transform;}\n' +
     '#__mydes_hud{position:fixed;z-index:2147483640;pointer-events:none;inset:0;transform:translateZ(0);}\n' +
     '#__mydes_hud *{pointer-events:auto;}\n';
   var fullCss = baseVars + '\n' + (cfg.customCss || '');
@@ -614,7 +628,15 @@ function handle(el){
   var tag=el.tagName.toUpperCase();
   if(SKIPTAG.test(tag))return;
   var cs=getComputedStyle(el);
+  if(cfg.backdropHtml && tag!=='BODY' && tag!=='HTML' && !el.hasAttribute('data-mydes') && cs.position!=='fixed' && !hasBgImage(cs)){
+    var wb=rgba(cs.backgroundColor);
+    if(wb&&wb.a>=0.5){
+      var wr=el.getBoundingClientRect();
+      if(wr.width>=innerWidth*0.95&&wr.height>=innerHeight*0.8){setProp(el,'background-color','transparent');EB.delete(el);}
+    }
+  }
   if(cfg.remapSurfaces && tag!=='BODY' && tag!=='HTML' && !hasBgImage(cs)){
+    if(el.querySelector('img,video,picture,svg,[role="img"]')) return;
     var b=rgba(cs.backgroundColor);
     if(b&&b.a>=0.85&&((cfg.dark&&lum(b)>0.5)||(!cfg.dark&&lum(b)<0.2))){
       var role=el.getAttribute('data-mydes')||'';
@@ -721,12 +743,94 @@ start();
     /** Lightweight tagger + outline extractor script so Gemini can inspect the live DOM before generating. */
     const val OUTLINE_PROBE_JS = """
         (function(){
-          if(window.__mydes && window.__mydes.outline) return JSON.parse(window.__mydes.outline());
           var counts={};
-          ['header','nav','main','aside','footer','form','button','input','img','article','h1','h2'].forEach(function(t){
+          ['header','nav','main','aside','footer','form','button','input','img','article','h1','h2','h3'].forEach(function(t){
             counts[t]=document.querySelectorAll(t).length;
           });
-          return {url:location.href,host:location.hostname,title:document.title,viewport:{w:innerWidth,h:innerHeight},counts:counts};
+          var groups={};
+          var cand=document.querySelectorAll('a,li,article,section,div');
+          for(var i=0;i<cand.length&&i<4000;i++){
+            var e=cand[i];
+            if(e.closest('#__mydes_hud,#__mydes_backdrop'))continue;
+            if(e.children.length<1||e.children.length>14||!e.querySelector('img'))continue;
+            var t=(e.textContent||'').replace(/\s+/g,' ').trim();
+            if(t.length<8||t.length>240)continue;
+            var k=e.tagName.toLowerCase()+(e.classList[0]?'.'+e.classList[0]:'');
+            var g=groups[k]||(groups[k]={sel:k,n:0,sample:t.slice(0,40)});
+            g.n++;
+          }
+          var rep=Object.keys(groups).map(function(k){return groups[k];}).filter(function(g){return g.n>=3;}).sort(function(x,y){return y.n-x.n;}).slice(0,4);
+          var heads=[].slice.call(document.querySelectorAll('h1,h2,h3')).slice(0,6).map(function(h){return (h.textContent||'').trim().slice(0,40);});
+          var o;
+          if(window.__mydes && window.__mydes.outline){o=JSON.parse(window.__mydes.outline());}
+          else{o={url:location.href,host:location.hostname,title:(document.title||'').slice(0,80),viewport:{w:innerWidth,h:innerHeight},counts:counts};}
+          o.repeatedItems=rep;
+          o.headings=heads;
+          return o;
+        })();
+    """
+
+    /**
+     * Measures legibility on the live page: text whose colour has under 3:1 contrast against what is really behind
+     * it, plus horizontal overflow. Elements sitting on gradients/images or on a backdrop are counted as unknownBg.
+     * This is ground truth for the review pass, so it cannot be blind the way a failed screenshot can.
+     */
+    const val CONTRAST_AUDIT_JS = """
+        (function(){
+          try{
+            function P(c){var m=/rgba?\(([^)]+)\)/.exec(c||'');if(!m)return null;var p=m[1].split(/[ ,\/]+/).filter(Boolean).map(parseFloat);return {r:p[0],g:p[1],b:p[2],a:p.length>3?p[3]:1};}
+            function L(c){function f(v){v/=255;return v<=0.03928?v/12.92:Math.pow((v+0.055)/1.055,2.4);}return 0.2126*f(c.r)+0.7152*f(c.g)+0.0722*f(c.b);}
+            function R(a,b){var x=L(a),y=L(b);if(x<y){var t=x;x=y;y=t;}return (x+0.05)/(y+0.05);}
+            function mix(t,b){var a=t.a;return {r:t.r*a+b.r*(1-a),g:t.g*a+b.g*(1-a),b:t.b*a+b.b*(1-a),a:1};}
+            function hx(c){function h(v){v=Math.max(0,Math.min(255,Math.round(v)));return (v<16?'0':'')+v.toString(16);}return '#'+h(c.r)+h(c.g)+h(c.b);}
+            function sel(e){var s=e.tagName.toLowerCase();var d=e.getAttribute('data-mydes');if(d)s+='[data-mydes="'+d+'"]';var cl=e.classList;for(var i=0;i<cl.length&&i<2;i++){s+='.'+(window.CSS&&CSS.escape?CSS.escape(cl[i]):cl[i]);}return s;}
+            var hasBackdrop=!!document.getElementById('__mydes_backdrop');
+            var rootBg=P(getComputedStyle(document.documentElement).backgroundColor)||{r:255,g:255,b:255,a:1};
+            if(rootBg.a<1)rootBg=mix(rootBg,{r:255,g:255,b:255,a:1});
+            function bgOf(el){
+              var layers=[],opaque=false;
+              for(var n=el;n&&n.nodeType===1;n=n.parentElement){
+                var cs=getComputedStyle(n);
+                if(cs.backgroundImage&&cs.backgroundImage!=='none')return null;
+                var c=P(cs.backgroundColor);
+                if(c&&c.a>0){layers.push(c);if(c.a>=0.99){opaque=true;break;}}
+              }
+              if(!opaque&&hasBackdrop)return null;
+              var base=rootBg;
+              for(var i=layers.length-1;i>=0;i--)base=mix(layers[i],base);
+              return base;
+            }
+            var found={},checked=0,unknown=0,guard=0,node;
+            var seen=new WeakSet();
+            var tw=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null);
+            var limitY=innerHeight*2.5;
+            while((node=tw.nextNode())&&guard++<3000&&checked<500){
+              if(!/\S/.test(node.nodeValue))continue;
+              var el=node.parentElement;
+              if(!el||seen.has(el))continue;
+              seen.add(el);
+              if(el.closest('#__mydes_hud,#__mydes_backdrop,script,style,noscript'))continue;
+              var r=el.getBoundingClientRect();
+              if(r.width<4||r.height<4||r.bottom<0||r.top>limitY)continue;
+              var cs2=getComputedStyle(el);
+              if(cs2.visibility==='hidden'||cs2.display==='none'||parseFloat(cs2.opacity)===0)continue;
+              var fg=P(cs2.color);
+              if(!fg||fg.a===0)continue;
+              var bg=bgOf(el);
+              if(!bg){unknown++;continue;}
+              var fgc=fg.a<1?mix(fg,bg):fg;
+              checked++;
+              var ratio=R(fgc,bg);
+              if(ratio<3){
+                var key=sel(el)+'|'+hx(fgc)+'|'+hx(bg);
+                var f=found[key]||(found[key]={sel:sel(el),text:(node.nodeValue||'').trim().slice(0,28),fg:hx(fgc),bg:hx(bg),ratio:Math.round(ratio*100)/100,count:0});
+                f.count++;
+              }
+            }
+            var worst=Object.keys(found).map(function(k){return found[k];}).sort(function(a,b){return a.ratio-b.ratio;});
+            var failing=0;worst.forEach(function(w){failing+=w.count;});
+            return {checked:checked,unknownBg:unknown,failing:failing,overflowX:document.documentElement.scrollWidth-innerWidth,worst:worst.slice(0,10)};
+          }catch(e){return {error:String(e)};}
         })();
     """
 }
@@ -775,7 +879,8 @@ class ThemeStore(context: Context) {
             .split('\n').filter { it.isNotBlank() }.takeLast(limit)
 
     private fun pushConcept(bp: UIBlueprint) {
-        val line = (bp.concept.ifBlank { bp.name }).replace('\n', ' ').take(160)
+        val traits = bp.fingerprint.ifBlank { bp.concept }.ifBlank { bp.name }
+        val line = (bp.name.take(40) + ": " + traits).replace('\n', ' ').take(180)
         if (line.isBlank()) return
         val all = (recentConcepts(20) + line).takeLast(20)
         prefs.edit().putString("recent_concepts", all.joinToString("\n")).apply()
@@ -819,13 +924,14 @@ class GeminiStylerService {
         userPrompt: String,
         websiteName: String,
         websiteUrl: String,
-        forceFresh: Boolean = false
+        forceFresh: Boolean = false,
+        outlineJson: String? = null
     ): Result<String> = synthesizeBlueprint(
         context = context,
         prompt = userPrompt,
         websiteName = websiteName,
         websiteUrl = websiteUrl,
-        pageOutlineJson = null,
+        pageOutlineJson = outlineJson?.takeIf { it.isNotBlank() && it != "null" },
         screenshotBase64 = null,
         forceFresh = forceFresh
     ).map { MydesRuntime.script(it) }
@@ -838,7 +944,8 @@ class GeminiStylerService {
         screenshotBase64: String?,
         screenWidth: Int,
         screenHeight: Int,
-        outlineJson: String? = null
+        outlineJson: String? = null,
+        auditJson: String? = null
     ): Result<String> = synthesizeBlueprint(
         context = context,
         prompt = userPrompt,
@@ -846,7 +953,8 @@ class GeminiStylerService {
         websiteUrl = websiteUrl,
         pageOutlineJson = outlineJson?.takeIf { it.isNotBlank() && it != "null" }
             ?: "{\"viewport\":{\"w\":$screenWidth,\"h\":$screenHeight}}",
-        screenshotBase64 = screenshotBase64
+        screenshotBase64 = screenshotBase64,
+        auditJson = auditJson
     ).map { MydesRuntime.script(it) }
 
     suspend fun adaptUserScriptForWebpage(
@@ -883,57 +991,89 @@ class GeminiStylerService {
     )
 
 
-    // ───── Variation engine ─────
-    // These are NOT templates. They are random, orthogonal "provocations" that push the model off its
-    // favourite defaults. Each axis has many unrelated options, so the combination space is huge and
-    // none of them describes a finished layout. The request itself always wins over the lens.
+    // ───── Concept pass (art director) ─────
+    // Pipeline: 1) CONCEPT PASS invents a design brief with no code, 2) BUILD PASS implements that brief,
+    // 3) REVIEW PASS (after a screenshot) fixes defects. There are no random seeds, option lists or example
+    // layouts anywhere: variety comes from the model's own idea plus a memory of traits it already shipped.
 
-    private val LENS_LAYOUT = listOf(
-        "content flows in a single oversized editorial column with huge type and tiny captions",
-        "content is staggered on a diagonal, each block offset from the previous one",
-        "content sits on a continuous scrolling surface with no visible containers at all, only spacing and rules",
-        "blocks are different sizes like a mosaic or bento arrangement, not equal-width repeats",
-        "content hangs from a strong vertical spine or timeline running down the screen",
-        "content is set in overlapping layers with generous negative margins and depth",
-        "everything is aligned to a hard baseline grid with visible rules, like a printed form or ledger",
-        "blocks wrap around organic, curved edges instead of rectangles",
-        "wide horizontal bands alternate between full-bleed and inset",
-        "content is arranged as stacked sheets/pages that fan slightly"
-    )
-    private val LENS_SHAPE = listOf(
-        "razor-sharp 0px corners everywhere", "very large soft radii and pill shapes",
-        "mixed shapes: circles for media, squares for text", "cut corners / chamfers using clip-path",
-        "hand-drawn wobbly edges using SVG filters or irregular border-radius", "thick outlines with offset hard shadows",
-        "no borders at all, separation by tone only", "hairline 1px borders and lots of white space"
-    )
-    private val LENS_TYPE = listOf(
-        "a high-contrast serif for headings with a plain sans body", "monospace everywhere",
-        "very heavy condensed uppercase headings", "light, wide-tracked headings",
-        "a humanist/handwritten feel using cursive or italic system stacks", "huge numerals and tiny labels",
-        "all-lowercase, quiet typography", "a bold grotesque with tight tracking"
-    )
-    private val LENS_MATERIAL = listOf(
-        "matte paper with subtle grain (CSS gradients)", "flat solid colour blocks", "brushed metal / hardware",
-        "frosted or tinted glass but only on one element type", "wood, cloth or leather suggested through gradients",
-        "ink on newsprint, strictly two colours", "soft clay / neumorphic relief", "screen-printed poster colours with misregistration offsets",
-        "chalk on a dark board", "plain and almost no decoration; the idea lives in the layout and type"
-    )
-    private val LENS_MOTION = listOf(
-        "almost no motion; stillness is the point", "slow ambient drift in the backdrop only",
-        "content reveals as you scroll", "gentle hover/press response only", "one signature animation, nothing else",
-        "parallax depth driven by --m-scroll"
-    )
-    private val LENS_HEADER = listOf(
-        "header becomes a slim, quiet strip", "header is oversized and part of the composition",
-        "header is stripped to the bare minimum and the search field is the hero", "header blends invisibly into the backdrop",
-        "header is styled like an object from the concept's world"
-    )
+    /** Set true while debugging to append the full system prompt to each log entry. */
+    private val LOG_SYSTEM_PROMPT = false
 
-    private fun creativeLens(): String {
-        val r = java.util.Random()
-        fun <T> pick(l: List<T>) = l[r.nextInt(l.size)]
-        return "layout: ${pick(LENS_LAYOUT)}; shape language: ${pick(LENS_SHAPE)}; type: ${pick(LENS_TYPE)}; " +
-            "material: ${pick(LENS_MATERIAL)}; motion: ${pick(LENS_MOTION)}; header: ${pick(LENS_HEADER)}"
+    private class ConceptBrief(val raw: String, val idea: String, val fingerprint: String)
+
+    private fun extractJsonObject(raw: String): String? {
+        val s = raw.indexOf('{')
+        val e = raw.lastIndexOf('}')
+        return if (s >= 0 && e > s) raw.substring(s, e + 1) else null
+    }
+
+    private suspend fun callForText(
+        apiKey: String,
+        system: String,
+        parts: List<Part>,
+        temperature: Float,
+        topP: Float,
+        maxTokens: Int
+    ): String {
+        fun req(jsonMode: Boolean) = GeminiRequest(
+            contents = listOf(Content(parts = parts)),
+            systemInstruction = Content(listOf(Part(text = system))),
+            generationConfig = GenerationConfig(
+                temperature = temperature,
+                topP = topP,
+                maxOutputTokens = maxTokens,
+                responseMimeType = if (jsonMode) "application/json" else null
+            )
+        )
+        val response = try {
+            callGemini(req(true), apiKey)
+        } catch (e: HttpException) {
+            if (e.code() == 400) callGemini(req(false), apiKey) else throw e
+        }
+        return response.candidates?.firstOrNull()?.content?.parts?.mapNotNull { it.text }?.joinToString("").orEmpty()
+    }
+
+    /** Pass 1: invent the idea. Returns null on any failure so the build pass can fall back to inventing its own. */
+    private suspend fun designBrief(
+        context: Context,
+        prompt: String,
+        websiteName: String,
+        websiteUrl: String,
+        pageOutlineJson: String?,
+        apiKey: String
+    ): ConceptBrief? {
+        val input = buildString {
+            appendLine("USER REQUEST: \"$prompt\"")
+            appendLine("TARGET WEBSITE: $websiteName ($websiteUrl)")
+            if (!pageOutlineJson.isNullOrBlank()) appendLine("LIVE DOM SEMANTIC OUTLINE: ${pageOutlineJson.take(4_000)}")
+            val recent = storeFor(context).recentConcepts()
+            if (recent.isNotEmpty()) {
+                appendLine("RECENT DESIGNS ALREADY SHIPPED (name: traits):")
+                recent.forEach { appendLine("- $it") }
+            }
+            appendLine("Write the design brief JSON now.")
+        }
+        val logInput = buildString {
+            append(input)
+            if (LOG_SYSTEM_PROMPT) { appendLine(); appendLine("--- SYSTEM PROMPT ---"); append(UI_CONCEPT_SYSTEM_PROMPT) }
+        }.take(if (LOG_SYSTEM_PROMPT) 30_000 else 12_000)
+        return try {
+            val raw = callForText(apiKey, UI_CONCEPT_SYSTEM_PROMPT, listOf(Part(text = input)), 1.15f, 0.98f, 1024)
+            val json = JSONObject(extractJsonObject(raw) ?: throw IllegalStateException("no JSON in brief: ${raw.take(200)}"))
+            val idea = json.optString("idea", "").trim()
+            if (idea.isBlank()) throw IllegalStateException("brief has no idea: ${raw.take(200)}")
+            // Only the directions the builder needs are forwarded (not `considered`, not the fingerprint)
+            val directions = listOf("idea" to "IDEA", "signature" to "SIGNATURE", "palette" to "PALETTE", "type" to "TYPE",
+                "surface" to "SURFACE", "layout" to "LAYOUT", "rules" to "RULES")
+                .mapNotNull { (k, label) -> json.optString(k, "").trim().takeIf { it.isNotBlank() }?.let { "$label: $it" } }
+                .joinToString("\n")
+            val brief = ConceptBrief(directions, idea.take(300), json.optString("fingerprint", "").take(120))
+            ApiRequestLogger.logRequest(context, "conceptBrief", websiteName, websiteUrl, prompt, logInput, json.toString(2), true)
+            brief
+        } catch (e: Exception) {
+            ApiRequestLogger.logRequest(context, "conceptBrief", websiteName, websiteUrl, prompt, logInput, describe(e), false)
+            null
+        }
     }
 
     // ───── Core Generative Synthesis ─────
@@ -945,7 +1085,8 @@ class GeminiStylerService {
         websiteUrl: String,
         pageOutlineJson: String?,
         screenshotBase64: String?,
-        forceFresh: Boolean = false
+        forceFresh: Boolean = false,
+        auditJson: String? = null
     ): Result<UIBlueprint> = withContext(Dispatchers.IO) {
         val cleanPrompt = prompt.trim()
         if (cleanPrompt.isEmpty()) return@withContext Result.failure(IllegalArgumentException("Empty prompt"))
@@ -957,7 +1098,7 @@ class GeminiStylerService {
         }.ifBlank { "*" }
 
         // Return cached blueprint if we already generated one for this (prompt, domain) pair and no new screenshot is passed
-        if (screenshotBase64 == null && !forceFresh) {
+        if (screenshotBase64 == null && auditJson == null && !forceFresh) {
             storeFor(context).get(cleanPrompt, domain)?.let { return@withContext Result.success(it) }
         }
 
@@ -966,33 +1107,39 @@ class GeminiStylerService {
             return@withContext Result.failure(IllegalStateException("GEMINI_API_KEY is not set. Please set your API key in Settings."))
         }
 
-        // REVIEW MODE: a screenshot plus an existing blueprint for this (prompt, domain) means "fix what you shipped",
-        // not "design again". No lens, no nonce, no recent-design blacklist, low temperature.
-        val previous = if (!screenshotBase64.isNullOrBlank() && !forceFresh) storeFor(context).get(cleanPrompt, domain) else null
+        // REVIEW MODE: a screenshot and/or a measured audit plus an existing blueprint for this (prompt, domain) means
+        // "fix what you shipped". The review can only APPEND override CSS, so it can never remove the design.
+        val reviewInputs = !screenshotBase64.isNullOrBlank() || !auditJson.isNullOrBlank()
+        val previous = if (reviewInputs && !forceFresh) storeFor(context).get(cleanPrompt, domain) else null
         val isReview = previous != null
+
+        // PASS 1 (first generations only): invent the idea, with no code.
+        val brief: ConceptBrief? = if (isReview) null
+            else designBrief(context, cleanPrompt, websiteName, websiteUrl, pageOutlineJson, apiKey)
 
         val userContextText = if (isReview) buildString {
             appendLine("REVIEW PASS")
             appendLine("USER REQUEST: \"$cleanPrompt\"")
             appendLine("TARGET WEBSITE: $websiteName ($websiteUrl)")
-            if (!pageOutlineJson.isNullOrBlank()) appendLine("LIVE DOM SEMANTIC OUTLINE: $pageOutlineJson")
-            appendLine("CURRENT BLUEPRINT (JSON):")
-            appendLine(previous!!.toJson())
-            appendLine("The attached screenshot is how the current blueprint renders right now.")
-            appendLine("Return the corrected complete blueprint JSON now.")
+            appendLine("PALETTE: bg ${previous!!.bg}, surface ${previous.surface}, surface2 ${previous.surface2}, text ${previous.fg}, ink ${previous.ink}, accent ${previous.accent}")
+            if (!pageOutlineJson.isNullOrBlank()) appendLine("LIVE DOM OUTLINE: ${pageOutlineJson.take(2_500)}")
+            appendLine("MEASURED AUDIT (live page, ground truth): ${auditJson?.takeIf { it.isNotBlank() && it != "null" }?.take(3_000) ?: "not available"}")
+            appendLine("CURRENT CSS:")
+            appendLine(previous.customCss)
+            appendLine(if (!screenshotBase64.isNullOrBlank()) "A screenshot of the current render is attached." else "No screenshot is available; rely on the audit.")
+            appendLine("Return the review JSON now.")
         } else buildString {
             appendLine("USER REQUEST: \"$cleanPrompt\"")
             appendLine("TARGET WEBSITE: $websiteName ($websiteUrl)")
             if (!pageOutlineJson.isNullOrBlank()) {
-                appendLine("LIVE DOM SEMANTIC OUTLINE: $pageOutlineJson")
+                appendLine("LIVE DOM SEMANTIC OUTLINE: ${pageOutlineJson.take(6_000)}")
             }
             appendLine()
-            appendLine("VARIATION NONCE: ${java.util.UUID.randomUUID()} (this request must produce a design unlike any previous one)")
-            appendLine("CREATIVE LENS (a provocation, secondary to the request; blend it, bend it, or drop it if it fights the request): ${creativeLens()}")
-            val recent = storeFor(context).recentConcepts()
-            if (recent.isNotEmpty()) {
-                appendLine("RECENT DESIGNS ALREADY SHIPPED (do NOT resemble any of these in layout, shape language, palette logic or structure):")
-                recent.forEach { appendLine("- $it") }
+            if (brief != null) {
+                appendLine("DESIGN DIRECTIONS from the art director (the spec; implement them literally):")
+                appendLine(brief.raw)
+            } else {
+                appendLine("No directions were supplied. First decide a specific, original concept yourself (a world, material or process, not a colour scheme), then build it.")
             }
             appendLine("Generate the complete UIBlueprint JSON now.")
         }
@@ -1006,9 +1153,9 @@ class GeminiStylerService {
             contents = listOf(Content(parts = parts)),
             systemInstruction = Content(listOf(Part(text = if (isReview) UI_REVIEW_SYSTEM_PROMPT else UI_SYNTHESIS_SYSTEM_PROMPT))),
             generationConfig = GenerationConfig(
-                temperature = if (isReview) 0.4f else 1.0f,
-                topP = if (isReview) 0.9f else 0.95f,
-                maxOutputTokens = 8192,
+                temperature = if (isReview) 0.3f else 0.8f,
+                topP = 0.95f,
+                maxOutputTokens = if (isReview) 1536 else 8192,
                 responseMimeType = if (jsonMode) "application/json" else null
             )
         )
@@ -1016,10 +1163,15 @@ class GeminiStylerService {
         // What the log sheet shows: the mode and the actual per-request input (lens, recent-design list, current
         // blueprint for reviews), not the static system prompt, which used to eat the whole 4000-char budget.
         val requestJson = buildString {
-            appendLine(if (isReview) "MODE: review pass" else "MODE: first generation")
+            appendLine(if (isReview) "MODE: review pass" else if (brief != null) "MODE: build pass (from design directions)" else "MODE: build pass (no directions, concept pass failed)")
             append(userContextText)
             if (!screenshotBase64.isNullOrBlank()) appendLine("[screenshot attached, ${screenshotBase64.length / 1024} KB base64]")
-        }.take(12_000)
+            if (LOG_SYSTEM_PROMPT) {
+                appendLine()
+                appendLine("--- SYSTEM PROMPT ---")
+                append(if (isReview) UI_REVIEW_SYSTEM_PROMPT else UI_SYNTHESIS_SYSTEM_PROMPT)
+            }
+        }.take(if (LOG_SYSTEM_PROMPT) 30_000 else 12_000)
 
         try {
             val response = try {
@@ -1028,15 +1180,19 @@ class GeminiStylerService {
                 if (e.code() == 400) callGemini(buildReq(false), apiKey) else throw e
             }
             val raw = response.candidates?.firstOrNull()?.content?.parts?.mapNotNull { it.text }?.joinToString("").orEmpty()
-            val parsed = UIBlueprint.parse(raw, cleanPrompt)
-            val blueprint = if (parsed != null && isReview && parsed.concept.isBlank()) parsed.copy(concept = previous!!.concept) else parsed
+            val blueprint: UIBlueprint? = if (isReview) {
+                applyReviewPatch(previous!!, raw, cleanPrompt)
+            } else {
+                val parsed = UIBlueprint.parse(raw, cleanPrompt)
+                if (parsed != null && brief != null) parsed.copy(concept = brief.idea, fingerprint = brief.fingerprint) else parsed
+            }
             if (blueprint == null) {
                 val err = "Model returned invalid UIBlueprint JSON. Raw start: ${raw.take(300)}"
                 ApiRequestLogger.logRequest(context, "synthesizeBlueprint", websiteName, websiteUrl, cleanPrompt, requestJson, err, false)
                 Result.failure(IllegalStateException(err))
             } else {
                 storeFor(context).put(cleanPrompt, blueprint, domain, remember = !isReview)
-                ApiRequestLogger.logRequest(context, if (isReview) "reviewBlueprint" else "synthesizeBlueprint", websiteName, websiteUrl, cleanPrompt, requestJson, blueprint.toJson(), true)
+                ApiRequestLogger.logRequest(context, if (isReview) "reviewBlueprint" else "buildBlueprint", websiteName, websiteUrl, cleanPrompt, requestJson, if (isReview) raw.take(4_000) else blueprint.toJson(), true)
                 Result.success(blueprint)
             }
         } catch (e: Exception) {
@@ -1046,95 +1202,97 @@ class GeminiStylerService {
         }
     }
 
+    /**
+     * The review returns {"problems": [...], "fixCss": "..."}. The fix is appended AFTER the existing CSS, so a review
+     * can repair legibility and layout but can never delete or simplify the design. An empty or invalid review leaves
+     * the blueprint untouched (same id, so the runtime does not even re-apply it).
+     */
+    private fun applyReviewPatch(previous: UIBlueprint, raw: String, prompt: String): UIBlueprint {
+        val json = try { JSONObject(extractJsonObject(raw) ?: return previous) } catch (_: Exception) { return previous }
+        val fix = stripInventedLabels(json.optString("fixCss", "")).trim().take(3_000)
+        if (fix.isBlank()) return previous
+        val merged = JSONObject(previous.toJson()).put("customCss", previous.customCss + "\n/* review */\n" + fix)
+        return UIBlueprint.parse(merged.toString(), prompt)
+            ?.copy(concept = previous.concept, fingerprint = previous.fingerprint)
+            ?: previous
+    }
+
     private val UI_REVIEW_SYSTEM_PROMPT = """
-You are the art director reviewing a live redesign of a website on an Android phone. A designer already produced the CURRENT BLUEPRINT (JSON) and the attached screenshot shows exactly how it renders now. Your job is to FIX it, not to redesign it.
+You are the QA reviewer of a live website redesign on an Android phone. The design is final and approved: you do NOT redesign anything. You receive the user's request, the palette, the CURRENT CSS, a MEASURED AUDIT taken from the live page (ground truth), and usually a screenshot of how it renders now.
 
-KEEP: the concept, palette logic, layout idea, typography voice, backdrop idea and overall personality. The user has already seen this design and should recognise it after your changes. Do not introduce a new theme, new decorative motifs or extra ornament.
+You may ONLY append override CSS in `fixCss`. It is added after the current CSS, so you cannot delete anything. Never undo or tone down the design: keep every transform, shadow, texture, pseudo-element, font, palette colour and the backdrop. Add no decoration, no new text, no new UI and no colours outside the palette (a plain black or white is allowed for contrast).
 
-LOOK FOR AND FIX (only what is actually wrong in the screenshot):
-- Text that is hard to read: dark text on a dark surface, light on light, low contrast, links that vanish. When you set a background on an element, set `color` for it and its links, headings and spans explicitly.
-- Content clipped, overlapping, hidden under the fixed header, the status bar area or any fixed layer; horizontal overflow; elements pushed off screen.
-- Fixed or sticky elements taking too much of the screen.
-- Decoration that overwhelms the content: heavy frames, repeated boxes around every block, oversized glows, invented labels or text added with ::before/::after. Simplify these. Do not add more.
-- Tap targets smaller than 40px, or controls that are hard to find.
-- A backdrop that is invisible, misplaced, or fights the text.
-- Anything in the layout that looks broken compared with the user's request.
+Fix only real defects, in this order:
+1. Unreadable text. The audit lists elements whose text has under 3:1 contrast against what is behind it (sel, text, fg, bg, ratio). Fix each by setting `color` (and `background-color` only if the design clearly intends a surface there) using the design's own palette so that it reaches 4.5:1. When many failures share one cause (for example a generic text-colour rule written for a surface that does not exist on those items), fix the cause with one scoped rule instead of many small ones. Check the screenshot too: if text looks hard to read even though the audit lists nothing, fix that as well.
+2. Elements clipped, overlapping, pushed off screen, or horizontal overflow (audit overflowX above 2): fix with width, max-width, overflow, margin or position overrides.
+3. Fixed or sticky bars covering content: add padding or shrink them.
+4. Tap targets under 40px.
 
-If something already works, leave its CSS untouched. Make the smallest set of changes that resolves the real problems, but still return the COMPLETE blueprint (all fields), because it replaces the previous one.
+Use selectors of the form `html body <selector>` with !important, based on the audit's `sel` values or on selectors already in the CSS. Keep fixCss under 1200 characters. If nothing is wrong, return an empty fixCss.
 
-HUD: keep needsHud/hudHtml exactly as in the current blueprint, unless the HUD is covering content or is clearly irrelevant to the site, in which case remove it (needsHud false, hudHtml ""). Never add a HUD, footer, dock or bottom bar.
+OUTPUT: ONLY one JSON object, no markdown fences:
+{"problems": ["short list of what you found, max 5 items"], "fixCss": "css or empty string"}
+""".trimIndent()
 
-JS: keep customJs unless it is broken. Anything started with requestAnimationFrame, setInterval or event listeners must be stopped by registering a function with MydesBridge.onCleanup(fn).
+    private val UI_CONCEPT_SYSTEM_PROMPT = """
+You are the art director of a browser that redesigns any website around the user's imagination. You write no code. You invent one specific, original design idea; a separate builder turns your directions into CSS, a backdrop and a little JS on top of the live page.
 
-Technical rules are unchanged: selectors use `html body [data-mydes="X"]` (header nav search main grid card title heading price btn field media aside footer) and standard tags; never hide or disable main, card or search; no external resources; phone-friendly performance.
+THINK, silently: What does the user really want to see or feel? What is this site's real content made of (the outline lists real repeated items)? What are three genuinely different worlds it could live in? Pick the least obvious one that still fully honours the request and keeps the site usable, and give it one memorable signature visual. Reject your first idea, anything a generic "make it look <theme>" would produce by default, and anything resembling RECENT DESIGNS (do not reuse their type voice, palette family, shape language or layout idea unless the request leaves no alternative). For accessibility or comfort requests clarity wins over spectacle, but still give the design an identity.
 
-OUTPUT: ONLY one valid JSON object with the same keys as the current blueprint: concept (keep it), name, dark, bg, surface, surface2, fg, ink, accent, remapSurfaces, customCss, backdropHtml, needsHud, hudReason, hudHtml, customJs. No markdown fences, no commentary.
+BUILDER LIMITS: it restyles real page elements with CSS, adds one backdrop layer, and runs small JS. No new content, images or external files; system fonts only. The site's own text, links, search and items must stay readable and usable on a phone. No invented UI (docks, bottom bars, floating buttons, labels, captions) unless the user asked for controls.
 
+OUTPUT: ONLY one JSON object, under 170 words in total. Every value must be concrete (hex colours, named shapes, real behaviours). Vague words like "modern", "futuristic", "sleek" or "immersive" are not decisions.
+{
+  "considered": ["3 alternative worlds, max 8 words each (for you; the builder never sees them)"],
+  "idea": "one sentence: what this page IS",
+  "signature": "the one memorable visual or interaction, max 25 words",
+  "palette": "4 or 5 colours as hex, each with its job",
+  "type": "type voice using system font stacks, max 12 words",
+  "surface": "edges, material, depth, texture, max 20 words",
+  "layout": "how content is arranged and how that breaks the usual grid, max 25 words",
+  "rules": "how each of these behaves in this world: header, search, headings, repeated items or cards, links, buttons, images; max 45 words",
+  "fingerprint": "max 6 words: type voice, palette family, shape language, layout idea"
+}
 """.trimIndent()
 
     private val UI_SYNTHESIS_SYSTEM_PROMPT = """
-You are a fearless, original UI designer inside an Android web browser. The user describes how they want a website to look, feel or behave, and you redesign the LIVE page by writing CSS, an optional backdrop layer, and optional JS. Every redesign you produce must look like it came from a different designer with a different idea. Repetition is the failure mode to avoid.
+You are the front-end builder inside an Android web browser. An art director wrote DESIGN DIRECTIONS for how a live website should look. Implement them as CSS, an optional backdrop and optional JS. The directions are the design: follow them literally and make each part visibly present (palette, type, surface, layout, rules, signature). Do not substitute your own taste.
 
-RUNTIME FACTS (the only technical constraints):
-1. The browser tags real DOM elements so your CSS can target any website. Selector form: `html body [data-mydes="X"]`
-   header (site header) | nav | search (search form) | main | grid (feed/list container) | card (item/result/article) | title | heading | price | btn | field (inputs/selects) | media (images) | aside | footer
-   Tags can be missing on some pages (a Wikipedia main page has few cards). Also style plain tags (h1-h3, p, a, ul, table, img, section, figure) when that serves the design.
-2. CSS variables on :root: --m-bg --m-surface --m-surface2 --m-fg --m-ink --m-accent, and live motion variables --m-rx, --m-ry (deg), --m-scroll (px). Using them is optional.
-3. Layers:
-   - backdropHtml goes inside #__mydes_backdrop (position:fixed; inset:0; pointer-events:none; z-index:0). It is the world behind the content: SVG, CSS shapes, canvas.
-   - hudHtml goes inside #__mydes_hud (position:fixed; inset:0; pointer-events:none; children get pointer-events:auto). OPT-IN ONLY, see HUD POLICY.
-   - customJs runs as (MydesBridge, T). Available: MydesBridge.enable3DTilt(n), focusSearch(), proxySearch(q), proxyClick(selector), zoom(+/-0.15), speakPage(), onCleanup(fn). Anything you start with requestAnimationFrame, setInterval or addEventListener MUST be stopped by a function registered with MydesBridge.onCleanup(fn), because the theme can be replaced live.
-4. No external resources: no remote fonts, images or scripts. Use system font stacks, CSS, inline SVG and data URIs.
+RUNTIME
+- Real elements carry data-mydes="header|nav|search|main|grid|card|title|heading|price|btn|field|media|aside|footer". Select with `html body [data-mydes="X"]`. Roles are hints, not guarantees: the page's main repeating items may NOT be tagged `card`. The outline lists roleCounts, roleSamples and repeatedItems (real tag.class selectors). Whenever the directions talk about items, cards or results, style those real selectors too. Also style standard tags (h1-h3, p, a, ul, li, table, figure, img).
+- :root variables: --m-bg --m-surface --m-surface2 --m-fg --m-ink --m-accent, and motion variables --m-rx --m-ry (deg) --m-scroll (px).
+- backdropHtml is a scene drawn with inline SVG, CSS or one canvas. It sits behind all page content. The runtime clears full-screen opaque page wrappers so it shows through.
+- customJs runs as (MydesBridge, T). Available: enable3DTilt(n), focusSearch(), proxySearch(q), proxyClick(selector), zoom(+/-0.15), speakPage(), onCleanup(fn). Stop anything you start (requestAnimationFrame, setInterval, listeners) with onCleanup(fn).
+- No external resources: system fonts, CSS, inline SVG and data URIs only.
 
-HARD RULES (these protect the page; they say nothing about style):
-- Never hide, remove or make unusable [data-mydes="main"], [data-mydes="card"] or [data-mydes="search"]. The real page stays interactive.
-- Legibility is mandatory. Whenever you set a background on an element, also set `color` on it and make links (a, a:visited), headings, spans and list items inside it readable on that background (contrast at least 4.5:1). Never leave the site's default dark text on your dark surface, or light text on your light one.
-- Tap targets stay at least 40px tall. Do not let fixed or sticky elements cover more than about 15% of the screen height.
-- Performance on a phone: at most one canvas, at most ~120 animated particles, animate transform/opacity only, and respect prefers-reduced-motion.
-- Do not rely on exact class names of the site unless you are sure they exist; prefer the data-mydes tags and standard elements.
+HARD RULES
+- Never hide or break main, card or search. The page stays interactive.
+- TEXT COLOUR: never set `color` on generic tags (p, span, a, div, h1-h3) unless the same rule also sets the background behind them. A surface you style (card, header, item) sets its own background and `color` together and its descendants inherit; everything else inherits --m-fg from the page. All text, including links and text inside items that are not tagged `card`, must stay readable (4.5:1) on whatever is really behind it.
+- No invented text: no ::before or ::after content containing words. Icons and bullets are fine.
+- Style specific roles. Do not blanket-reset div, section or article.
+- Buttons: the btn role includes icon-only buttons (logo, menus). Do not force one filled box on all of them; keep glyphs readable.
+- Tap targets at least 40px. Fixed or sticky elements stay under 15% of the screen height.
+- Phone performance: at most one canvas, about 120 particles, animate transform and opacity only, honour prefers-reduced-motion.
 
-CREATIVE PROCESS (follow in this order):
-1. CONCEPT. Before any code, write the `concept` field: one concrete sentence describing what this page IS in the world the user asked for, built from the user's subject and this site's actual content. "Dark theme with glowing cards" is not a concept. Something with a specific physical or cultural idea is.
-2. RESTRUCTURE, DON'T JUST RECOLOUR. Decide how content is arranged and read: layout geometry, shape language, scale and density, type voice, material, how lists/links/media/headings behave, and how the header and search look. Change at least four of those. Let the concept decide `dark`; light designs are as valid as dark ones.
-3. ONE STRONG IDEA. Prefer one memorable, well-executed idea over many stacked effects. If a backdrop does not add to the concept, return an empty string. Draw backdrops specifically (an actual scene, pattern or structure from the concept), not generic gradient blobs.
-4. ORIGINALITY CHECK. Ask yourself if someone could guess your CSS from the last redesign you would write for any similar request. If yes, throw the idea away and pick a different one. You may receive a CREATIVE LENS (a provocation to bend or blend) and a list of RECENT DESIGNS. Treat the recent list as a blacklist for layout, shape language, palette logic and structure.
+HUD: default needsHud false, hudHtml "", hudReason "". A themed look is never a reason for a HUD. Only if the user explicitly asked for controls, or an accessibility need cannot be met by restyling, add a few plainly labelled controls that do something useful on THIS site through MydesBridge, and explain why in hudReason.
 
-DEFAULTS TO AVOID (these are the habits that make output feel templated; use one only when the request literally demands it):
-- Framing titles or hero text as banners, signs, tickets, plaques, labelled placards or boxes. Do not inject invented labels, captions or taglines with ::before/::after; text on the page should be the site's own.
-- The same rounded dark-glass card with a neon border, blur and glow, repeated on everything.
-- Giving every card an identical tilt or identical treatment. Vary scale, rhythm and emphasis between elements.
-- Navy + cyan/amber neon palettes, and Space Grotesk/Orbitron style type, as a reflex.
-- Radial-gradient circles as stand-ins for objects.
-- Any extra UI that the site does not already have (docks, bottom bars, floating buttons, footers).
+If no directions are given, first decide a specific original concept yourself (a world, material or process, not a colour scheme), build it, and fill `concept` and `fingerprint`.
 
-HUD POLICY:
-- Default: needsHud false, hudHtml "", hudReason "". The vast majority of requests need no HUD. A themed look is never a reason for one.
-- Set needsHud true only if the user explicitly asks for controls, a toolbar or dock, or an assistive need (for example easy reading, voice, bigger text for someone with low tech skill) truly cannot be met by restyling alone.
-- If you do add a HUD, tailor it to the concept and the user's need: only controls that do something useful on THIS site through MydesBridge, plainly labelled, as few as possible. Explain why in hudReason. Never reuse a generic "search / audio / top" trio.
-
-ACCESSIBILITY REQUESTS (low vision, elderly user, simplicity, calm, focus, etc.): the same creative freedom applies, but clarity wins over spectacle. Cut clutter, enlarge text and targets, increase contrast, and still find an identity for the design instead of falling back on a stock high-contrast template.
-
-OUTPUT FORMAT:
-Return ONLY one valid JSON object (no markdown fences, no commentary). Write `concept` FIRST so the idea comes before the code:
+OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
 {
-  "concept": "one concrete sentence: the idea this page embodies",
   "name": "short title",
   "dark": true or false,
-  "bg": "#rrggbb",
-  "surface": "#rrggbb",
-  "surface2": "#rrggbb",
-  "fg": "#rrggbb",
-  "ink": "#rrggbb",
-  "accent": "#rrggbb",
-  "remapSurfaces": true or false (false if your CSS styles surfaces itself, e.g. translucent or custom backgrounds),
-  "customCss": "complete CSS targeting [data-mydes=...] and standard tags, using !important where needed",
-  "backdropHtml": "HTML/SVG/canvas string for the backdrop, or empty string",
+  "bg": "#rrggbb", "surface": "#rrggbb", "surface2": "#rrggbb", "fg": "#rrggbb", "ink": "#rrggbb", "accent": "#rrggbb",
+  "remapSurfaces": true or false (false if your CSS sets surface colours itself),
+  "customCss": "complete CSS, using !important where needed",
+  "backdropHtml": "SVG/HTML/canvas string, or empty string",
   "needsHud": false,
   "hudReason": "",
   "hudHtml": "",
-  "customJs": "JS using MydesBridge and T, or empty string"
+  "customJs": "JS using MydesBridge and T, or empty string",
+  "concept": "(only when no directions were given) one sentence",
+  "fingerprint": "(only when no directions were given) max 6 words"
 }
-
 """.trimIndent()
 
     // ───── Networking Helpers ─────
