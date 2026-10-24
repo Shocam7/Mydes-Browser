@@ -1013,7 +1013,13 @@ class GeminiStylerService {
             )
         )
 
-        val requestJson = try { requestAdapter.toJson(buildReq(true)).take(4_000) } catch (_: Exception) { "(unserializable)" }
+        // What the log sheet shows: the mode and the actual per-request input (lens, recent-design list, current
+        // blueprint for reviews), not the static system prompt, which used to eat the whole 4000-char budget.
+        val requestJson = buildString {
+            appendLine(if (isReview) "MODE: review pass" else "MODE: first generation")
+            append(userContextText)
+            if (!screenshotBase64.isNullOrBlank()) appendLine("[screenshot attached, ${screenshotBase64.length / 1024} KB base64]")
+        }.take(12_000)
 
         try {
             val response = try {
