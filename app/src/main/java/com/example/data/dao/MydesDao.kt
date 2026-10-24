@@ -47,4 +47,23 @@ interface MydesDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertDomainColor(domainColor: DomainColorEntity)
+
+    // Generated Themes & Screenshots
+    @Query("SELECT * FROM generated_themes WHERE domain = :domain ORDER BY createdAt DESC")
+    fun getGeneratedThemesForDomain(domain: String): Flow<List<com.example.data.model.GeneratedThemeEntity>>
+
+    @Query("SELECT * FROM generated_themes ORDER BY createdAt DESC")
+    fun getAllGeneratedThemes(): Flow<List<com.example.data.model.GeneratedThemeEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertGeneratedTheme(theme: com.example.data.model.GeneratedThemeEntity): Long
+
+    @androidx.room.Update
+    suspend fun updateGeneratedTheme(theme: com.example.data.model.GeneratedThemeEntity)
+
+    @Delete
+    suspend fun deleteGeneratedTheme(theme: com.example.data.model.GeneratedThemeEntity)
+
+    @Query("DELETE FROM generated_themes WHERE id = :id")
+    suspend fun deleteGeneratedThemeById(id: Long)
 }

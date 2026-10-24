@@ -15,15 +15,19 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.data.api.GeminiStylerService
 import com.example.data.model.BookmarkEntity
+import com.example.data.model.GeneratedThemeEntity
 import com.example.data.model.HistoryEntity
 import com.example.data.repository.BrowserRepository
 import com.example.data.repository.WebsiteColorRepository
 import com.example.ui.model.TabItem
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -145,6 +149,15 @@ class BrowserViewModel(
         domain.isNotBlank() && themes.containsKey(domain)
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val previousGenerationsForCurrentDomain: StateFlow<List<GeneratedThemeEntity>> = activeTab
+        .map { extractDomain(it?.url ?: "") }
+        .flatMapLatest { domain ->
+            if (domain.isBlank()) flowOf(emptyList())
+            else browserRepository.getGeneratedThemesForDomain(domain)
+        }
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
     private var backgroundAdaptationJob: kotlinx.coroutines.Job? = null
     private var lastAdaptedUrl: String = ""
 
@@ -166,6 +179,32 @@ class BrowserViewModel(
 
     fun closeAiStylerPill() {
         _isAiStylerPillVisible.value = false
+    }
+
+    fun applySavedTheme(theme: GeneratedThemeEntity) {
+        val tab = activeTab.value ?: return
+        val domain = theme.domain
+        if (domain.isBlank()) return
+
+        val websiteTheme = WebsiteTheme(
+            domain = domain,
+            prompt = theme.prompt,
+            baseScript = theme.script,
+            pageScripts = mapOf(tab.url to theme.script)
+        )
+        _websiteThemes.value = _websiteThemes.value + (domain to websiteTheme)
+        _pendingUserScriptToInject.value = theme.script
+        Toast.makeText(getApplication(), "Applied: ${theme.prompt}", Toast.LENGTH_SHORT).show()
+    }
+
+    fun deleteSavedTheme(theme: GeneratedThemeEntity) {
+        viewModelScope.launch {
+            theme.screenshotPath?.let { path ->
+                try { java.io.File(path).delete() } catch (_: Exception) {}
+            }
+            browserRepository.deleteGeneratedTheme(theme)
+            Toast.makeText(getApplication(), "Theme removed", Toast.LENGTH_SHORT).show()
+        }
     }
 
     fun applyAiStyle(prompt: String) {
@@ -195,38 +234,74 @@ class BrowserViewModel(
                 }
                 _pendingUserScriptToInject.value = script
 
-                // Feedback loop: take screenshot after render delay and optimize layout/selectors
+                // Save generated theme along with rendered screenshot to Room database
                 val wv = activeWebViewRef
-                if (wv != null) {
-                    kotlinx.coroutines.delay(800L)
-                    captureWebViewScreenshot(wv) { screenshotBase64 ->
-                        if (!screenshotBase64.isNullOrBlank()) {
-                            viewModelScope.launch {
-                                val width = wv.width.coerceAtLeast(1080)
-                                val height = wv.height.coerceAtLeast(1920)
-                                val optimizedResult = geminiStylerService.generateUserScriptWithFeedback(
-                                    context = getApplication(),
-                                    userPrompt = prompt,
-                                    websiteName = siteName,
-                                    websiteUrl = tab.url,
-                                    screenshotBase64 = screenshotBase64,
-                                    screenWidth = width,
-                                    screenHeight = height
+                if (wv != null && domain.isNotBlank()) {
+                    kotlinx.coroutines.delay(5000L)
+                    val bitmap = captureWebViewBitmap(wv)
+                    val screenshotPath = if (bitmap != null) saveScreenshotToFile(bitmap) else null
+                    val screenshotBase64 = if (bitmap != null) bitmapToBase64(bitmap) else null
+
+                    val initialThemeEntity = GeneratedThemeEntity(
+                        domain = domain,
+                        websiteUrl = tab.url,
+                        websiteTitle = siteName,
+                        prompt = prompt,
+                        themeName = prompt,
+                        script = script,
+                        screenshotPath = screenshotPath
+                    )
+                    val insertedId = browserRepository.saveGeneratedTheme(initialThemeEntity)
+
+                    // Optional feedback loop for layout optimization
+                    if (!screenshotBase64.isNullOrBlank()) {
+                        val width = wv.width.coerceAtLeast(1080)
+                        val height = wv.height.coerceAtLeast(1920)
+                        val optimizedResult = geminiStylerService.generateUserScriptWithFeedback(
+                            context = getApplication(),
+                            userPrompt = prompt,
+                            websiteName = siteName,
+                            websiteUrl = tab.url,
+                            screenshotBase64 = screenshotBase64,
+                            screenWidth = width,
+                            screenHeight = height
+                        )
+                        optimizedResult.onSuccess { optScript ->
+                            val currentTheme = _websiteThemes.value[domain]
+                            if (currentTheme != null) {
+                                val updatedTheme = currentTheme.copy(
+                                    baseScript = optScript,
+                                    pageScripts = currentTheme.pageScripts + (tab.url to optScript)
                                 )
-                                optimizedResult.onSuccess { optScript ->
-                                    val currentTheme = _websiteThemes.value[domain]
-                                    if (currentTheme != null) {
-                                        val updatedTheme = currentTheme.copy(
-                                            baseScript = optScript,
-                                            pageScripts = currentTheme.pageScripts + (tab.url to optScript)
-                                        )
-                                        _websiteThemes.value = _websiteThemes.value + (domain to updatedTheme)
-                                    }
-                                    _pendingUserScriptToInject.value = optScript
-                                }
+                                _websiteThemes.value = _websiteThemes.value + (domain to updatedTheme)
                             }
+                            _pendingUserScriptToInject.value = optScript
+
+                            // Update persisted theme record with optimized script and updated screenshot
+                            kotlinx.coroutines.delay(5000L)
+                            val updatedBitmap = captureWebViewBitmap(wv)
+                            val updatedPath = if (updatedBitmap != null) saveScreenshotToFile(updatedBitmap) else screenshotPath
+                            browserRepository.updateGeneratedTheme(
+                                initialThemeEntity.copy(
+                                    id = insertedId,
+                                    script = optScript,
+                                    screenshotPath = updatedPath
+                                )
+                            )
                         }
                     }
+                } else if (domain.isNotBlank()) {
+                    // Fallback save even if WebView reference wasn't ready
+                    val fallbackTheme = GeneratedThemeEntity(
+                        domain = domain,
+                        websiteUrl = tab.url,
+                        websiteTitle = siteName,
+                        prompt = prompt,
+                        themeName = prompt,
+                        script = script,
+                        screenshotPath = null
+                    )
+                    browserRepository.saveGeneratedTheme(fallbackTheme)
                 }
             }.onFailure { err ->
                 _aiStylerErrorMessage.value = err.message ?: "Failed to generate styling."
@@ -240,20 +315,48 @@ class BrowserViewModel(
         activeWebViewRef = webView
     }
 
-    private fun captureWebViewScreenshot(webView: android.webkit.WebView, onCaptured: (String?) -> Unit) {
-        try {
+    private fun captureWebViewBitmap(webView: android.webkit.WebView): android.graphics.Bitmap? {
+        return try {
             val width = if (webView.width > 0) webView.width else 1080
             val height = if (webView.height > 0) webView.height else 1920
             val bitmap = android.graphics.Bitmap.createBitmap(width, height, android.graphics.Bitmap.Config.ARGB_8888)
             val canvas = android.graphics.Canvas(bitmap)
             webView.draw(canvas)
-            val outputStream = java.io.ByteArrayOutputStream()
-            bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 75, outputStream)
-            val byteArray = outputStream.toByteArray()
-            val base64 = android.util.Base64.encodeToString(byteArray, android.util.Base64.NO_WRAP)
-            bitmap.recycle()
-            onCaptured(base64)
+            bitmap
         } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun saveScreenshotToFile(bitmap: android.graphics.Bitmap): String? {
+        return try {
+            val dir = java.io.File(getApplication<Application>().filesDir, "theme_screenshots")
+            if (!dir.exists()) dir.mkdirs()
+            val fileName = "theme_${System.currentTimeMillis()}_${java.util.UUID.randomUUID().toString().take(6)}.jpg"
+            val file = java.io.File(dir, fileName)
+            java.io.FileOutputStream(file).use { out ->
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+            }
+            file.absolutePath
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun bitmapToBase64(bitmap: android.graphics.Bitmap): String {
+        val outputStream = java.io.ByteArrayOutputStream()
+        bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 75, outputStream)
+        val byteArray = outputStream.toByteArray()
+        return android.util.Base64.encodeToString(byteArray, android.util.Base64.NO_WRAP)
+    }
+
+    private fun captureWebViewScreenshot(webView: android.webkit.WebView, onCaptured: (String?) -> Unit) {
+        val bitmap = captureWebViewBitmap(webView)
+        if (bitmap != null) {
+            val b64 = bitmapToBase64(bitmap)
+            bitmap.recycle()
+            onCaptured(b64)
+        } else {
             onCaptured(null)
         }
     }

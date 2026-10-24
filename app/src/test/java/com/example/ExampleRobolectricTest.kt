@@ -18,4 +18,12 @@ class ExampleRobolectricTest {
     val appName = context.getString(R.string.app_name)
     assertEquals("Mydes Browser", appName)
   }
+
+  @Test
+  fun `test domain extraction with Android Uri`() {
+    val uri = android.net.Uri.parse("https://www.example.com/some/path?query=1")
+    val host = uri.host?.lowercase() ?: ""
+    val domain = if (host.startsWith("www.")) host.removePrefix("www.") else host
+    assertEquals("example.com", domain)
+  }
 }

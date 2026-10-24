@@ -25,6 +25,19 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        // Hardware acceleration flag & high refresh rate (90Hz/120Hz) matching Chrome browser
+        window.setFlags(
+            android.view.WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+            android.view.WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+        )
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            display?.supportedModes?.maxByOrNull { it.refreshRate }?.let { maxMode ->
+                window.attributes = window.attributes.apply {
+                    preferredDisplayModeId = maxMode.modeId
+                }
+            }
+        }
+
         val database = MydesDatabase.getInstance(applicationContext)
         val browserRepository = BrowserRepository(database.mydesDao())
         val websiteColorRepository = WebsiteColorRepository(database.mydesDao(), lifecycleScope)

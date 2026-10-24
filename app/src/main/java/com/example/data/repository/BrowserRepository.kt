@@ -32,4 +32,20 @@ class BrowserRepository(private val mydesDao: MydesDao) {
     suspend fun clearHistory() {
         mydesDao.clearAllHistory()
     }
+
+    // Generated Themes
+    fun getGeneratedThemesForDomain(domain: String): Flow<List<com.example.data.model.GeneratedThemeEntity>> =
+        mydesDao.getGeneratedThemesForDomain(domain)
+
+    suspend fun saveGeneratedTheme(theme: com.example.data.model.GeneratedThemeEntity): Long =
+        mydesDao.insertGeneratedTheme(theme)
+
+    suspend fun updateGeneratedTheme(theme: com.example.data.model.GeneratedThemeEntity) =
+        mydesDao.updateGeneratedTheme(theme)
+
+    suspend fun deleteGeneratedTheme(theme: com.example.data.model.GeneratedThemeEntity) =
+        mydesDao.deleteGeneratedTheme(theme)
+
+    suspend fun deleteGeneratedThemeById(id: Long) =
+        mydesDao.deleteGeneratedThemeById(id)
 }

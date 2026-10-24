@@ -1,12 +1,7 @@
 package com.example.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -22,11 +17,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -36,8 +34,10 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -53,8 +53,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
@@ -62,15 +64,21 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
+import com.example.data.model.GeneratedThemeEntity
 import kotlinx.coroutines.delay
+import java.io.File
 
 /**
  * Minimalistic pill-based text bar that swifts out at the bottom
  * when clicking the brush icon.
  *
- * Prompts Gemini to write a user-script for custom website design.
+ * Displays a carousel of previous theme generations for this website along with
+ * their screenshots, allowing instantaneous re-application to save AI inference,
+ * plus an input bar to generate new 3D/imaginative styles.
  */
 @Composable
 fun AiStylerPillBar(
@@ -79,7 +87,11 @@ fun AiStylerPillBar(
     isLoading: Boolean,
     isStyleApplied: Boolean,
     errorMessage: String?,
+    previousGenerations: List<GeneratedThemeEntity> = emptyList(),
+    currentAppliedPrompt: String? = null,
     onApplyStyle: (prompt: String) -> Unit,
+    onApplySavedTheme: (GeneratedThemeEntity) -> Unit = {},
+    onDeleteSavedTheme: (GeneratedThemeEntity) -> Unit = {},
     onResetStyle: () -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
@@ -142,10 +154,21 @@ fun AiStylerPillBar(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
+                .padding(horizontal = 14.dp, vertical = 6.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Suggestion chips row
+            // 1. CAROUSEL OF PREVIOUS GENERATIONS FOR THIS WEBSITE
+            if (previousGenerations.isNotEmpty()) {
+                PreviousGenerationsSection(
+                    generations = previousGenerations,
+                    currentAppliedPrompt = currentAppliedPrompt,
+                    onApply = onApplySavedTheme,
+                    onDelete = onDeleteSavedTheme
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+            }
+
+            // 2. Suggestion chips row
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -195,7 +218,7 @@ fun AiStylerPillBar(
                 }
             }
 
-            // Main Pill Bar
+            // 3. Main Pill Bar for New Prompt Input
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -328,6 +351,272 @@ fun AiStylerPillBar(
                 )
             }
         }
+    }
+}
+
+/**
+ * Horizontal Carousel displaying saved designs with screenshots for the current website.
+ */
+@Composable
+private fun PreviousGenerationsSection(
+    generations: List<GeneratedThemeEntity>,
+    currentAppliedPrompt: String?,
+    onApply: (GeneratedThemeEntity) -> Unit,
+    onDelete: (GeneratedThemeEntity) -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .shadow(10.dp, RoundedCornerShape(24.dp))
+            .clip(RoundedCornerShape(24.dp))
+            .background(Color(0xFF1E2024))
+            .border(1.dp, Color(0xFF33373F), RoundedCornerShape(24.dp))
+            .padding(vertical = 12.dp)
+            .testTag("previous_themes_carousel_container")
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            // Header Row
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.History,
+                        contentDescription = null,
+                        tint = Color(0xFFF6C343),
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Saved Designs",
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFF32363E))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = "${generations.size}",
+                            color = Color(0xFFD0D3DA),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+
+                Text(
+                    text = "Tap to apply (saves AI inference)",
+                    color = Color(0xFF9EACB9),
+                    fontSize = 11.sp
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Carousel List
+            LazyRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("previous_themes_carousel"),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp)
+            ) {
+                items(generations, key = { it.id }) { theme ->
+                    val isActive = currentAppliedPrompt == theme.prompt
+
+                    ThemeCarouselCard(
+                        theme = theme,
+                        isActive = isActive,
+                        onApply = { onApply(theme) },
+                        onDelete = { onDelete(theme) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ThemeCarouselCard(
+    theme: GeneratedThemeEntity,
+    isActive: Boolean,
+    onApply: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val screenshotFile = remember(theme.screenshotPath) {
+        if (!theme.screenshotPath.isNullOrBlank()) File(theme.screenshotPath) else null
+    }
+
+    Box(
+        modifier = Modifier
+            .width(160.dp)
+            .height(115.dp)
+            .shadow(6.dp, RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(16.dp))
+            .background(Color(0xFF272A30))
+            .border(
+                width = if (isActive) 2.dp else 1.dp,
+                color = if (isActive) Color(0xFFF6C343) else Color(0xFF3F444E),
+                shape = RoundedCornerShape(16.dp)
+            )
+            .clickable(onClick = onApply)
+            .semantics { contentDescription = "Saved design: ${theme.prompt}" }
+    ) {
+        // Screenshot Preview Image or Fallback Gradient
+        if (screenshotFile != null && screenshotFile.exists()) {
+            AsyncImage(
+                model = screenshotFile,
+                contentDescription = "Theme screenshot preview",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.linearGradient(
+                            listOf(Color(0xFF2C3E50), Color(0xFF000000))
+                        )
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.AutoAwesome,
+                    contentDescription = null,
+                    tint = Color(0xFFF6C343).copy(alpha = 0.5f),
+                    modifier = Modifier.size(32.dp)
+                )
+            }
+        }
+
+        // Dark gradient scrim overlay on bottom for high contrast readability
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color.Black.copy(alpha = 0.4f),
+                            Color.Transparent,
+                            Color.Black.copy(alpha = 0.85f)
+                        )
+                    )
+                )
+        )
+
+        // Top badges row: Status (Active / Apply) & Delete button
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (isActive) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFF2E7D32))
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Check,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(10.dp)
+                        )
+                        Spacer(modifier = Modifier.width(3.dp))
+                        Text(
+                            text = "ACTIVE",
+                            color = Color.White,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFF1E2024).copy(alpha = 0.85f))
+                        .border(0.5.dp, Color(0xFFF6C343), RoundedCornerShape(10.dp))
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = "APPLY",
+                        color = Color(0xFFF6C343),
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            // Delete generation button
+            Box(
+                modifier = Modifier
+                    .size(22.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.6f))
+                    .clickable(onClick = onDelete),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.DeleteOutline,
+                    contentDescription = "Delete saved theme",
+                    tint = Color(0xFFE57373),
+                    modifier = Modifier.size(13.dp)
+                )
+            }
+        }
+
+        // Bottom Title & Time
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 6.dp)
+        ) {
+            Text(
+                text = theme.prompt,
+                color = Color.White,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = formatTimeAgo(theme.createdAt),
+                color = Color(0xFFCFD5DE),
+                fontSize = 9.sp
+            )
+        }
+    }
+}
+
+private fun formatTimeAgo(timestamp: Long): String {
+    val diff = System.currentTimeMillis() - timestamp
+    val seconds = diff / 1000
+    val minutes = seconds / 60
+    val hours = minutes / 60
+    val days = hours / 24
+    return when {
+        minutes < 1 -> "Just now"
+        minutes < 60 -> "${minutes}m ago"
+        hours < 24 -> "${hours}h ago"
+        days < 7 -> "${days}d ago"
+        else -> "Earlier"
     }
 }
 

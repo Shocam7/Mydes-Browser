@@ -103,6 +103,8 @@ fun BrowserScreen(
     val pendingUserScriptToInject by viewModel.pendingUserScriptToInject.collectAsState()
     val isCustomStyleApplied by viewModel.isCustomStyleApplied.collectAsState()
     val isThemeUpdatingInBackground by viewModel.isThemeUpdatingInBackground.collectAsState()
+    val previousGenerations by viewModel.previousGenerationsForCurrentDomain.collectAsState()
+    val websiteThemes by viewModel.websiteThemes.collectAsState()
 
     var activeWebView by remember { mutableStateOf<WebView?>(null) }
 
@@ -418,13 +420,20 @@ fun BrowserScreen(
         )
 
         // 8. AI Website Styler Pill Bar (swifts out at bottom on clicking brush icon)
+        val currentDomain = remember(currentTab.url) { viewModel.extractDomain(currentTab.url) }
+        val currentAppliedPrompt = websiteThemes[currentDomain]?.prompt
+
         AiStylerPillBar(
             visible = isAiStylerPillVisible,
             websiteName = currentTab.title,
             isLoading = isAiStylerLoading,
             isStyleApplied = isCustomStyleApplied,
             errorMessage = aiStylerErrorMessage,
+            previousGenerations = previousGenerations,
+            currentAppliedPrompt = currentAppliedPrompt,
             onApplyStyle = { viewModel.applyAiStyle(it) },
+            onApplySavedTheme = { viewModel.applySavedTheme(it) },
+            onDeleteSavedTheme = { viewModel.deleteSavedTheme(it) },
             onResetStyle = { viewModel.resetCustomStyle() },
             onDismiss = { viewModel.closeAiStylerPill() },
             modifier = Modifier

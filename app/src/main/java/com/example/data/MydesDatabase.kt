@@ -9,9 +9,11 @@ import com.example.data.model.BookmarkEntity
 import com.example.data.model.DomainColorEntity
 import com.example.data.model.HistoryEntity
 
+import com.example.data.model.GeneratedThemeEntity
+
 @Database(
-    entities = [BookmarkEntity::class, HistoryEntity::class, DomainColorEntity::class],
-    version = 1,
+    entities = [BookmarkEntity::class, HistoryEntity::class, DomainColorEntity::class, GeneratedThemeEntity::class],
+    version = 2,
     exportSchema = false
 )
 abstract class MydesDatabase : RoomDatabase() {

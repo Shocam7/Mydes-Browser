@@ -95,13 +95,16 @@ fun WebContainer(
                 WebView(context).apply {
                     webViewRef = this
                     onWebViewCreated(this)
-                    setLayerType(View.LAYER_TYPE_HARDWARE, null)
+                    // LAYER_TYPE_NONE allows WebView's internal Chromium GPU compositor to draw
+                    // directly into the window surface without an expensive intermediate Android HardwareLayer,
+                    // achieving 60/120fps Chrome browser parity for 3D CSS transforms and WebGL.
+                    setLayerType(View.LAYER_TYPE_NONE, null)
 
                 settings.apply {
                     javaScriptEnabled = isJavaScriptEnabled
                     domStorageEnabled = true
                     loadsImagesAutomatically = true
-                    offscreenPreRaster = false
+                    offscreenPreRaster = true // Pre-rasterize offscreen tiles on GPU like Chrome
                     loadWithOverviewMode = true
                     useWideViewPort = true
                     builtInZoomControls = true

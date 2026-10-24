@@ -13,12 +13,16 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import android.widget.Toast
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -31,6 +35,7 @@ fun ApiRequestLogsSheet(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
     var logs by remember { mutableStateOf(emptyList<ApiLogEntry>()) }
     var selectedLog by remember { mutableStateOf<ApiLogEntry?>(null) }
 
@@ -87,12 +92,29 @@ fun ApiRequestLogsSheet(
                         }
                     }
 
-                    IconButton(onClick = onDismiss) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Close logs",
-                            tint = Color.White
-                        )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (logs.isNotEmpty()) {
+                            IconButton(onClick = {
+                                val allText = logs.joinToString("\n\n---\n\n") { log ->
+                                    "Timestamp: ${log.timestamp}\nType: ${log.type}\nWebsite: ${log.websiteName} (${log.websiteUrl})\nPrompt: ${log.userPrompt}\nSuccess: ${log.isSuccess}\nPayload:\n${log.requestPayload}\nResult:\n${log.responseResult}"
+                                }
+                                clipboardManager.setText(AnnotatedString(allText))
+                                Toast.makeText(context, "All logs copied to clipboard", Toast.LENGTH_SHORT).show()
+                            }) {
+                                Icon(
+                                    imageVector = Icons.Default.ContentCopy,
+                                    contentDescription = "Copy all logs",
+                                    tint = Color.White
+                                )
+                            }
+                        }
+                        IconButton(onClick = onDismiss) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Close logs",
+                                tint = Color.White
+                            )
+                        }
                     }
                 }
 
@@ -243,11 +265,33 @@ fun ApiRequestLogsSheet(
                     }
                 },
                 confirmButton = {
-                    Button(
-                        onClick = { selectedLog = null },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3F51B5))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("Close")
+                        Button(
+                            onClick = {
+                                val logText = "Timestamp: ${log.timestamp}\nType: ${log.type}\nWebsite: ${log.websiteName} (${log.websiteUrl})\nPrompt: ${log.userPrompt}\nSuccess: ${log.isSuccess}\nPayload:\n${log.requestPayload}\nResult:\n${log.responseResult}"
+                                clipboardManager.setText(AnnotatedString(logText))
+                                Toast.makeText(context, "Log copied to clipboard", Toast.LENGTH_SHORT).show()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3F51B5))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ContentCopy,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Copy")
+                        }
+
+                        Button(
+                            onClick = { selectedLog = null },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242))
+                        ) {
+                            Text("Close")
+                        }
                     }
                 }
             )
