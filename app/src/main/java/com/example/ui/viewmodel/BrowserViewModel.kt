@@ -14,6 +14,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.data.api.GeminiStylerService
+import com.example.data.api.MydesRuntime
+import com.example.data.api.evaluateJsSuspend
 import com.example.data.model.BookmarkEntity
 import com.example.data.model.GeneratedThemeEntity
 import com.example.data.model.HistoryEntity
@@ -219,7 +221,9 @@ class BrowserViewModel(
                 context = getApplication(),
                 userPrompt = prompt,
                 websiteName = siteName,
-                websiteUrl = tab.url
+                websiteUrl = tab.url,
+                // The user pressed "apply": always design something new instead of replaying the cached design
+                forceFresh = true
             )
             _isAiStylerLoading.value = false
             result.onSuccess { script ->
@@ -253,10 +257,15 @@ class BrowserViewModel(
                     )
                     val insertedId = browserRepository.saveGeneratedTheme(initialThemeEntity)
 
-                    // Optional feedback loop for layout optimization
+                    // Review pass: the service sees the first blueprint + a screenshot and only fixes real defects
                     if (!screenshotBase64.isNullOrBlank()) {
                         val width = wv.width.coerceAtLeast(1080)
                         val height = wv.height.coerceAtLeast(1920)
+                        val outline = try {
+                            wv.evaluateJsSuspend(MydesRuntime.OUTLINE_PROBE_JS)
+                        } catch (_: Exception) {
+                            null
+                        }
                         val optimizedResult = geminiStylerService.generateUserScriptWithFeedback(
                             context = getApplication(),
                             userPrompt = prompt,
@@ -264,9 +273,13 @@ class BrowserViewModel(
                             websiteUrl = tab.url,
                             screenshotBase64 = screenshotBase64,
                             screenWidth = width,
-                            screenHeight = height
+                            screenHeight = height,
+                            outlineJson = outline
                         )
                         optimizedResult.onSuccess { optScript ->
+                            // The user may have navigated to another site while the review was running
+                            if (extractDomain(activeTab.value?.url ?: "") != domain) return@onSuccess
+
                             val currentTheme = _websiteThemes.value[domain]
                             if (currentTheme != null) {
                                 val updatedTheme = currentTheme.copy(
@@ -343,9 +356,21 @@ class BrowserViewModel(
         }
     }
 
+    /** Downscales to at most 720px wide before encoding: a smaller upload makes the review call faster and cheaper. */
     private fun bitmapToBase64(bitmap: android.graphics.Bitmap): String {
+        val maxWidth = 720
+        val toEncode = if (bitmap.width > maxWidth) {
+            val ratio = maxWidth.toFloat() / bitmap.width
+            android.graphics.Bitmap.createScaledBitmap(
+                bitmap,
+                maxWidth,
+                (bitmap.height * ratio).toInt().coerceAtLeast(1),
+                true
+            )
+        } else bitmap
         val outputStream = java.io.ByteArrayOutputStream()
-        bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 75, outputStream)
+        toEncode.compress(android.graphics.Bitmap.CompressFormat.JPEG, 75, outputStream)
+        if (toEncode !== bitmap) toEncode.recycle()
         val byteArray = outputStream.toByteArray()
         return android.util.Base64.encodeToString(byteArray, android.util.Base64.NO_WRAP)
     }
@@ -370,6 +395,7 @@ class BrowserViewModel(
         _isThemeUpdatingInBackground.value = false
         _pendingUserScriptToInject.value = """
             (function() {
+                if (window.__mydes && window.__mydes.clear) { try { window.__mydes.clear(); } catch (e) {} }
                 var existing = document.getElementById('mydes-ai-styler-style');
                 if (existing) existing.remove();
             })();
