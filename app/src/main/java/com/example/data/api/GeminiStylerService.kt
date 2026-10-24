@@ -216,7 +216,7 @@ data class UIBlueprint(
                 j.optString("hudHtml").isNotBlank()
 
             return UIBlueprint(
-                id = sha1Hex("v$RUNTIME_VERSION|${prompt.trim().lowercase(Locale.US)}|${j.optString("customCss").take(120)}").take(12),
+                id = sha1Hex("v$RUNTIME_VERSION|${prompt.trim().lowercase(Locale.US)}|${j.optString("customCss")}|${j.optString("backdropHtml")}|${j.optString("hudHtml")}|${j.optString("customJs")}").take(12),
                 name = j.optString("name", prompt).take(50),
                 dark = dark,
                 bg = bg,
@@ -253,6 +253,7 @@ object MydesRuntime {
 
     private const val CORE = """
 if(window.__mydes && window.__mydes.id()===BP.id) return;
+if(window.__mydes && window.__mydes.clear){try{window.__mydes.clear();}catch(e){}}
 if(BP.skip && BP.skip.indexOf(location.hostname)>=0) return;
 
 var cfg = BP;
@@ -763,9 +764,9 @@ class ThemeStore(context: Context) {
     fun get(prompt: String, domain: String = "*"): UIBlueprint? =
         prefs.getString(key(prompt, domain), null)?.let { UIBlueprint.parse(it, prompt) }
 
-    fun put(prompt: String, blueprint: UIBlueprint, domain: String = "*") {
+    fun put(prompt: String, blueprint: UIBlueprint, domain: String = "*", remember: Boolean = true) {
         prefs.edit().putString(key(prompt, domain), blueprint.toJson()).apply()
-        pushConcept(blueprint)
+        if (remember) pushConcept(blueprint)
     }
 
     /** Last few design concepts across ALL sites/prompts. Fed back to the model so it moves away from them. */
@@ -817,14 +818,16 @@ class GeminiStylerService {
         context: Context,
         userPrompt: String,
         websiteName: String,
-        websiteUrl: String
+        websiteUrl: String,
+        forceFresh: Boolean = false
     ): Result<String> = synthesizeBlueprint(
         context = context,
         prompt = userPrompt,
         websiteName = websiteName,
         websiteUrl = websiteUrl,
         pageOutlineJson = null,
-        screenshotBase64 = null
+        screenshotBase64 = null,
+        forceFresh = forceFresh
     ).map { MydesRuntime.script(it) }
 
     suspend fun generateUserScriptWithFeedback(
@@ -834,13 +837,15 @@ class GeminiStylerService {
         websiteUrl: String,
         screenshotBase64: String?,
         screenWidth: Int,
-        screenHeight: Int
+        screenHeight: Int,
+        outlineJson: String? = null
     ): Result<String> = synthesizeBlueprint(
         context = context,
         prompt = userPrompt,
         websiteName = websiteName,
         websiteUrl = websiteUrl,
-        pageOutlineJson = "{\"viewport\":{\"w\":$screenWidth,\"h\":$screenHeight}}",
+        pageOutlineJson = outlineJson?.takeIf { it.isNotBlank() && it != "null" }
+            ?: "{\"viewport\":{\"w\":$screenWidth,\"h\":$screenHeight}}",
         screenshotBase64 = screenshotBase64
     ).map { MydesRuntime.script(it) }
 
@@ -961,7 +966,21 @@ class GeminiStylerService {
             return@withContext Result.failure(IllegalStateException("GEMINI_API_KEY is not set. Please set your API key in Settings."))
         }
 
-        val userContextText = buildString {
+        // REVIEW MODE: a screenshot plus an existing blueprint for this (prompt, domain) means "fix what you shipped",
+        // not "design again". No lens, no nonce, no recent-design blacklist, low temperature.
+        val previous = if (!screenshotBase64.isNullOrBlank() && !forceFresh) storeFor(context).get(cleanPrompt, domain) else null
+        val isReview = previous != null
+
+        val userContextText = if (isReview) buildString {
+            appendLine("REVIEW PASS")
+            appendLine("USER REQUEST: \"$cleanPrompt\"")
+            appendLine("TARGET WEBSITE: $websiteName ($websiteUrl)")
+            if (!pageOutlineJson.isNullOrBlank()) appendLine("LIVE DOM SEMANTIC OUTLINE: $pageOutlineJson")
+            appendLine("CURRENT BLUEPRINT (JSON):")
+            appendLine(previous!!.toJson())
+            appendLine("The attached screenshot is how the current blueprint renders right now.")
+            appendLine("Return the corrected complete blueprint JSON now.")
+        } else buildString {
             appendLine("USER REQUEST: \"$cleanPrompt\"")
             appendLine("TARGET WEBSITE: $websiteName ($websiteUrl)")
             if (!pageOutlineJson.isNullOrBlank()) {
@@ -985,10 +1004,10 @@ class GeminiStylerService {
 
         fun buildReq(jsonMode: Boolean) = GeminiRequest(
             contents = listOf(Content(parts = parts)),
-            systemInstruction = Content(listOf(Part(text = UI_SYNTHESIS_SYSTEM_PROMPT))),
+            systemInstruction = Content(listOf(Part(text = if (isReview) UI_REVIEW_SYSTEM_PROMPT else UI_SYNTHESIS_SYSTEM_PROMPT))),
             generationConfig = GenerationConfig(
-                temperature = 1.0f,
-                topP = 0.95f,
+                temperature = if (isReview) 0.4f else 1.0f,
+                topP = if (isReview) 0.9f else 0.95f,
                 maxOutputTokens = 8192,
                 responseMimeType = if (jsonMode) "application/json" else null
             )
@@ -1003,14 +1022,15 @@ class GeminiStylerService {
                 if (e.code() == 400) callGemini(buildReq(false), apiKey) else throw e
             }
             val raw = response.candidates?.firstOrNull()?.content?.parts?.mapNotNull { it.text }?.joinToString("").orEmpty()
-            val blueprint = UIBlueprint.parse(raw, cleanPrompt)
+            val parsed = UIBlueprint.parse(raw, cleanPrompt)
+            val blueprint = if (parsed != null && isReview && parsed.concept.isBlank()) parsed.copy(concept = previous!!.concept) else parsed
             if (blueprint == null) {
                 val err = "Model returned invalid UIBlueprint JSON. Raw start: ${raw.take(300)}"
                 ApiRequestLogger.logRequest(context, "synthesizeBlueprint", websiteName, websiteUrl, cleanPrompt, requestJson, err, false)
                 Result.failure(IllegalStateException(err))
             } else {
-                storeFor(context).put(cleanPrompt, blueprint, domain)
-                ApiRequestLogger.logRequest(context, "synthesizeBlueprint", websiteName, websiteUrl, cleanPrompt, requestJson, blueprint.toJson(), true)
+                storeFor(context).put(cleanPrompt, blueprint, domain, remember = !isReview)
+                ApiRequestLogger.logRequest(context, if (isReview) "reviewBlueprint" else "synthesizeBlueprint", websiteName, websiteUrl, cleanPrompt, requestJson, blueprint.toJson(), true)
                 Result.success(blueprint)
             }
         } catch (e: Exception) {
@@ -1019,6 +1039,32 @@ class GeminiStylerService {
             Result.failure(Exception(msg, e))
         }
     }
+
+    private val UI_REVIEW_SYSTEM_PROMPT = """
+You are the art director reviewing a live redesign of a website on an Android phone. A designer already produced the CURRENT BLUEPRINT (JSON) and the attached screenshot shows exactly how it renders now. Your job is to FIX it, not to redesign it.
+
+KEEP: the concept, palette logic, layout idea, typography voice, backdrop idea and overall personality. The user has already seen this design and should recognise it after your changes. Do not introduce a new theme, new decorative motifs or extra ornament.
+
+LOOK FOR AND FIX (only what is actually wrong in the screenshot):
+- Text that is hard to read: dark text on a dark surface, light on light, low contrast, links that vanish. When you set a background on an element, set `color` for it and its links, headings and spans explicitly.
+- Content clipped, overlapping, hidden under the fixed header, the status bar area or any fixed layer; horizontal overflow; elements pushed off screen.
+- Fixed or sticky elements taking too much of the screen.
+- Decoration that overwhelms the content: heavy frames, repeated boxes around every block, oversized glows, invented labels or text added with ::before/::after. Simplify these. Do not add more.
+- Tap targets smaller than 40px, or controls that are hard to find.
+- A backdrop that is invisible, misplaced, or fights the text.
+- Anything in the layout that looks broken compared with the user's request.
+
+If something already works, leave its CSS untouched. Make the smallest set of changes that resolves the real problems, but still return the COMPLETE blueprint (all fields), because it replaces the previous one.
+
+HUD: keep needsHud/hudHtml exactly as in the current blueprint, unless the HUD is covering content or is clearly irrelevant to the site, in which case remove it (needsHud false, hudHtml ""). Never add a HUD, footer, dock or bottom bar.
+
+JS: keep customJs unless it is broken. Anything started with requestAnimationFrame, setInterval or event listeners must be stopped by registering a function with MydesBridge.onCleanup(fn).
+
+Technical rules are unchanged: selectors use `html body [data-mydes="X"]` (header nav search main grid card title heading price btn field media aside footer) and standard tags; never hide or disable main, card or search; no external resources; phone-friendly performance.
+
+OUTPUT: ONLY one valid JSON object with the same keys as the current blueprint: concept (keep it), name, dark, bg, surface, surface2, fg, ink, accent, remapSurfaces, customCss, backdropHtml, needsHud, hudReason, hudHtml, customJs. No markdown fences, no commentary.
+
+""".trimIndent()
 
     private val UI_SYNTHESIS_SYSTEM_PROMPT = """
 You are a fearless, original UI designer inside an Android web browser. The user describes how they want a website to look, feel or behave, and you redesign the LIVE page by writing CSS, an optional backdrop layer, and optional JS. Every redesign you produce must look like it came from a different designer with a different idea. Repetition is the failure mode to avoid.
@@ -1031,7 +1077,7 @@ RUNTIME FACTS (the only technical constraints):
 3. Layers:
    - backdropHtml goes inside #__mydes_backdrop (position:fixed; inset:0; pointer-events:none; z-index:0). It is the world behind the content: SVG, CSS shapes, canvas.
    - hudHtml goes inside #__mydes_hud (position:fixed; inset:0; pointer-events:none; children get pointer-events:auto). OPT-IN ONLY, see HUD POLICY.
-   - customJs runs as (MydesBridge, T). Available: MydesBridge.enable3DTilt(n), focusSearch(), proxySearch(q), proxyClick(selector), zoom(+/-0.15), speakPage().
+   - customJs runs as (MydesBridge, T). Available: MydesBridge.enable3DTilt(n), focusSearch(), proxySearch(q), proxyClick(selector), zoom(+/-0.15), speakPage(), onCleanup(fn). Anything you start with requestAnimationFrame, setInterval or addEventListener MUST be stopped by a function registered with MydesBridge.onCleanup(fn), because the theme can be replaced live.
 4. No external resources: no remote fonts, images or scripts. Use system font stacks, CSS, inline SVG and data URIs.
 
 HARD RULES (these protect the page; they say nothing about style):
