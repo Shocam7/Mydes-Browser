@@ -34,19 +34,21 @@ import kotlin.coroutines.resume
 import kotlin.math.roundToInt
 
 /*
- * v4 - "Generative UI Synthesis Engine: Unbounded LLM Creativity + Safe DOM Execution"
+ * v6 - "Universal Generative UI Synthesis Engine"
  *
- * How it works:
- * 1. MydesRuntime tags the live webpage with semantic attributes (data-mydes="card|grid|btn|search|nav|price|media|...")
- *    and exposes MydesBridge (an API for safely triggering real clicks, searches, scrolling,TTS, and 3D tilt
- *    without detaching the website's own React/Vue/vanilla event listeners).
- * 2. Gemini receives the user's imaginative prompt (+ live DOM outline & optional screenshot) and generates a
- *    complete UIBlueprint:
- *      - Full custom CSS (3D perspectives, keyframe animations, spatial layouts, or ultra-clean accessible reflows)
- *      - Custom Backdrop HTML/SVG/Canvas (e.g., 3D space shuttle cockpit window, animated shaders, HUD frames)
- *      - Custom Interactive Overlay HTML (e.g., giant Grandma assistive controls, sci-fi telemetry bars)
- *      - Custom Sandbox JS (animations, 3D touch/scroll parallax, canvas rendering, and MydesBridge hooks)
- * 3. Contrast Guard & Anti-Breakage Watchdog ensure text stays readable and native clicks remain 100% functional.
+ * 1. Dual-Model Pipeline:
+ *    - CONCEPT_MODEL ("gemini-3.5-flash-lite"): Fast, high-creativity Art Director pass that outputs concrete
+ *      spatial, typographic, and CSS mechanic specifications.
+ *    - SYNTHESIS_MODEL ("gemini-3.8-flash"): High-precision coding pass that writes the actual CSS3, SVG/Canvas
+ *      backdrops, keyframe animations, and sandboxed JS.
+ * 2. Universal Geometry-Driven DOM Engine (Zero Site-Specific Hardcoding):
+ *    - Automatically detects composite parent containers vs. partial text columns via bounding-box geometry.
+ *    - Detects and neutralizes text overlays covering images/video via getComputedStyle(el).position.
+ *    - Automatically unclamps truncated text (-webkit-line-clamp, max-height, text-overflow) on any website.
+ * 3. Controlled Architecture Authority:
+ *    - "restyle" (Default): Pure DOM transformation, spatial CSS, and backdrop layers with zero invented widgets.
+ *    - "app_shell" (Opt-in): Triggered only when the creative direction or user prompt explicitly requires a
+ *      brand-new interactive interface, powered by MydesBridge.extractNodes() and MydesBridge.triggerNode(uid).
  */
 
 // ───────────────────────── Gemini wire models ─────────────────────────
@@ -139,14 +141,8 @@ object Hex {
 // ───────────────────── Generative UI Blueprint ─────────────────────
 
 /**
- * Unlike v3's static token list, UIBlueprint holds actual LLM-authored CSS, 3D/SVG/Canvas stage markup,
- * interactive assistive/creative HUD overlays, and custom JS choreography, backed by safe palette tokens
- * so the runtime's contrast guard keeps all text legible.
- */
-/**
- * Removes ::before/::after rules that inject readable words (e.g. content:"> SYS.RECORD"). Models like to bolt
- * invented captions/labels onto every card; the page's own text should be the only text. Icons, bullets and
- * attr() content are kept because they contain no 3+ letter word.
+ * Strips ::before/::after rules that inject readable words (e.g. content:"> SYS.RECORD").
+ * Icons, bullets and attr() content are preserved.
  */
 internal fun stripInventedLabels(css: String): String =
     css.replace(
@@ -170,6 +166,7 @@ data class UIBlueprint(
     val hudHtml: String,
     val customJs: String,
     val concept: String = "",
+    val architecture: String = "restyle", // "restyle" (default) or "app_shell"
     val needsHud: Boolean = false,
     val hudReason: String = "",
     val fingerprint: String = ""
@@ -177,6 +174,7 @@ data class UIBlueprint(
     fun toJson(): String = JSONObject()
         .put("concept", concept)
         .put("fingerprint", fingerprint)
+        .put("architecture", architecture)
         .put("needsHud", needsHud)
         .put("hudReason", hudReason)
         .put("id", id)
@@ -196,7 +194,7 @@ data class UIBlueprint(
         .toString()
 
     companion object {
-        const val RUNTIME_VERSION = 4
+        const val RUNTIME_VERSION = 6
 
         private fun jsonSlice(raw: String): String {
             var s = raw.trim()
@@ -208,7 +206,7 @@ data class UIBlueprint(
             return if (a >= 0 && b > a) s.substring(a, b + 1) else s
         }
 
-        fun parse(raw: String, prompt: String): UIBlueprint? {
+        fun parse(raw: String, prompt: String, allowedArchitecture: String = "restyle"): UIBlueprint? {
             val j = try { JSONObject(jsonSlice(raw)) } catch (_: Exception) { return null }
             val dark = j.optBoolean("dark", true)
             val white = "#ffffff"
@@ -224,7 +222,11 @@ data class UIBlueprint(
             }
             val ink = Hex.norm(j.optString("ink"), "#111215")
             val accent = Hex.norm(j.optString("accent"), if (dark) "#00e5ff" else "#0055ff")
-            val needsHud = j.optBoolean("needsHud", false) &&
+
+            // Strict HUD gatekeeping: only allow hudHtml when the Art Director explicitly approved "app_shell"
+            val isAppShellApproved = allowedArchitecture.equals("app_shell", ignoreCase = true)
+            val needsHud = isAppShellApproved &&
+                j.optBoolean("needsHud", false) &&
                 j.optString("hudReason").isNotBlank() &&
                 j.optString("hudHtml").isNotBlank()
 
@@ -241,11 +243,10 @@ data class UIBlueprint(
                 remapSurfaces = j.optBoolean("remapSurfaces", true),
                 customCss = stripInventedLabels(j.optString("customCss", "")),
                 backdropHtml = j.optString("backdropHtml", ""),
-                // The HUD is opt-in. If the model did not explicitly justify it, it is dropped here,
-                // so a stray footer/dock can never appear just because the model felt like adding one.
                 hudHtml = if (needsHud) j.optString("hudHtml", "") else "",
                 customJs = j.optString("customJs", ""),
                 concept = j.optString("concept", "").take(300),
+                architecture = if (isAppShellApproved) "app_shell" else "restyle",
                 needsHud = needsHud,
                 hudReason = j.optString("hudReason", "").take(200),
                 fingerprint = j.optString("fingerprint", "").take(120)
@@ -254,14 +255,13 @@ data class UIBlueprint(
     }
 }
 
-/** Compatibility alias so existing references to ThemeSpec in your project continue to compile seamlessly. */
 typealias ThemeSpec = UIBlueprint
 
 object SitePacks {
     val skipHosts = mutableSetOf("accounts.google.com")
 }
 
-// ───────────────────── Generative Runtime + MydesBridge ─────────────────────
+// ───────────────────── Universal Generative Runtime + MydesBridge ─────────────────────
 
 object MydesRuntime {
 
@@ -274,15 +274,92 @@ var cfg = BP;
 var changes=[], EB=new WeakMap(), done=new WeakSet(), jobs=[], draining=false;
 var tagDirty=true, lastTag=0, tagDelay=120, BG, FG, INK;
 var cleanupFns=[], mo=null;
+var nodeUidCounter=0;
 
 function hex(h){return {r:parseInt(h.substr(1,2),16),g:parseInt(h.substr(3,2),16),b:parseInt(h.substr(5,2),16),a:1};}
 function rgbStr(c){return 'rgb('+Math.round(c.r)+','+Math.round(c.g)+','+Math.round(c.b)+')';}
 function configure(){BG=hex(cfg.bg);FG=hex(cfg.fg);INK=hex(cfg.ink);}
 configure();
 
-/* ---------- 1. MydesBridge: Safe API for LLM-generated UIs to control the real website ---------- */
+/* ---------- 1. MydesBridge: Universal DOM Control & State-Safe Proxy API ---------- */
 window.MydesBridge = {
-  /* Clicks the first visible matching element on the real page without breaking React/Vue state */
+  /* Universal DOM scraper for custom app_shell architectures on any website */
+  extractNodes: function(customSelector) {
+    var sel = customSelector || '[data-mydes="item"], article, section > div, li, tr';
+    var nodes = document.querySelectorAll(sel);
+    var list = [];
+    for(var i=0; i<nodes.length && list.length<60; i++) {
+      var n = nodes[i];
+      if(n.closest('#__mydes_hud,#__mydes_backdrop,nav,header,footer')) continue;
+      var r = n.getBoundingClientRect();
+      if(r.width < 60 || r.height < 24) continue;
+      var txt = (n.textContent || '').replace(/\s+/g, ' ').trim();
+      if(txt.length < 6) continue;
+
+      var uid = n.getAttribute('data-mydes-uid');
+      if(!uid) {
+        uid = 'm-node-' + (++nodeUidCounter);
+        n.setAttribute('data-mydes-uid', uid);
+      }
+      var headingEl = n.querySelector('h1,h2,h3,h4,h5,h6,[data-mydes="heading"],[data-mydes="title"],strong,b,a[href]');
+      var imgEl = n.querySelector('img,picture img');
+      var vidEl = n.querySelector('video');
+      var linkEl = n.tagName === 'A' ? n : n.querySelector('a[href]');
+      var metaEl = n.querySelector('[data-mydes="meta"],[data-mydes="price"],time,small,sub,sup');
+
+      var titleText = (headingEl ? headingEl.textContent : txt.slice(0, 80)).replace(/\s+/g, ' ').trim();
+      var bodyText = txt.replace(titleText, '').trim().slice(0, 180);
+
+      list.push({
+        uid: uid,
+        title: titleText,
+        body: bodyText,
+        meta: metaEl ? metaEl.textContent.replace(/\s+/g, ' ').trim() : '',
+        img: imgEl ? (imgEl.currentSrc || imgEl.src || imgEl.getAttribute('data-src') || '') : '',
+        hasVideo: !!vidEl,
+        href: linkEl ? linkEl.href : ''
+      });
+    }
+    return list;
+  },
+
+  /* Alias for compatibility */
+  extractFeed: function(sel) { return window.MydesBridge.extractNodes(sel); },
+
+  /* Triggers native pointer/mouse/click events on the underlying live DOM node without breaking SPA state */
+  triggerNode: function(uid, subSelector) {
+    if(!uid) return false;
+    var el = document.querySelector('[data-mydes-uid="' + CSS.escape(uid) + '"]');
+    if(!el) return false;
+    var target = (subSelector ? el.querySelector(subSelector) : null) || el.querySelector('a[href],button,[role="button"],input') || el;
+    target.scrollIntoView({behavior:'smooth', block:'center'});
+    target.focus();
+    var opts = {bubbles: true, cancelable: true, view: window};
+    target.dispatchEvent(new PointerEvent('pointerdown', opts));
+    target.dispatchEvent(new MouseEvent('mousedown', opts));
+    target.dispatchEvent(new PointerEvent('pointerup', opts));
+    target.dispatchEvent(new MouseEvent('mouseup', opts));
+    target.click();
+    return true;
+  },
+
+  triggerItem: function(uid, subSelector) { return window.MydesBridge.triggerNode(uid, subSelector); },
+
+  /* Triggers infinite scrolling or pagination on the underlying page */
+  loadMore: function(onLoaded) {
+    var prevCount = document.body ? document.body.querySelectorAll('*').length : 0;
+    window.scrollTo({top: document.documentElement.scrollHeight, behavior: 'instant'});
+    var attempts = 0;
+    var check = setInterval(function() {
+      attempts++;
+      var curCount = document.body ? document.body.querySelectorAll('*').length : 0;
+      if(curCount > prevCount + 5 || attempts > 15) {
+        clearInterval(check);
+        if(typeof onLoaded === 'function') onLoaded(window.MydesBridge.extractNodes());
+      }
+    }, 200);
+  },
+
   proxyClick: function(sel) {
     var l = document.querySelectorAll(sel);
     for(var i=0; i<l.length; i++) {
@@ -298,10 +375,9 @@ window.MydesBridge = {
     }
     return false;
   },
-  /* Types into the website's real search bar and submits the search form */
+
   proxySearch: function(query) {
-    var inp = document.querySelector('input[type="search"],input[name="k"],input[name="q"],input[name="s"],input[name="query"],[data-mydes="search"] input');
-    if(!inp) inp = document.querySelector('input[type="text"]');
+    var inp = document.querySelector('input[type="search"],[role="search"] input,form input[type="text"],[data-mydes="search"] input,input[type="text"]');
     if(!inp) return false;
     inp.focus();
     var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
@@ -317,9 +393,9 @@ window.MydesBridge = {
     }
     return true;
   },
-  /* Focuses and scrolls to the real search input */
+
   focusSearch: function() {
-    var inp = document.querySelector('input[type="search"],input[name="k"],input[name="q"],[data-mydes="search"] input,input[type="text"]');
+    var inp = document.querySelector('input[type="search"],[role="search"] input,[data-mydes="search"] input,input[type="text"]');
     if(inp) {
       inp.scrollIntoView({behavior:'smooth', block:'center'});
       inp.focus();
@@ -328,21 +404,21 @@ window.MydesBridge = {
     }
     return false;
   },
-  /* Adjusts global page zoom smoothly (ideal for accessibility controls) */
+
   zoom: function(delta) {
     var cur = parseFloat(document.documentElement.getAttribute('data-m-zoom') || '1');
     var next = Math.min(1.8, Math.max(0.8, cur + delta));
     document.documentElement.setAttribute('data-m-zoom', String(next));
     document.documentElement.style.setProperty('font-size', Math.round(next * 100) + '%', 'important');
   },
-  /* Reads visible main content or headings aloud using Android WebView SpeechSynthesis */
+
   speakPage: function(customText) {
     try {
       if(!window.speechSynthesis) return;
       window.speechSynthesis.cancel();
       var txt = customText;
       if(!txt) {
-        var nodes = document.querySelectorAll('[data-mydes="title"],[data-mydes="heading"],[data-mydes="price"]');
+        var nodes = document.querySelectorAll('[data-mydes="title"],[data-mydes="heading"],p,h1,h2,h3');
         var arr = [];
         for(var i=0; i<nodes.length && arr.length<12; i++) {
           var t = (nodes[i].textContent||'').trim();
@@ -355,7 +431,7 @@ window.MydesBridge = {
       window.speechSynthesis.speak(u);
     } catch(e){}
   },
-  /* Registers a 3D tilt/parallax loop driven by touch & scroll that updates CSS variables --m-rx, --m-ry, --m-scroll */
+
   enable3DTilt: function(intensity) {
     var mult = typeof intensity === 'number' ? intensity : 1.0;
     var raf = 0, lastY = window.scrollY;
@@ -396,9 +472,36 @@ window.MydesBridge = {
   onCleanup: function(fn) { if(typeof fn === 'function') cleanupFns.push(fn); }
 };
 
-/* ---------- 2. Constructable / Injected Stylesheets ---------- */
+/* ---------- 2. Universal Normalization & Injected Stylesheets ---------- */
 var eStyle = null;
 function applySheets() {
+  /*
+   * Domain-Agnostic Normalization:
+   * 1. Unclamps any heading/title element or text block tagged with data-mydes-clamped so enlarged/custom
+   *    fonts never get sliced off by host line-clamps or fixed max-heights.
+   * 2. Neutralizes text overlays positioned on top of media (data-mydes-overlay="true") so styled titles
+   *    flow naturally below images/videos rather than covering them.
+   */
+  var universalSafetyCss =
+    '/* Universal Text Unclamping */\n' +
+    'html body [data-mydes="heading"], html body [data-mydes="title"], html body [data-mydes-clamped="true"],\n' +
+    'html body h1, html body h2, html body h3, html body h4 {\n' +
+    '  -webkit-line-clamp: unset !important; line-clamp: unset !important;\n' +
+    '  max-height: none !important; height: auto !important;\n' +
+    '  overflow: visible !important; text-overflow: unset !important;\n' +
+    '  white-space: normal !important;\n' +
+    '}\n' +
+    '/* Universal Media Overlay Separation */\n' +
+    'html body [data-mydes-overlay-parent="true"] {\n' +
+    '  display: flex !important; flex-direction: column !important; height: auto !important;\n' +
+    '}\n' +
+    'html body [data-mydes-overlay="true"] {\n' +
+    '  position: static !important; inset: auto !important;\n' +
+    '  width: 100% !important; height: auto !important;\n' +
+    '  max-height: none !important; box-sizing: border-box !important;\n' +
+    '  transform: none !important;\n' +
+    '}\n';
+
   var baseVars = ':root{--m-bg:'+cfg.bg+';--m-surface:'+cfg.surface+';--m-surface2:'+cfg.surface2+
     ';--m-fg:'+cfg.fg+';--m-ink:'+cfg.ink+';--m-accent:'+cfg.accent+';--m-rx:0deg;--m-ry:0deg;--m-scroll:0px;}\n' +
     'html{background-color:var(--m-bg)!important;color:var(--m-fg)!important;}\n' +
@@ -406,7 +509,8 @@ function applySheets() {
     '#__mydes_backdrop{position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none!important;z-index:-1;overflow:hidden;transform:translateZ(0);will-change:transform;}\n' +
     '#__mydes_hud{position:fixed;z-index:2147483640;pointer-events:none;inset:0;transform:translateZ(0);}\n' +
     '#__mydes_hud *{pointer-events:auto;}\n';
-  var fullCss = baseVars + '\n' + (cfg.customCss || '');
+
+  var fullCss = baseVars + '\n' + universalSafetyCss + '\n' + (cfg.customCss || '');
   var root = document.head || document.documentElement;
   if(!root) return;
   if(!eStyle || !eStyle.isConnected) {
@@ -417,7 +521,7 @@ function applySheets() {
   if(eStyle.textContent !== fullCss) eStyle.textContent = fullCss;
 }
 
-/* ---------- 3. Custom Stage Layers (3D Backdrop + Interactive HUD + Sandbox JS) ---------- */
+/* ---------- 3. Custom Stage Layers (Backdrop + HUD + Sandbox JS) ---------- */
 function mountLayers() {
   if(!document.body) return;
   var bd = document.getElementById('__mydes_backdrop');
@@ -456,101 +560,149 @@ function mountLayers() {
   }
 }
 
-/* ---------- 4. Semantic DOM Role Tagger ---------- */
+/* ---------- 4. Geometry-Driven Universal DOM Tagger ---------- */
 function each(sel,fn){var l=document.querySelectorAll(sel);for(var i=0;i<l.length;i++)fn(l[i]);}
 function put(e,r){if(e.getAttribute('data-mydes')!==r)e.setAttribute('data-mydes',r);}
 function putNew(e,r){if(!e.hasAttribute('data-mydes'))e.setAttribute('data-mydes',r);}
 var PRICE=/^\s*(?:(?:[\u0024\u20AC\u00A3\u00A5\u20B9]|USD|EUR|GBP|INR|Rs\.?)\s?\d[\d,.]*|\d[\d,.]*\s?(?:[\u0024\u20AC\u00A3\u00A5\u20B9]|USD|EUR|GBP|INR))\s*$/;
 function inContent(e){return !!e.closest('main,article,section,[role="main"]');}
-function sig(e){return e.tagName+'.'+(e.classList[0]||'')+'.'+(e.classList[1]||'');}
-function cardLike(e){
-  if(e.closest('nav,footer,#__mydes_hud,#__mydes_backdrop,[data-mydes="nav"],[data-mydes="footer"]'))return false;
-  var link=e.tagName==='A'||!!e.querySelector('a[href]');
-  if(!link)return false;
-  var t=(e.textContent||'').trim().length;
-  if(t<6||t>800)return false;
-  return !!e.querySelector('img,picture,video')||t>=35;
+function sig(e){return e.tagName.toLowerCase()+'.'+(e.classList[0]||'')+'.'+(e.classList[1]||'');}
+
+/* Checks if an element is a valid standalone content unit rather than a partial text sub-column */
+function isUnitLike(e){
+  if(!e || e.nodeType!==1) return false;
+  if(e.closest('nav,footer,header,#__mydes_hud,#__mydes_backdrop,[data-mydes="nav"],[data-mydes="footer"],[data-mydes="header"]')) return false;
+  var t = (e.textContent||'').trim().length;
+  if(t < 6 || t > 1800) return false;
+  var r = e.getBoundingClientRect();
+  if(r.width < 80 || r.height < 24) return false;
+  // Reject narrow text-only columns that sit beside a sibling image/media element (walk up to parent instead)
+  if(!e.querySelector('img,video,picture,canvas,svg') && e.parentElement) {
+    var pr = e.parentElement.getBoundingClientRect();
+    if(r.width < pr.width * 0.72 && e.parentElement.querySelector('img,video,picture')) return false;
+  }
+  return !!e.querySelector('a[href],img,picture,video,button') || t >= 35;
 }
-function decorate(c){
-  if(c.querySelector('h1,h2,h3,h4,h5,h6,[data-mydes="heading"]'))return;
-  var l=c.querySelectorAll('a,span,div,p,strong,b');
-  for(var i=0;i<l.length;i++){
-    var x=l[i];
-    if(x.children.length===0){
-      var t=(x.textContent||'').trim();
-      if(t.length>=8&&t.length<=140&&!PRICE.test(t)){x.setAttribute('data-mydes','heading');return;}
+
+/* Detects clamped text & absolute overlays covering media on ANY website */
+function normalizeUnitInternals(unit){
+  var hasHeading = !!unit.querySelector('h1,h2,h3,h4,h5,h6,[data-mydes="heading"]');
+  var mediaEl = unit.querySelector('img,video,picture');
+  var mediaRect = mediaEl ? mediaEl.getBoundingClientRect() : null;
+
+  var sub = unit.querySelectorAll('*');
+  for(var i=0; i<sub.length && i<80; i++){
+    var x = sub[i];
+    var cs = getComputedStyle(x);
+
+    // 1. Detect native text clamping or ellipsis truncation and mark for unclamping
+    if((cs.webkitLineClamp && cs.webkitLineClamp !== 'none') || cs.textOverflow === 'ellipsis') {
+      x.setAttribute('data-mydes-clamped', 'true');
+      if(x.parentElement && x.parentElement !== unit) x.parentElement.setAttribute('data-mydes-clamped', 'true');
+    }
+
+    // 2. Detect text overlays floating directly over media thumbnails via bounding box overlap
+    if(mediaRect && mediaRect.width > 40 && mediaRect.height > 40 && (cs.position === 'absolute' || cs.position === 'fixed')) {
+      var xr = x.getBoundingClientRect();
+      var txtLen = (x.textContent || '').trim().length;
+      var overlapsMedia = xr.left < mediaRect.right && xr.right > mediaRect.left && xr.top < mediaRect.bottom && xr.bottom > mediaRect.top;
+      if(overlapsMedia && txtLen >= 8 && !x.contains(mediaEl)) {
+        x.setAttribute('data-mydes-overlay', 'true');
+        if(x.parentElement) x.parentElement.setAttribute('data-mydes-overlay-parent', 'true');
+      }
+    }
+
+    // 3. Tag primary heading inside unit if no semantic h1-h6 exists
+    if(!hasHeading && x.children.length === 0) {
+      var t = (x.textContent||'').trim();
+      if(t.length >= 8 && t.length <= 160 && !PRICE.test(t)) {
+        x.setAttribute('data-mydes', 'heading');
+        hasHeading = true;
+      }
     }
   }
 }
-function findGrids(){
-  var ps=document.body.querySelectorAll('*:not(#__mydes_hud *):not(#__mydes_backdrop *)'),n=0;
-  for(var i=ps.length-1;i>=0&&n<2500;i--){
-    var p=ps[i],k=p.children.length;
-    if(k<2||k>80)continue;
+
+function findCollections(){
+  var ps = document.body.querySelectorAll('*:not(#__mydes_hud *):not(#__mydes_backdrop *)'), n = 0;
+  for(var i = ps.length - 1; i >= 0 && n < 3000; i--){
+    var p = ps[i], k = p.children.length;
+    if(k < 2 || k > 120) continue;
     n++;
-    if(p.getAttribute('data-mydes')==='grid'){
-      for(var q=0;q<k;q++){var c0=p.children[q];if(!c0.hasAttribute('data-mydes')&&cardLike(c0)){c0.setAttribute('data-mydes','card');decorate(c0);}}
+    if(p.getAttribute('data-mydes') === 'collection' || p.getAttribute('data-mydes') === 'grid'){
+      for(var q=0; q<k; q++){
+        var c0 = p.children[q];
+        if(!c0.hasAttribute('data-mydes') && isUnitLike(c0)){
+          c0.setAttribute('data-mydes', 'item');
+          normalizeUnitInternals(c0);
+        }
+      }
       continue;
     }
-    if(p.closest('nav,footer,header,#__mydes_hud,#__mydes_backdrop,[data-mydes="nav"],[data-mydes="footer"],[data-mydes="header"]'))continue;
-    if(p.querySelector('[data-mydes="card"]'))continue;
-    var groups={},best=null,j;
-    for(j=0;j<k;j++){var s=sig(p.children[j]);(groups[s]=groups[s]||[]).push(p.children[j]);}
-    for(var g in groups){if(!best||groups[g].length>best.length)best=groups[g];}
-    if(!best||best.length<2||best.length<k*0.55)continue;
-    var cards=best.filter(cardLike);
-    if(cards.length<2||cards.length<best.length*0.65)continue;
-    p.setAttribute('data-mydes','grid');
-    p.setAttribute('data-m-size',cards.length<=8?'s':'l');
-    cards.forEach(function(c){c.setAttribute('data-mydes','card');decorate(c);});
+    if(p.closest('nav,footer,header,#__mydes_hud,#__mydes_backdrop,[data-mydes="nav"],[data-mydes="footer"],[data-mydes="header"]')) continue;
+    if(p.querySelector('[data-mydes="item"],[data-mydes="card"]')) continue;
+
+    var groups = {}, best = null;
+    for(var j=0; j<k; j++){
+      var s = sig(p.children[j]);
+      (groups[s] = groups[s] || []).push(p.children[j]);
+    }
+    for(var g in groups){
+      if(!best || groups[g].length > best.length) best = groups[g];
+    }
+    if(!best || best.length < 2 || best.length < k * 0.45) continue;
+    var units = best.filter(isUnitLike);
+    if(units.length < 2 || units.length < best.length * 0.55) continue;
+
+    p.setAttribute('data-mydes', 'grid');
+    p.setAttribute('data-m-size', units.length <= 8 ? 's' : 'l');
+    units.forEach(function(u){
+      u.setAttribute('data-mydes', 'card');
+      normalizeUnitInternals(u);
+    });
   }
 }
-function markPrices(){
-  var l=document.querySelectorAll('span,div,p,strong,b,em,ins,bdi,.a-price,.a-offscreen'),n=0;
-  for(var i=0;i<l.length&&n<400;i++){
-    var e=l[i];
-    if(e.closest('#__mydes_hud,#__mydes_backdrop'))continue;
-    if(e.children.length>2||e.hasAttribute('data-mydes'))continue;
-    var t=(e.textContent||'').trim();
-    if(t.length>24)continue;
-    if(PRICE.test(t)){e.setAttribute('data-mydes','price');n++;}
+
+function markPricesAndMeta(){
+  var l = document.querySelectorAll('span,div,p,strong,b,em,ins,bdi,time'), n = 0;
+  for(var i=0; i<l.length && n<400; i++){
+    var e = l[i];
+    if(e.closest('#__mydes_hud,#__mydes_backdrop')) continue;
+    if(e.children.length > 2 || e.hasAttribute('data-mydes')) continue;
+    var t = (e.textContent||'').trim();
+    if(t.length > 24 || t.length < 2) continue;
+    if(PRICE.test(t)){ e.setAttribute('data-mydes','price'); n++; }
   }
 }
 
 function retag(){
-  if(!document.body)return;
-  var t0=performance.now();
-  each('header,[role="banner"],#navbar,#nav-main',function(e){if(!inContent(e))put(e,'header');});
-  each('nav,[role="navigation"],#nav-xshop',function(e){put(e,'nav');});
-  each('footer,[role="contentinfo"],#navFooter',function(e){if(!inContent(e))put(e,'footer');});
-  each('main,[role="main"],#pageContent,#search',function(e){put(e,'main');});
-  each('aside,[role="complementary"]',function(e){putNew(e,'aside');});
-  each('form[role="search"],form[name="site-search"],input[type="search"],input[name="q"],input[name="k"]',function(e){
-    var f=e.tagName==='FORM'?e:e.closest('form');
-    if(f)putNew(f,'search');
+  if(!document.body) return;
+  var t0 = performance.now();
+  each('header,[role="banner"]', function(e){ if(!inContent(e)) put(e,'header'); });
+  each('nav,[role="navigation"]', function(e){ put(e,'nav'); });
+  each('footer,[role="contentinfo"]', function(e){ if(!inContent(e)) put(e,'footer'); });
+  each('main,[role="main"],article', function(e){ putNew(e,'main'); });
+  each('aside,[role="complementary"]', function(e){ putNew(e,'aside'); });
+  each('form[role="search"],input[type="search"]', function(e){
+    var f = e.tagName==='FORM' ? e : (e.closest('form,[role="search"]') || e.parentElement);
+    if(f) putNew(f,'search');
   });
-  if(performance.now()-t0<35)findGrids();
-  /* Also tag standalone product/article cards on sites like Amazon (e.g. [data-component-type="s-search-result"]) */
-  each('[data-component-type="s-search-result"],[data-asin]:not([data-asin=""]),article',function(e){
-    if(!e.closest('#__mydes_hud,#__mydes_backdrop,nav,header,footer') && cardLike(e)){
-      putNew(e,'card');
-      if(e.parentElement && !e.parentElement.hasAttribute('data-mydes')) putNew(e.parentElement,'grid');
-      decorate(e);
-    }
+
+  if(performance.now() - t0 < 45) findCollections();
+
+  each('h1', function(e){ if(!e.closest('#__mydes_hud')){ putNew(e,'title'); e.setAttribute('data-mydes-clamped','true'); } });
+  each('h2,h3,h4', function(e){ if(!e.closest('#__mydes_hud')){ putNew(e,'heading'); e.setAttribute('data-mydes-clamped','true'); } });
+  each('button,input[type="submit"],input[type="button"],[role="button"]', function(e){
+    if(!e.closest('#__mydes_hud')) putNew(e,'btn');
   });
-  each('h1',function(e){if(!e.closest('#__mydes_hud'))putNew(e,'title');});
-  each('h2,h3,h4',function(e){if(!e.closest('#__mydes_hud'))putNew(e,'heading');});
-  each('button,input[type="submit"],input[type="button"],[role="button"],a[class*="btn"],a[class*="button"],.a-button',function(e){
-    if(!e.closest('#__mydes_hud'))putNew(e,'btn');
+  each('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]),textarea,select', function(e){
+    if(!e.closest('#__mydes_hud')) putNew(e,'field');
   });
-  each('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]),textarea,select',function(e){
-    if(!e.closest('#__mydes_hud'))putNew(e,'field');
-  });
-  each('img',function(e){if(!e.closest('#__mydes_hud,#__mydes_backdrop'))putNew(e,'media');});
-  markPrices();
+  each('img,video,picture', function(e){ if(!e.closest('#__mydes_hud,#__mydes_backdrop')) putNew(e,'media'); });
+  markPricesAndMeta();
 }
 
-/* ---------- 5. Page Outline Extractor (Sent to Gemini so it knows the live page structure) ---------- */
+/* ---------- 5. Page Outline Extractor ---------- */
 function summary(){
   try{retag();}catch(e){}
   var counts={},samples={};
@@ -575,7 +727,7 @@ function summary(){
 
 /* ---------- 6. Surface Remapper & Contrast Guard ---------- */
 var SKIPTAG=/^(SCRIPT|STYLE|NOSCRIPT|IMG|SVG|PATH|VIDEO|CANVAS|IFRAME|PICTURE|INPUT|TEXTAREA|SELECT|OPTION|BR|HR|META|LINK|TITLE|HEAD|SOURCE|TEMPLATE|BUTTON)$/;
-var SURFACE_ROLE=/^(card|header|nav|footer|hero|aside)$/;
+var SURFACE_ROLE=/^(card|item|header|nav|footer|hero|aside)$/;
 function rgba(s){
   var m=/rgba?\(([^)]+)\)/.exec(s||'');
   if(!m)return null;
@@ -740,41 +892,96 @@ start();
         return "(function(BP){$CORE\n})($bpJson);"
     }
 
-    /** Lightweight tagger + outline extractor script so Gemini can inspect the live DOM before generating. */
+    /**
+     * Domain-agnostic DOM topology and geometry probe:
+     * - Inspects all elements (including any custom web components)
+     * - Automatically walks up from narrow text sub-columns to the full composite unit wrapper
+     * - Captures parent container selectors (`parentSel`), child selectors (`sel`), layout mode (`layout`),
+     *   and whether the item contains media overlays so the synthesis model can write accurate structural CSS.
+     */
     const val OUTLINE_PROBE_JS = """
         (function(){
+          function getSel(e){
+            if(!e || e===document.body || e===document.documentElement) return '';
+            var s = e.tagName.toLowerCase();
+            if(e.id && !/\d{4,}/.test(e.id)) return s + '#' + CSS.escape(e.id);
+            var cl = (e.className && typeof e.className === 'string') ? e.className.trim().split(/\s+/).filter(Boolean) : [];
+            if(cl.length) s += '.' + cl.slice(0,2).map(function(c){ return window.CSS && CSS.escape ? CSS.escape(c) : c; }).join('.');
+            return s;
+          }
+
           var counts={};
-          ['header','nav','main','aside','footer','form','button','input','img','article','h1','h2','h3'].forEach(function(t){
+          ['header','nav','main','aside','footer','form','button','input','img','video','article','section','table','ul','ol','h1','h2','h3'].forEach(function(t){
             counts[t]=document.querySelectorAll(t).length;
           });
-          var groups={};
-          var cand=document.querySelectorAll('a,li,article,section,div');
-          for(var i=0;i<cand.length&&i<4000;i++){
-            var e=cand[i];
-            if(e.closest('#__mydes_hud,#__mydes_backdrop'))continue;
-            if(e.children.length<1||e.children.length>14||!e.querySelector('img'))continue;
-            var t=(e.textContent||'').replace(/\s+/g,' ').trim();
-            if(t.length<8||t.length>240)continue;
-            var k=e.tagName.toLowerCase()+(e.classList[0]?'.'+e.classList[0]:'');
-            var g=groups[k]||(groups[k]={sel:k,n:0,sample:t.slice(0,40)});
+
+          var all = document.body ? document.body.querySelectorAll('*:not(script):not(style):not(noscript):not(svg):not(path)') : [];
+          var groups = {};
+
+          for(var i=0; i<all.length && i<3500; i++){
+            var e = all[i];
+            if(e.closest('#__mydes_hud,#__mydes_backdrop,nav,header,footer')) continue;
+            if(e.children.length < 1 || e.children.length > 25) continue;
+
+            var r = e.getBoundingClientRect();
+            if(r.width < 80 || r.height < 28) continue;
+
+            var t = (e.textContent || '').replace(/\s+/g,' ').trim();
+            if(t.length < 10 || t.length > 1000) continue;
+
+            // If this node has no media of its own and is narrower than 70% of its parent while its parent has media,
+            // skip this sub-column so its parent (the true composite item) is selected instead.
+            var hasMedia = !!e.querySelector('img,video,picture,canvas');
+            if(!hasMedia && e.parentElement) {
+              var pr = e.parentElement.getBoundingClientRect();
+              if(r.width < pr.width * 0.72 && e.parentElement.querySelector('img,video,picture')) continue;
+            }
+
+            // Ensure the element is part of a repeating sibling structure
+            var p = e.parentElement;
+            if(!p || p === document.body) continue;
+            var k = getSel(e);
+            if(!k) continue;
+
+            var parentSel = getSel(p);
+            var cs = getComputedStyle(e);
+            var pcs = getComputedStyle(p);
+            var key = parentSel + ' > ' + k;
+
+            var g = groups[key] || (groups[key] = {
+              sel: k,
+              parentSel: parentSel,
+              n: 0,
+              hasMedia: hasMedia,
+              itemDisplay: cs.display + (cs.flexDirection && cs.display.indexOf('flex')>=0 ? ' ('+cs.flexDirection+')' : ''),
+              parentDisplay: pcs.display,
+              widthPct: Math.round((r.width / Math.max(1, innerWidth)) * 100),
+              sample: t.slice(0, 45)
+            });
             g.n++;
           }
-          var rep=Object.keys(groups).map(function(k){return groups[k];}).filter(function(g){return g.n>=3;}).sort(function(x,y){return y.n-x.n;}).slice(0,4);
-          var heads=[].slice.call(document.querySelectorAll('h1,h2,h3')).slice(0,6).map(function(h){return (h.textContent||'').trim().slice(0,40);});
+
+          var rep = Object.keys(groups).map(function(k){ return groups[k]; })
+            .filter(function(g){ return g.n >= 3; })
+            .sort(function(x,y){ return (y.hasMedia - x.hasMedia) || (y.n - x.n); })
+            .slice(0, 5);
+
+          var heads = [].slice.call(document.querySelectorAll('h1,h2,h3,[role="heading"]')).slice(0, 6)
+            .map(function(h){ return (h.textContent || '').replace(/\s+/g,' ').trim().slice(0, 45); });
+
           var o;
-          if(window.__mydes && window.__mydes.outline){o=JSON.parse(window.__mydes.outline());}
-          else{o={url:location.href,host:location.hostname,title:(document.title||'').slice(0,80),viewport:{w:innerWidth,h:innerHeight},counts:counts};}
-          o.repeatedItems=rep;
-          o.headings=heads;
+          if(window.__mydes && window.__mydes.outline){
+            try { o = JSON.parse(window.__mydes.outline()); } catch(e){}
+          }
+          if(!o) {
+            o = { url: location.href, host: location.hostname, title: (document.title||'').slice(0, 80), viewport: { w: innerWidth, h: innerHeight }, counts: counts };
+          }
+          o.repeatedStructures = rep;
+          o.headings = heads;
           return o;
         })();
     """
 
-    /**
-     * Measures legibility on the live page: text whose colour has under 3:1 contrast against what is really behind
-     * it, plus horizontal overflow. Elements sitting on gradients/images or on a backdrop are counted as unknownBg.
-     * This is ground truth for the review pass, so it cannot be blind the way a failed screenshot can.
-     */
     const val CONTRAST_AUDIT_JS = """
         (function(){
           try{
@@ -861,9 +1068,9 @@ suspend fun WebView.evaluateJsSuspend(script: String): String? = withContext(Dis
 // ───────────────────── Blueprint Cache ─────────────────────
 
 class ThemeStore(context: Context) {
-    private val prefs = context.applicationContext.getSharedPreferences("mydes_blueprints_v4", Context.MODE_PRIVATE)
+    private val prefs = context.applicationContext.getSharedPreferences("mydes_blueprints_v6", Context.MODE_PRIVATE)
     private fun key(prompt: String, domain: String) =
-        "bp4|" + sha1Hex("${domain.trim().lowercase(Locale.US)}|${prompt.trim().lowercase(Locale.US)}")
+        "bp6|" + sha1Hex("${domain.trim().lowercase(Locale.US)}|${prompt.trim().lowercase(Locale.US)}")
 
     fun get(prompt: String, domain: String = "*"): UIBlueprint? =
         prefs.getString(key(prompt, domain), null)?.let { UIBlueprint.parse(it, prompt) }
@@ -873,7 +1080,6 @@ class ThemeStore(context: Context) {
         if (remember) pushConcept(blueprint)
     }
 
-    /** Last few design concepts across ALL sites/prompts. Fed back to the model so it moves away from them. */
     fun recentConcepts(limit: Int = 8): List<String> =
         (prefs.getString("recent_concepts", "") ?: "")
             .split('\n').filter { it.isNotBlank() }.takeLast(limit)
@@ -892,14 +1098,14 @@ class ThemeStore(context: Context) {
 class GeminiStylerService {
 
     companion object {
-        /**
-         * Use gemini-2.5-flash (or gemini-2.5-pro) so the model has strong CSS3/3D/SVG/DOM synthesis capabilities.
-         */
-        const val MODEL = "gemini-3.5-flash-lite"
+        /** Fast model for the Art Director creative concept pass */
+        const val CONCEPT_MODEL = "gemini-3.5-flash-lite"
+
+        /** High-capability coding model for CSS/SVG/JS synthesis and visual QA review */
+        const val SYNTHESIS_MODEL = "gemini-3.8-flash"
     }
 
     private val moshi = Moshi.Builder().add(KotlinJsonAdapterFactory()).build()
-    private val requestAdapter = moshi.adapter(GeminiRequest::class.java)
 
     private val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -917,7 +1123,7 @@ class GeminiStylerService {
     private var themeStore: ThemeStore? = null
     private fun storeFor(context: Context): ThemeStore = themeStore ?: ThemeStore(context).also { themeStore = it }
 
-    // ───── Public Entry Points (100% compatible with your existing call sites) ─────
+    // ───── Public Entry Points ─────
 
     suspend fun generateUserScript(
         context: Context,
@@ -990,16 +1196,16 @@ class GeminiStylerService {
         forceFresh = forceFresh
     )
 
+    // ───── Pass 1: Concept Pass (Art Director using gemini-3.5-flash-lite) ─────
 
-    // ───── Concept pass (art director) ─────
-    // Pipeline: 1) CONCEPT PASS invents a design brief with no code, 2) BUILD PASS implements that brief,
-    // 3) REVIEW PASS (after a screenshot) fixes defects. There are no random seeds, option lists or example
-    // layouts anywhere: variety comes from the model's own idea plus a memory of traits it already shipped.
-
-    /** Set true while debugging to append the full system prompt to each log entry. */
     private val LOG_SYSTEM_PROMPT = false
 
-    private class ConceptBrief(val raw: String, val idea: String, val fingerprint: String)
+    private class ConceptBrief(
+        val raw: String,
+        val idea: String,
+        val fingerprint: String,
+        val architecture: String // "restyle" | "app_shell"
+    )
 
     private fun extractJsonObject(raw: String): String? {
         val s = raw.indexOf('{')
@@ -1008,6 +1214,7 @@ class GeminiStylerService {
     }
 
     private suspend fun callForText(
+        model: String,
         apiKey: String,
         system: String,
         parts: List<Part>,
@@ -1026,14 +1233,13 @@ class GeminiStylerService {
             )
         )
         val response = try {
-            callGemini(req(true), apiKey)
+            callGemini(model, req(true), apiKey)
         } catch (e: HttpException) {
-            if (e.code() == 400) callGemini(req(false), apiKey) else throw e
+            if (e.code() == 400) callGemini(model, req(false), apiKey) else throw e
         }
         return response.candidates?.firstOrNull()?.content?.parts?.mapNotNull { it.text }?.joinToString("").orEmpty()
     }
 
-    /** Pass 1: invent the idea. Returns null on any failure so the build pass can fall back to inventing its own. */
     private suspend fun designBrief(
         context: Context,
         prompt: String,
@@ -1045,38 +1251,54 @@ class GeminiStylerService {
         val input = buildString {
             appendLine("USER REQUEST: \"$prompt\"")
             appendLine("TARGET WEBSITE: $websiteName ($websiteUrl)")
-            if (!pageOutlineJson.isNullOrBlank()) appendLine("LIVE DOM SEMANTIC OUTLINE: ${pageOutlineJson.take(4_000)}")
+            if (!pageOutlineJson.isNullOrBlank()) appendLine("LIVE DOM TOPOLOGY OUTLINE: ${pageOutlineJson.take(4_500)}")
             val recent = storeFor(context).recentConcepts()
             if (recent.isNotEmpty()) {
-                appendLine("RECENT DESIGNS ALREADY SHIPPED (name: traits):")
+                appendLine("RECENT DESIGNS ALREADY SHIPPED (avoid repeating their style):")
                 recent.forEach { appendLine("- $it") }
             }
-            appendLine("Write the design brief JSON now.")
+            appendLine("Write the technical art direction JSON now.")
         }
         val logInput = buildString {
+            appendLine("MODEL: $CONCEPT_MODEL")
             append(input)
             if (LOG_SYSTEM_PROMPT) { appendLine(); appendLine("--- SYSTEM PROMPT ---"); append(UI_CONCEPT_SYSTEM_PROMPT) }
         }.take(if (LOG_SYSTEM_PROMPT) 30_000 else 12_000)
+
         return try {
-            val raw = callForText(apiKey, UI_CONCEPT_SYSTEM_PROMPT, listOf(Part(text = input)), 1.15f, 0.98f, 1024)
-            val json = JSONObject(extractJsonObject(raw) ?: throw IllegalStateException("no JSON in brief: ${raw.take(200)}"))
+            val raw = callForText(CONCEPT_MODEL, apiKey, UI_CONCEPT_SYSTEM_PROMPT, listOf(Part(text = input)), 1.05f, 0.95f, 1024)
+            val json = JSONObject(extractJsonObject(raw) ?: throw IllegalStateException("No JSON in brief: ${raw.take(200)}"))
             val idea = json.optString("idea", "").trim()
-            if (idea.isBlank()) throw IllegalStateException("brief has no idea: ${raw.take(200)}")
-            // Only the directions the builder needs are forwarded (not `considered`, not the fingerprint)
-            val directions = listOf("idea" to "IDEA", "signature" to "SIGNATURE", "palette" to "PALETTE", "type" to "TYPE",
-                "surface" to "SURFACE", "layout" to "LAYOUT", "rules" to "RULES")
-                .mapNotNull { (k, label) -> json.optString(k, "").trim().takeIf { it.isNotBlank() }?.let { "$label: $it" } }
-                .joinToString("\n")
-            val brief = ConceptBrief(directions, idea.take(300), json.optString("fingerprint", "").take(120))
-            ApiRequestLogger.logRequest(context, "conceptBrief", websiteName, websiteUrl, prompt, logInput, json.toString(2), true)
+            if (idea.isBlank()) throw IllegalStateException("Brief has no idea: ${raw.take(200)}")
+
+            val arch = json.optString("architecture", "restyle").lowercase(Locale.US)
+            val directions = listOf(
+                "architecture" to "ARCHITECTURE",
+                "idea" to "CONCEPT WORLD",
+                "signature" to "SIGNATURE VISUAL & ANIMATION MECHANIC",
+                "palette" to "PALETTE",
+                "type" to "TYPOGRAPHY",
+                "surface" to "SURFACE & BORDERS",
+                "layout" to "STRUCTURAL LAYOUT MECHANICS (CSS Grid/Flex/Positioning)",
+                "rules" to "ELEMENT CHOREOGRAPHY"
+            ).mapNotNull { (k, label) -> json.optString(k, "").trim().takeIf { it.isNotBlank() }?.let { "$label: $it" } }
+            .joinToString("\n")
+
+            val brief = ConceptBrief(
+                raw = directions,
+                idea = idea.take(300),
+                fingerprint = json.optString("fingerprint", "").take(120),
+                architecture = arch
+            )
+            ApiRequestLogger.logRequest(context, "conceptBrief ($CONCEPT_MODEL)", websiteName, websiteUrl, prompt, logInput, json.toString(2), true)
             brief
         } catch (e: Exception) {
-            ApiRequestLogger.logRequest(context, "conceptBrief", websiteName, websiteUrl, prompt, logInput, describe(e), false)
+            ApiRequestLogger.logRequest(context, "conceptBrief ($CONCEPT_MODEL)", websiteName, websiteUrl, prompt, logInput, describe(e), false)
             null
         }
     }
 
-    // ───── Core Generative Synthesis ─────
+    // ───── Pass 2 & 3: Code Synthesis & Review (using gemini-3.8-flash) ─────
 
     private suspend fun synthesizeBlueprint(
         context: Context,
@@ -1097,7 +1319,6 @@ class GeminiStylerService {
             websiteName
         }.ifBlank { "*" }
 
-        // Return cached blueprint if we already generated one for this (prompt, domain) pair and no new screenshot is passed
         if (screenshotBase64 == null && auditJson == null && !forceFresh) {
             storeFor(context).get(cleanPrompt, domain)?.let { return@withContext Result.success(it) }
         }
@@ -1107,13 +1328,10 @@ class GeminiStylerService {
             return@withContext Result.failure(IllegalStateException("GEMINI_API_KEY is not set. Please set your API key in Settings."))
         }
 
-        // REVIEW MODE: a screenshot and/or a measured audit plus an existing blueprint for this (prompt, domain) means
-        // "fix what you shipped". The review can only APPEND override CSS, so it can never remove the design.
         val reviewInputs = !screenshotBase64.isNullOrBlank() || !auditJson.isNullOrBlank()
         val previous = if (reviewInputs && !forceFresh) storeFor(context).get(cleanPrompt, domain) else null
         val isReview = previous != null
 
-        // PASS 1 (first generations only): invent the idea, with no code.
         val brief: ConceptBrief? = if (isReview) null
             else designBrief(context, cleanPrompt, websiteName, websiteUrl, pageOutlineJson, apiKey)
 
@@ -1122,8 +1340,8 @@ class GeminiStylerService {
             appendLine("USER REQUEST: \"$cleanPrompt\"")
             appendLine("TARGET WEBSITE: $websiteName ($websiteUrl)")
             appendLine("PALETTE: bg ${previous!!.bg}, surface ${previous.surface}, surface2 ${previous.surface2}, text ${previous.fg}, ink ${previous.ink}, accent ${previous.accent}")
-            if (!pageOutlineJson.isNullOrBlank()) appendLine("LIVE DOM OUTLINE: ${pageOutlineJson.take(2_500)}")
-            appendLine("MEASURED AUDIT (live page, ground truth): ${auditJson?.takeIf { it.isNotBlank() && it != "null" }?.take(3_000) ?: "not available"}")
+            if (!pageOutlineJson.isNullOrBlank()) appendLine("LIVE DOM TOPOLOGY OUTLINE: ${pageOutlineJson.take(2_500)}")
+            appendLine("MEASURED AUDIT: ${auditJson?.takeIf { it.isNotBlank() && it != "null" }?.take(3_000) ?: "not available"}")
             appendLine("CURRENT CSS:")
             appendLine(previous.customCss)
             appendLine(if (!screenshotBase64.isNullOrBlank()) "A screenshot of the current render is attached." else "No screenshot is available; rely on the audit.")
@@ -1132,14 +1350,15 @@ class GeminiStylerService {
             appendLine("USER REQUEST: \"$cleanPrompt\"")
             appendLine("TARGET WEBSITE: $websiteName ($websiteUrl)")
             if (!pageOutlineJson.isNullOrBlank()) {
-                appendLine("LIVE DOM SEMANTIC OUTLINE: ${pageOutlineJson.take(6_000)}")
+                appendLine("LIVE DOM TOPOLOGY OUTLINE (repeatedStructures lists parent container selectors `parentSel` and composite item selectors `sel`):")
+                appendLine(pageOutlineJson.take(6_000))
             }
             appendLine()
             if (brief != null) {
-                appendLine("DESIGN DIRECTIONS from the art director (the spec; implement them literally):")
+                appendLine("DESIGN DIRECTIONS from the art director (implement every visual, layout, and animation mechanic literally):")
                 appendLine(brief.raw)
             } else {
-                appendLine("No directions were supplied. First decide a specific, original concept yourself (a world, material or process, not a colour scheme), then build it.")
+                appendLine("No directions were supplied. Invent a specific, cohesive concept, use 'restyle' architecture, and implement it completely.")
             }
             appendLine("Generate the complete UIBlueprint JSON now.")
         }
@@ -1153,17 +1372,16 @@ class GeminiStylerService {
             contents = listOf(Content(parts = parts)),
             systemInstruction = Content(listOf(Part(text = if (isReview) UI_REVIEW_SYSTEM_PROMPT else UI_SYNTHESIS_SYSTEM_PROMPT))),
             generationConfig = GenerationConfig(
-                temperature = if (isReview) 0.3f else 0.8f,
+                temperature = if (isReview) 0.25f else 0.75f,
                 topP = 0.95f,
-                maxOutputTokens = if (isReview) 1536 else 8192,
+                maxOutputTokens = if (isReview) 2048 else 8192,
                 responseMimeType = if (jsonMode) "application/json" else null
             )
         )
 
-        // What the log sheet shows: the mode and the actual per-request input (lens, recent-design list, current
-        // blueprint for reviews), not the static system prompt, which used to eat the whole 4000-char budget.
         val requestJson = buildString {
-            appendLine(if (isReview) "MODE: review pass" else if (brief != null) "MODE: build pass (from design directions)" else "MODE: build pass (no directions, concept pass failed)")
+            appendLine("MODEL: $SYNTHESIS_MODEL")
+            appendLine(if (isReview) "MODE: review pass" else if (brief != null) "MODE: build pass (${brief.architecture})" else "MODE: build pass (default restyle)")
             append(userContextText)
             if (!screenshotBase64.isNullOrBlank()) appendLine("[screenshot attached, ${screenshotBase64.length / 1024} KB base64]")
             if (LOG_SYSTEM_PROMPT) {
@@ -1175,123 +1393,128 @@ class GeminiStylerService {
 
         try {
             val response = try {
-                callGemini(buildReq(true), apiKey)
+                callGemini(SYNTHESIS_MODEL, buildReq(true), apiKey)
             } catch (e: HttpException) {
-                if (e.code() == 400) callGemini(buildReq(false), apiKey) else throw e
+                if (e.code() == 400) callGemini(SYNTHESIS_MODEL, buildReq(false), apiKey) else throw e
             }
             val raw = response.candidates?.firstOrNull()?.content?.parts?.mapNotNull { it.text }?.joinToString("").orEmpty()
             val blueprint: UIBlueprint? = if (isReview) {
                 applyReviewPatch(previous!!, raw, cleanPrompt)
             } else {
-                val parsed = UIBlueprint.parse(raw, cleanPrompt)
+                val parsed = UIBlueprint.parse(raw, cleanPrompt, brief?.architecture ?: "restyle")
                 if (parsed != null && brief != null) parsed.copy(concept = brief.idea, fingerprint = brief.fingerprint) else parsed
             }
+
             if (blueprint == null) {
                 val err = "Model returned invalid UIBlueprint JSON. Raw start: ${raw.take(300)}"
-                ApiRequestLogger.logRequest(context, "synthesizeBlueprint", websiteName, websiteUrl, cleanPrompt, requestJson, err, false)
+                ApiRequestLogger.logRequest(context, "synthesizeBlueprint ($SYNTHESIS_MODEL)", websiteName, websiteUrl, cleanPrompt, requestJson, err, false)
                 Result.failure(IllegalStateException(err))
             } else {
                 storeFor(context).put(cleanPrompt, blueprint, domain, remember = !isReview)
-                ApiRequestLogger.logRequest(context, if (isReview) "reviewBlueprint" else "buildBlueprint", websiteName, websiteUrl, cleanPrompt, requestJson, if (isReview) raw.take(4_000) else blueprint.toJson(), true)
+                ApiRequestLogger.logRequest(context, if (isReview) "reviewBlueprint ($SYNTHESIS_MODEL)" else "buildBlueprint ($SYNTHESIS_MODEL)", websiteName, websiteUrl, cleanPrompt, requestJson, if (isReview) raw.take(4_000) else blueprint.toJson(), true)
                 Result.success(blueprint)
             }
         } catch (e: Exception) {
             val msg = describe(e)
-            ApiRequestLogger.logRequest(context, "synthesizeBlueprint", websiteName, websiteUrl, cleanPrompt, requestJson, msg, false)
+            ApiRequestLogger.logRequest(context, "synthesizeBlueprint ($SYNTHESIS_MODEL)", websiteName, websiteUrl, cleanPrompt, requestJson, msg, false)
             Result.failure(Exception(msg, e))
         }
     }
 
-    /**
-     * The review returns {"problems": [...], "fixCss": "..."}. The fix is appended AFTER the existing CSS, so a review
-     * can repair legibility and layout but can never delete or simplify the design. An empty or invalid review leaves
-     * the blueprint untouched (same id, so the runtime does not even re-apply it).
-     */
     private fun applyReviewPatch(previous: UIBlueprint, raw: String, prompt: String): UIBlueprint {
         val json = try { JSONObject(extractJsonObject(raw) ?: return previous) } catch (_: Exception) { return previous }
         val fix = stripInventedLabels(json.optString("fixCss", "")).trim().take(3_000)
         if (fix.isBlank()) return previous
         val merged = JSONObject(previous.toJson()).put("customCss", previous.customCss + "\n/* review */\n" + fix)
-        return UIBlueprint.parse(merged.toString(), prompt)
+        return UIBlueprint.parse(merged.toString(), prompt, previous.architecture)
             ?.copy(concept = previous.concept, fingerprint = previous.fingerprint)
             ?: previous
     }
 
+    // ───── System Prompts ─────
+
     private val UI_REVIEW_SYSTEM_PROMPT = """
-You are the QA reviewer of a live website redesign on an Android phone. The design is final and approved: you do NOT redesign anything. You receive the user's request, the palette, the CURRENT CSS, a MEASURED AUDIT taken from the live page (ground truth), and usually a screenshot of how it renders now.
+You are the visual QA engineer for an Android web browser that redesigns any live website. The design concept is final. You receive the user's prompt, palette, CURRENT CSS, a MEASURED AUDIT from the live DOM, and a screenshot.
 
-You may ONLY append override CSS in `fixCss`. It is added after the current CSS, so you cannot delete anything. Never undo or tone down the design: keep every transform, shadow, texture, pseudo-element, font, palette colour and the backdrop. Add no decoration, no new text, no new UI and no colours outside the palette (a plain black or white is allowed for contrast).
+You may ONLY append override CSS in `fixCss`. Never strip out the theme's transforms, animations, borders, or palette.
+Inspect both the screenshot and the audit to fix real rendering defects:
+1. Unreadable or low-contrast text: set explicit `color` (and surface `background-color` if needed) with >= 4.5:1 contrast.
+2. Truncated or clipped text: if headings or labels are cut off prematurely into identical stubs, force `-webkit-line-clamp: unset !important; max-height: none !important; height: auto !important; overflow: visible !important; white-space: normal !important;`.
+3. Text occluding images/media: if styled text boxes cover images or video previews, override the text container to `position: static !important; width: 100% !important;` and its parent wrapper to `display: flex !important; flex-direction: column !important;`.
+4. Broken split-items: if only a narrow text column got bordered/styled while its sibling media sits detached beside it, move the border/background to the shared parent selector.
+5. Horizontal overflow (`overflowX > 2`): constrain offending containers with `max-width: 100vw !important; box-sizing: border-box !important;`.
 
-Fix only real defects, in this order:
-1. Unreadable text. The audit lists elements whose text has under 3:1 contrast against what is behind it (sel, text, fg, bg, ratio). Fix each by setting `color` (and `background-color` only if the design clearly intends a surface there) using the design's own palette so that it reaches 4.5:1. When many failures share one cause (for example a generic text-colour rule written for a surface that does not exist on those items), fix the cause with one scoped rule instead of many small ones. Check the screenshot too: if text looks hard to read even though the audit lists nothing, fix that as well.
-2. Elements clipped, overlapping, pushed off screen, or horizontal overflow (audit overflowX above 2): fix with width, max-width, overflow, margin or position overrides.
-3. Fixed or sticky bars covering content: add padding or shrink them.
-4. Tap targets under 40px.
-
-Use selectors of the form `html body <selector>` with !important, based on the audit's `sel` values or on selectors already in the CSS. Keep fixCss under 1200 characters. If nothing is wrong, return an empty fixCss.
-
-OUTPUT: ONLY one JSON object, no markdown fences:
-{"problems": ["short list of what you found, max 5 items"], "fixCss": "css or empty string"}
+Keep `fixCss` under 1500 characters. If nothing is broken, return `""`.
+OUTPUT: ONLY one JSON object:
+{"problems": ["short list of defects found"], "fixCss": "css overrides or empty string"}
 """.trimIndent()
 
     private val UI_CONCEPT_SYSTEM_PROMPT = """
-You are the art director of a browser that redesigns any website around the user's imagination. You write no code. You invent one specific, original design idea; a separate builder turns your directions into CSS, a backdrop and a little JS on top of the live page.
+You are the executive Art Director of a generative web browser capable of redesigning ANY website (news, wikis, forums, social feeds, e-commerce, dashboards, video portals, docs) into any world or interface paradigm.
 
-THINK, silently: What does the user really want to see or feel? What is this site's real content made of (the outline lists real repeated items)? What are three genuinely different worlds it could live in? Pick the least obvious one that still fully honours the request and keeps the site usable, and give it one memorable signature visual. Reject your first idea, anything a generic "make it look <theme>" would produce by default, and anything resembling RECENT DESIGNS (do not reuse their type voice, palette family, shape language or layout idea unless the request leaves no alternative). For accessibility or comfort requests clarity wins over spectacle, but still give the design an identity.
+1. CHOOSE THE ARCHITECTURE:
+- "restyle" (DEFAULT - 95% of requests): Transforms the live DOM in-place using CSS layout reflows (CSS Grid, Flexbox, multi-column, 3D perspective, clip-path, keyframe animations), custom SVG/Canvas backdrops, and touch choreography. Zero invented floating docks or fake buttons.
+- "app_shell" (OPT-IN ONLY): Select ONLY when the user or concept explicitly demands replacing the page with a brand-new interactive application layout (e.g., "dual-lane split comparator", "swipeable card deck", "full-screen comic book reader", "interactive terminal OS", or explicit assistive toolbars).
 
-BUILDER LIMITS: it restyles real page elements with CSS, adds one backdrop layer, and runs small JS. No new content, images or external files; system fonts only. The site's own text, links, search and items must stay readable and usable on a phone. No invented UI (docks, bottom bars, floating buttons, labels, captions) unless the user asked for controls.
+2. TRANSLATE VISION INTO CONCRETE TECHNICAL MECHANICS (NO VAGUE METAPHORS):
+Do not write poetic fluff that a coder cannot implement. Every visual idea must specify its exact CSS/SVG/JS mechanism:
+- In `signature`: Specify the exact `@keyframes` animation, SVG filter/pattern, 3D scroll tilt, or interactive effect.
+- In `layout`: Inspect `repeatedStructures` in the outline. Specify how parent containers (`parentSel`) and repeating units (`sel`) must be arranged using concrete CSS mechanics (e.g., "set parent containers to 2-column CSS grid with `nth-child(even)` vertical offset `margin-top: 20px`", or "reflow horizontal split rows into vertical stacked columns `flex-direction: column` so media is full-width on top and text sits cleanly below").
+- In `rules`: Detail how headers, navigation, search inputs, content blocks/items, typography, and media behave on a mobile touch screen (never rely on desktop `:hover`).
 
-OUTPUT: ONLY one JSON object, under 170 words in total. Every value must be concrete (hex colours, named shapes, real behaviours). Vague words like "modern", "futuristic", "sleek" or "immersive" are not decisions.
+OUTPUT: ONLY one valid JSON object:
 {
-  "considered": ["3 alternative worlds, max 8 words each (for you; the builder never sees them)"],
-  "idea": "one sentence: what this page IS",
-  "signature": "the one memorable visual or interaction, max 25 words",
-  "palette": "4 or 5 colours as hex, each with its job",
-  "type": "type voice using system font stacks, max 12 words",
-  "surface": "edges, material, depth, texture, max 20 words",
-  "layout": "how content is arranged and how that breaks the usual grid, max 25 words",
-  "rules": "how each of these behaves in this world: header, search, headings, repeated items or cards, links, buttons, images; max 45 words",
-  "fingerprint": "max 6 words: type voice, palette family, shape language, layout idea"
+  "architecture": "restyle" or "app_shell",
+  "idea": "one sentence defining the world or interface",
+  "signature": "concrete visual signature + exact @keyframes or SVG/JS mechanic",
+  "palette": "5 hex colors with exact roles (bg, surface, surface2, fg, accent)",
+  "type": "font stack + weight, casing, letter-spacing, and scale hierarchy",
+  "surface": "exact border styles, corner radii, clip-paths, shadows, and backdrop textures",
+  "layout": "exact CSS layout rules for parent containers and child units (Grid/Flex/Columns/Transforms)",
+  "rules": "concrete styling rules for header, search/inputs, content units, headings, media, and touch states",
+  "fingerprint": "max 6 words summarizing type, palette, shape, layout"
 }
 """.trimIndent()
 
     private val UI_SYNTHESIS_SYSTEM_PROMPT = """
-You are the front-end builder inside an Android web browser. An art director wrote DESIGN DIRECTIONS for how a live website should look. Implement them as CSS, an optional backdrop and optional JS. The directions are the design: follow them literally and make each part visibly present (palette, type, surface, layout, rules, signature). Do not substitute your own taste.
+You are the Principal Front-End Synthesis Engine inside an Android browser. You receive the Art Director's DESIGN DIRECTIONS and the target webpage's LIVE DOM TOPOLOGY OUTLINE. You author production-grade CSS3, SVG/Canvas backdrops, and JS that bring the exact design to life on any website.
 
-RUNTIME
-- Real elements carry data-mydes="header|nav|search|main|grid|card|title|heading|price|btn|field|media|aside|footer". Select with `html body [data-mydes="X"]`. Roles are hints, not guarantees: the page's main repeating items may NOT be tagged `card`. The outline lists roleCounts, roleSamples and repeatedItems (real tag.class selectors). Whenever the directions talk about items, cards or results, style those real selectors too. Also style standard tags (h1-h3, p, a, ul, li, table, figure, img).
-- :root variables: --m-bg --m-surface --m-surface2 --m-fg --m-ink --m-accent, and motion variables --m-rx --m-ry (deg) --m-scroll (px).
-- backdropHtml is a scene drawn with inline SVG, CSS or one canvas. It sits behind all page content. The runtime clears full-screen opaque page wrappers so it shows through.
-- customJs runs as (MydesBridge, T). Available: enable3DTilt(n), focusSearch(), proxySearch(q), proxyClick(selector), zoom(+/-0.15), speakPage(), onCleanup(fn). Stop anything you start (requestAnimationFrame, setInterval, listeners) with onCleanup(fn).
-- No external resources: system fonts, CSS, inline SVG and data URIs only.
+1. ARCHITECTURAL EXECUTION
+- When ARCHITECTURE is "restyle":
+  - `needsHud` MUST be `false`, `hudHtml` MUST be `""`. Never invent fake toolbars, docks, or decorative buttons.
+  - Transform the real DOM using `customCss`, `backdropHtml`, and optional `customJs` (e.g. `MydesBridge.enable3DTilt(1.0)`).
+- When ARCHITECTURE is "app_shell":
+  - `needsHud` is `true`. Build the custom interface inside `hudHtml` (`#__mydes_hud`).
+  - In `customJs`, call `MydesBridge.extractNodes()` to harvest live page content (`{uid, title, body, meta, img, hasVideo, href}`), render your custom interactive view, bind clicks to `MydesBridge.triggerNode(uid)` so the real site's router/state handles navigation, and call `MydesBridge.loadMore(cb)` for pagination.
 
-HARD RULES
-- Never hide or break main, card or search. The page stays interactive.
-- TEXT COLOUR: never set `color` on generic tags (p, span, a, div, h1-h3) unless the same rule also sets the background behind them. A surface you style (card, header, item) sets its own background and `color` together and its descendants inherit; everything else inherits --m-fg from the page. All text, including links and text inside items that are not tagged `card`, must stay readable (4.5:1) on whatever is really behind it.
-- No invented text: no ::before or ::after content containing words. Icons and bullets are fine.
-- Style specific roles. Do not blanket-reset div, section or article.
-- Buttons: the btn role includes icon-only buttons (logo, menus). Do not force one filled box on all of them; keep glyphs readable.
-- Tap targets at least 40px. Fixed or sticky elements stay under 15% of the screen height.
-- Phone performance: at most one canvas, about 120 particles, animate transform and opacity only, honour prefers-reduced-motion.
+2. DOM TOPOLOGY & STRUCTURAL LAYOUT MASTERY
+- Inspect `repeatedStructures` in the outline: each entry gives you `parentSel` (the container) and `sel` (the repeating unit), plus `itemDisplay` and `widthPct`.
+- TARGET WHOLE UNITS, NOT SUB-COLUMNS: Always apply card borders, backgrounds, padding, and transforms to the full composite unit selector (`sel` and `[data-mydes="card"]`), NEVER to an inner text-only wrapper that leaves sibling images detached outside the box.
+- PARENT CONTAINER REFLOWS: To achieve multi-column grids, masonry, or asymmetric panels, you MUST style `parentSel` AND `[data-mydes="grid"]` (e.g., `display: grid !important; grid-template-columns: ... !important; gap: ... !important;`), and use `:nth-child(odd)` / `:nth-child(even)` on the child units (`sel`) for staggered offsets, rotations, or spanning.
+- STACKING ROW ITEMS: When turning horizontal row items (`itemDisplay: flex (row)`) into vertical cards or multi-column grid cells, explicitly force the unit to stack vertically:
+  `display: flex !important; flex-direction: column !important; align-items: stretch !important;` and set its immediate children to `width: 100% !important; max-width: 100% !important;`.
 
-HUD: default needsHud false, hudHtml "", hudReason "". A themed look is never a reason for a HUD. Only if the user explicitly asked for controls, or an accessibility need cannot be met by restyling, add a few plainly labelled controls that do something useful on THIS site through MydesBridge, and explain why in hudReason.
+3. UNIVERSAL CONTENT & MEDIA INTEGRITY
+- NEVER OCCLUDE MEDIA: Text, titles, and badges must never cover images or video previews. If a unit has overlay text, flow it below the media (`position: static !important`).
+- NEVER TRUNCATE HEADINGS INTO STUBS: Always allow styled headings and titles to wrap naturally (`-webkit-line-clamp: unset !important; max-height: none !important; height: auto !important; overflow: visible !important; white-space: normal !important;`).
+- REAL ANIMATIONS: When the directions call for pulsing lasers, scanlines, breathing glows, or motion, write actual `@keyframes` rules in `customCss` and apply them with `animation: ... infinite`.
+- MOBILE TOUCH FIRST: This runs on an Android phone. Do not hide important visuals behind `:hover`. Style the default state and `:active` touch feedback.
+- CONTRAST & LEGIBILITY: Every surface that sets a `background` MUST set a high-contrast `color` (>= 4.5:1). Never invent words in `::before`/`::after` `content`.
 
-If no directions are given, first decide a specific original concept yourself (a world, material or process, not a colour scheme), build it, and fill `concept` and `fingerprint`.
-
-OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
+OUTPUT: ONLY one valid JSON object, no markdown fences:
 {
   "name": "short title",
   "dark": true or false,
   "bg": "#rrggbb", "surface": "#rrggbb", "surface2": "#rrggbb", "fg": "#rrggbb", "ink": "#rrggbb", "accent": "#rrggbb",
-  "remapSurfaces": true or false (false if your CSS sets surface colours itself),
-  "customCss": "complete CSS, using !important where needed",
-  "backdropHtml": "SVG/HTML/canvas string, or empty string",
+  "remapSurfaces": false,
+  "customCss": "complete CSS implementing all layout, surface, and @keyframes rules",
+  "backdropHtml": "inline SVG/Canvas/HTML stage or empty string",
   "needsHud": false,
   "hudReason": "",
   "hudHtml": "",
   "customJs": "JS using MydesBridge and T, or empty string",
-  "concept": "(only when no directions were given) one sentence",
-  "fingerprint": "(only when no directions were given) max 6 words"
+  "concept": "one sentence summary",
+  "fingerprint": "max 6 words"
 }
 """.trimIndent()
 
@@ -1306,19 +1529,19 @@ OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
         return customKey
     }
 
-    private suspend fun callGemini(request: GeminiRequest, apiKey: String): GeminiResponse {
+    private suspend fun callGemini(model: String, request: GeminiRequest, apiKey: String): GeminiResponse {
         var last: Exception? = null
         for (wait in longArrayOf(0, 3_000, 8_000)) {
             if (wait > 0) delay(wait)
             try {
-                return api.generateContent(MODEL, apiKey, request)
+                return api.generateContent(model, apiKey, request)
             } catch (e: HttpException) {
                 last = e
                 val retryable = e.code() == 429 || e.code() in 500..599
                 if (!retryable) throw e
             }
         }
-        throw last ?: IllegalStateException("Gemini request failed")
+        throw last ?: IllegalStateException("Gemini request failed on model $model")
     }
 
     private fun describe(e: Exception): String {
@@ -1341,10 +1564,6 @@ class SiteThemeController(
     private var handler: ScriptHandler? = null
     private var script: String? = null
 
-    /**
-     * Extracts the live DOM outline from the current WebView, sends it with the user's prompt to Gemini,
-     * and applies the synthesized 3D / Accessible / Creative UIBlueprint immediately without needing a hard reload.
-     */
     suspend fun setTheme(prompt: String, includeScreenshot: Boolean = false): Result<UIBlueprint> {
         val currentUrl = withContext(Dispatchers.Main) { webView.url ?: "*" }
         val outlineJson = webView.evaluateJsSuspend(MydesRuntime.OUTLINE_PROBE_JS)
@@ -1367,7 +1586,6 @@ class SiteThemeController(
                 try { handler?.remove() } catch (_: Exception) {}
                 handler = WebViewCompat.addDocumentStartJavaScript(webView, js, setOf("*"))
             }
-            // Apply live immediately so the user doesn't lose their scroll/session state
             webView.evaluateJavascript(js, null)
         }
         return Result.success(blueprint)
