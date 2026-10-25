@@ -32,30 +32,37 @@ import retrofit2.http.POST
 import retrofit2.http.Path
 import retrofit2.http.Streaming
 import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.net.UnknownHostException
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.math.roundToInt
 
 /*
- * v8 - "Commercial Multi-Device Generative UI Synthesis Engine"
+ * v10 - "Unified Generative UI & DOM Choreography Engine"
  *
- * Key Upgrades in v8:
- * 1. Explicit Tri-Stage Model Routing (Fixes Review Pass Model Bug):
- *    - Pass 1 (Concept): CONCEPT_MODEL ("gemini-3.5-flash-lite")
- *    - Pass 2 (Synthesis): SYNTHESIS_MODEL ("gemini-3.8-flash")
- *    - Pass 3 (Review): REVIEW_MODEL ("gemini-3.5-flash-lite") — explicitly enforced via `isReviewPass = true`
- *      and `android.net.Uri` domain normalization so SPA URL changes never cause a fallback to 3.8-flash.
- * 2. Device-Agnostic Responsive Containment & Live Geometry Guard:
- *    - Works across all Android form factors (compact phones, large phones, foldables, tablets, landscape/portrait).
- *    - Post-render `clampOutOfBoundsElements()` inspects live `getBoundingClientRect()` against `clientWidth`
- *      and automatically pulls in any element or grid track that overflows the viewport.
- * 3. Zero-Dependency DNS-over-HTTPS Fallback:
- *    - Uses only standard `okhttp3` + `org.json.JSONObject` (matching your build.gradle.kts) to resolve
- *      `generativelanguage.googleapis.com` via 8.8.8.8 / 1.1.1.1 whenever carrier DNS throws UnknownHostException.
+ * Core Philosophy:
+ * 1. Single Unified Mode (No "restyle" vs "app_shell" split, No HUD boilerplate):
+ *    - Eliminates artificial mode divisions and removes HUD fields so the model never invents generic floating docks.
+ *    - Every redesign has full creative authority to combine deep CSS3 spatial layouts, high-visibility animated
+ *      SVG/Canvas backdrops, and live DOM augmentation via `customJs` (injecting bespoke SVG mechanisms, 3D layers,
+ *      custom card frames, or interactive viewports directly into the page).
+ * 2. True Choreographic Execution:
+ *    - Art Director (`gemini-3.5-flash-lite`) focuses 100% on concrete visual anatomy, geometry, bespoke SVG
+ *      structures, and spatial motion rather than writing cheap CSS snippets.
+ *    - Synthesis Engine (`gemini-3.8-flash`) implements the full choreography: real inline SVG ornaments injected
+ *      via `MydesBridge.decorateUnits()`, live 3D scroll/touch perspective bound to `var(--m-rx)` / `var(--m-ry)`,
+ *      and structural DOM layout transformations.
+ *    - Review Pass (`gemini-3.5-flash-lite`) audits legibility, overflow, and visual fidelity.
  */
 
 // ───────────────────────── Gemini wire models ─────────────────────────
@@ -87,7 +94,8 @@ data class GenerationConfig(
 
 @JsonClass(generateAdapter = true)
 data class ThinkingConfig(
-    val thinkingBudget: Int? = 0
+    val thinkingBudget: Int? = null,
+    val thinkingLevel: String? = null
 )
 
 @JsonClass(generateAdapter = true)
@@ -162,12 +170,12 @@ object Hex {
 // ───────────────────── Generative UI Blueprint ─────────────────────
 
 /**
- * Strips ::before/::after rules that inject readable words (e.g. content:"> SYS.RECORD").
- * Icons, bullets and attr() content are preserved.
+ * Strips ::before/::after rules that inject generic fake text labels (e.g. content:"> SYS.RECORD").
+ * Icons, symbols, and SVG/data-URIs are preserved.
  */
 internal fun stripInventedLabels(css: String): String =
     css.replace(
-        Regex("""[^{}]*::?(?:before|after)\s*\{[^{}]*content\s*:\s*(["'])[^"'{}]*[A-Za-z]{3,}[^"'{}]*\1[^{}]*\}""", RegexOption.IGNORE_CASE),
+        Regex("""[^{}]*::?(?:before|after)\s*\{[^{}]*content\s*:\s*(["'])(?!data:)[^"'{}]*[A-Za-z]{4,}[^"'{}]*\1[^{}]*\}""", RegexOption.IGNORE_CASE),
         ""
     )
 
@@ -184,20 +192,13 @@ data class UIBlueprint(
     val remapSurfaces: Boolean,
     val customCss: String,
     val backdropHtml: String,
-    val hudHtml: String,
     val customJs: String,
     val concept: String = "",
-    val architecture: String = "restyle", // "restyle" (default) or "app_shell"
-    val needsHud: Boolean = false,
-    val hudReason: String = "",
     val fingerprint: String = ""
 ) {
     fun toJson(): String = JSONObject()
         .put("concept", concept)
         .put("fingerprint", fingerprint)
-        .put("architecture", architecture)
-        .put("needsHud", needsHud)
-        .put("hudReason", hudReason)
         .put("id", id)
         .put("name", name)
         .put("dark", dark)
@@ -210,24 +211,28 @@ data class UIBlueprint(
         .put("remapSurfaces", remapSurfaces)
         .put("customCss", customCss)
         .put("backdropHtml", backdropHtml)
-        .put("hudHtml", hudHtml)
         .put("customJs", customJs)
         .toString()
 
     companion object {
-        const val RUNTIME_VERSION = 8
+        const val RUNTIME_VERSION = 10
 
         private fun jsonSlice(raw: String): String {
             var s = raw.trim()
             Regex("```(?:json)?\\s*([\\s\\S]*?)\\s*```", RegexOption.IGNORE_CASE).find(s)?.let {
-                s = it.groupValues[1]
+                s = it.groupValues[1].trim()
+            }
+            // Check if it's wrapped in Mydes runtime script: (function(BP){...})({"name": ...})
+            val scriptCall = Regex("""\}\)\s*\(\s*(\{[\s\S]*\})\s*\)\s*;?\s*$""").find(s)
+            if (scriptCall != null) {
+                s = scriptCall.groupValues[1].trim()
             }
             val a = s.indexOf('{')
             val b = s.lastIndexOf('}')
             return if (a >= 0 && b > a) s.substring(a, b + 1) else s
         }
 
-        fun parse(raw: String, prompt: String, allowedArchitecture: String = "restyle"): UIBlueprint? {
+        fun parse(raw: String, prompt: String = "Imported Redesign"): UIBlueprint? {
             val j = try { JSONObject(jsonSlice(raw)) } catch (_: Exception) { return null }
             val dark = j.optBoolean("dark", true)
             val white = "#ffffff"
@@ -244,15 +249,43 @@ data class UIBlueprint(
             val ink = Hex.norm(j.optString("ink"), "#111215")
             val accent = Hex.norm(j.optString("accent"), if (dark) "#00e5ff" else "#0055ff")
 
-            val isAppShellApproved = allowedArchitecture.equals("app_shell", ignoreCase = true)
-            val needsHud = isAppShellApproved &&
-                j.optBoolean("needsHud", false) &&
-                j.optString("hudReason").isNotBlank() &&
-                j.optString("hudHtml").isNotBlank()
+            // Support key aliases from frontier models or review passes
+            val rawCss = when {
+                j.has("customCss") -> j.optString("customCss", "")
+                j.has("custom_css") -> j.optString("custom_css", "")
+                j.has("css") -> j.optString("css", "")
+                j.has("fixCss") -> j.optString("fixCss", "")
+                else -> ""
+            }
+
+            val rawJs = when {
+                j.has("customJs") -> j.optString("customJs", "")
+                j.has("custom_js") -> j.optString("custom_js", "")
+                j.has("js") -> j.optString("js", "")
+                j.has("fixJs") -> j.optString("fixJs", "")
+                else -> ""
+            }
+
+            val rawBackdrop = when {
+                j.has("backdropHtml") -> j.optString("backdropHtml", "")
+                j.has("backdrop_html") -> j.optString("backdrop_html", "")
+                j.has("backdrop") -> j.optString("backdrop", "")
+                j.has("html") -> j.optString("html", "")
+                else -> ""
+            }
+
+            val name = when {
+                j.has("name") && j.optString("name").isNotBlank() -> j.optString("name")
+                j.has("title") && j.optString("title").isNotBlank() -> j.optString("title")
+                j.has("themeName") && j.optString("themeName").isNotBlank() -> j.optString("themeName")
+                else -> prompt
+            }.take(50)
+
+            val concept = (j.optString("concept", "").ifBlank { j.optString("idea", "") }).take(300)
 
             return UIBlueprint(
-                id = sha1Hex("v$RUNTIME_VERSION|${prompt.trim().lowercase(Locale.US)}|${j.optString("customCss")}|${j.optString("backdropHtml")}|${j.optString("hudHtml")}|${j.optString("customJs")}").take(12),
-                name = j.optString("name", prompt).take(50),
+                id = sha1Hex("v$RUNTIME_VERSION|${prompt.trim().lowercase(Locale.US)}|$rawCss|$rawBackdrop|$rawJs").take(12),
+                name = name,
                 dark = dark,
                 bg = bg,
                 surface = surface,
@@ -260,15 +293,11 @@ data class UIBlueprint(
                 fg = fg,
                 ink = ink,
                 accent = accent,
-                remapSurfaces = j.optBoolean("remapSurfaces", true),
-                customCss = stripInventedLabels(j.optString("customCss", "")),
-                backdropHtml = j.optString("backdropHtml", ""),
-                hudHtml = if (needsHud) j.optString("hudHtml", "") else "",
-                customJs = j.optString("customJs", ""),
-                concept = j.optString("concept", "").take(300),
-                architecture = if (isAppShellApproved) "app_shell" else "restyle",
-                needsHud = needsHud,
-                hudReason = j.optString("hudReason", "").take(200),
+                remapSurfaces = j.optBoolean("remapSurfaces", false),
+                customCss = stripInventedLabels(rawCss),
+                backdropHtml = rawBackdrop,
+                customJs = rawJs,
+                concept = concept,
                 fingerprint = j.optString("fingerprint", "").take(120)
             )
         }
@@ -279,6 +308,162 @@ typealias ThemeSpec = UIBlueprint
 
 object SitePacks {
     val skipHosts = mutableSetOf("accounts.google.com")
+}
+
+// ───────────────────── Bulletproof Raw-Socket & Cached DNS Resolver ─────────────────────
+
+object ResilientGoogleDns : Dns {
+    private data class CacheEntry(val addresses: List<InetAddress>, val timestamp: Long)
+    private val cache = ConcurrentHashMap<String, CacheEntry>()
+    private const val TTL_MS = 15 * 60 * 1000L
+
+    private val PUBLIC_DNS_SERVERS = listOf(
+        byteArrayOf(8, 8, 8, 8),         // Google Primary
+        byteArrayOf(1, 1, 1, 1),         // Cloudflare Primary
+        byteArrayOf(8, 8, 4, 4),         // Google Secondary
+        byteArrayOf(9, 9, 9, 9)          // Quad9
+    )
+
+    private val GOOGLE_API_FALLBACK_IPS = listOf(
+        byteArrayOf(142.toByte(), 250.toByte(), 192.toByte(), 74.toByte()),
+        byteArrayOf(142.toByte(), 250.toByte(), 183.toByte(), 106.toByte()),
+        byteArrayOf(172.toByte(), 217.toByte(), 160.toByte(), 106.toByte()),
+        byteArrayOf(142.toByte(), 250.toByte(), 77.toByte(), 106.toByte())
+    )
+
+    override fun lookup(hostname: String): List<InetAddress> {
+        val cleanHost = hostname.trim().lowercase(Locale.US)
+        val now = System.currentTimeMillis()
+
+        cache[cleanHost]?.let { entry ->
+            if (now - entry.timestamp < TTL_MS && entry.addresses.isNotEmpty()) {
+                return entry.addresses
+            }
+        }
+
+        try {
+            val sys = Dns.SYSTEM.lookup(cleanHost)
+            if (sys.isNotEmpty()) {
+                cache[cleanHost] = CacheEntry(sys, now)
+                return sys
+            }
+        } catch (_: UnknownHostException) {}
+
+        for (dnsIp in PUBLIC_DNS_SERVERS) {
+            val resolved = queryWireDns(cleanHost, dnsIp)
+            if (resolved.isNotEmpty()) {
+                cache[cleanHost] = CacheEntry(resolved, now)
+                return resolved
+            }
+        }
+
+        cache[cleanHost]?.let { if (it.addresses.isNotEmpty()) return it.addresses }
+
+        if (cleanHost.endsWith("googleapis.com")) {
+            val fallbackList = GOOGLE_API_FALLBACK_IPS.map { ipBytes ->
+                InetAddress.getByAddress(cleanHost, ipBytes)
+            }
+            cache[cleanHost] = CacheEntry(fallbackList, now)
+            return fallbackList
+        }
+
+        throw UnknownHostException("Unable to resolve host \"$hostname\" across System and Public DNS")
+    }
+
+    private fun buildDnsQueryPacket(hostname: String): ByteArray {
+        val baos = ByteArrayOutputStream()
+        val dos = DataOutputStream(baos)
+        dos.writeShort(0x1337)
+        dos.writeShort(0x0100)
+        dos.writeShort(1)
+        dos.writeShort(0)
+        dos.writeShort(0)
+        dos.writeShort(0)
+        for (label in hostname.split('.')) {
+            val bytes = label.toByteArray(Charsets.UTF_8)
+            dos.writeByte(bytes.size)
+            dos.write(bytes)
+        }
+        dos.writeByte(0)
+        dos.writeShort(1)
+        dos.writeShort(1)
+        return baos.toByteArray()
+    }
+
+    private fun parseDnsResponse(hostname: String, resp: ByteArray, length: Int): List<InetAddress> {
+        if (length < 12) return emptyList()
+        val anCount = ((resp[6].toInt() and 0xFF) shl 8) or (resp[7].toInt() and 0xFF)
+        if (anCount <= 0) return emptyList()
+
+        var pos = 12
+        while (pos < length && resp[pos].toInt() != 0) {
+            val len = resp[pos].toInt() and 0xFF
+            if ((len and 0xC0) == 0xC0) { pos += 2; break }
+            pos += len + 1
+        }
+        if (pos < length && resp[pos].toInt() == 0) pos++
+        pos += 4
+
+        val results = mutableListOf<InetAddress>()
+        for (i in 0 until anCount) {
+            if (pos >= length) break
+            while (pos < length && resp[pos].toInt() != 0) {
+                val len = resp[pos].toInt() and 0xFF
+                if ((len and 0xC0) == 0xC0) { pos += 2; break }
+                pos += len + 1
+            }
+            if (pos < length && resp[pos].toInt() == 0) pos++
+            if (pos + 10 > length) break
+
+            val rtype = ((resp[pos].toInt() and 0xFF) shl 8) or (resp[pos + 1].toInt() and 0xFF)
+            val rdLength = ((resp[pos + 8].toInt() and 0xFF) shl 8) or (resp[pos + 9].toInt() and 0xFF)
+            pos += 10
+
+            if (rtype == 1 && rdLength == 4 && pos + 4 <= length) {
+                val ipBytes = resp.copyOfRange(pos, pos + 4)
+                results.add(InetAddress.getByAddress(hostname, ipBytes))
+            }
+            pos += rdLength
+        }
+        return results
+    }
+
+    private fun queryWireDns(hostname: String, dnsServerIp: ByteArray): List<InetAddress> {
+        val query = buildDnsQueryPacket(hostname)
+        val serverAddr = InetAddress.getByAddress(dnsServerIp)
+
+        try {
+            DatagramSocket().use { socket ->
+                socket.soTimeout = 2500
+                val outPacket = DatagramPacket(query, query.size, serverAddr, 53)
+                socket.send(outPacket)
+                val buf = ByteArray(512)
+                val inPacket = DatagramPacket(buf, buf.size)
+                socket.receive(inPacket)
+                val parsed = parseDnsResponse(hostname, buf, inPacket.length)
+                if (parsed.isNotEmpty()) return parsed
+            }
+        } catch (_: Exception) {}
+
+        try {
+            Socket().use { tcp ->
+                tcp.connect(InetSocketAddress(serverAddr, 53), 2500)
+                tcp.soTimeout = 2500
+                val dos = DataOutputStream(tcp.getOutputStream())
+                dos.writeShort(query.size)
+                dos.write(query)
+                dos.flush()
+                val dis = DataInputStream(tcp.getInputStream())
+                val respLen = dis.readUnsignedShort()
+                val buf = ByteArray(respLen)
+                dis.readFully(buf)
+                val parsed = parseDnsResponse(hostname, buf, respLen)
+                if (parsed.isNotEmpty()) return parsed
+            }
+        } catch (_: Exception) {}
+
+        return emptyList()
+    }
 }
 
 // ───────────────────── Universal Generative Runtime + MydesBridge ─────────────────────
@@ -293,7 +478,7 @@ if(BP.skip && BP.skip.indexOf(location.hostname)>=0) return;
 var cfg = BP;
 var changes=[], EB=new WeakMap(), done=new WeakSet(), jobs=[], draining=false;
 var tagDirty=true, lastTag=0, tagDelay=120, BG, FG, INK;
-var cleanupFns=[], mo=null;
+var cleanupFns=[], unitDecorators=[], mo=null;
 var nodeUidCounter=0;
 
 function hex(h){return {r:parseInt(h.substr(1,2),16),g:parseInt(h.substr(3,2),16),b:parseInt(h.substr(5,2),16),a:1};}
@@ -301,15 +486,65 @@ function rgbStr(c){return 'rgb('+Math.round(c.r)+','+Math.round(c.g)+','+Math.ro
 function configure(){BG=hex(cfg.bg);FG=hex(cfg.fg);INK=hex(cfg.ink);}
 configure();
 
-/* ---------- 1. MydesBridge: Universal DOM Control & State-Safe Proxy API ---------- */
+/* ---------- 1. MydesBridge: DOM Augmentation, SVG Ornamentation, 3D & State-Safe Proxy API ---------- */
 window.MydesBridge = {
+  /*
+   * Injects custom thematic HTML/SVG structures (e.g., spinning clockwork gears, comic speech tails,
+   * cybernetic HUD brackets, wax seals, 3D frames) into matching elements on the live page,
+   * and automatically applies them to new elements as the user infinite-scrolls!
+   * Everything injected is marked with class `__mydes_deco` and automatically removed on theme reset.
+   */
+  decorateUnits: function(selector, htmlOrBuilderFn) {
+    var sel = selector || '[data-mydes="card"], [data-mydes="item"]';
+    var rule = { sel: sel, fn: htmlOrBuilderFn };
+    unitDecorators.push(rule);
+    window.MydesBridge._applyDecorators();
+  },
+
+  /* Injects a thematic SVG/HTML centerpiece or ornament into a specific container (like header or main) */
+  injectOrnament: function(targetSelector, htmlString, position) {
+    var target = document.querySelector(targetSelector || '[data-mydes="header"], header');
+    if(!target) return null;
+    var wrap = document.createElement('div');
+    wrap.className = '__mydes_deco';
+    wrap.style.cssText = 'pointer-events:none;position:relative;z-index:2;';
+    wrap.innerHTML = htmlString;
+    if(position === 'prepend') target.prepend(wrap);
+    else target.appendChild(wrap);
+    return wrap;
+  },
+
+  _applyDecorators: function() {
+    for(var r=0; r<unitDecorators.length; r++) {
+      var rule = unitDecorators[r];
+      var nodes = document.querySelectorAll(rule.sel);
+      for(var i=0; i<nodes.length && i<120; i++) {
+        var el = nodes[i];
+        if(el.closest('#__mydes_backdrop') || el.getAttribute('data-m-deco') === cfg.id) continue;
+        el.setAttribute('data-m-deco', cfg.id);
+        var cs = getComputedStyle(el);
+        if(cs.position === 'static') el.style.setProperty('position', 'relative', 'important');
+        var html = typeof rule.fn === 'function' ? rule.fn(el, i) : String(rule.fn || '');
+        if(html) {
+          var deco = document.createElement('div');
+          deco.className = '__mydes_deco';
+          deco.setAttribute('aria-hidden', 'true');
+          deco.style.cssText = 'pointer-events:none !important; position:absolute; inset:0; overflow:visible; z-index:2;';
+          deco.innerHTML = html;
+          el.appendChild(deco);
+        }
+      }
+    }
+  },
+
+  /* Extracts structured items from the live DOM for custom interactive layouts */
   extractNodes: function(customSelector) {
     var sel = customSelector || '[data-mydes="card"], [data-mydes="item"], article, section > div, li, tr';
     var nodes = document.querySelectorAll(sel);
     var list = [];
     for(var i=0; i<nodes.length && list.length<60; i++) {
       var n = nodes[i];
-      if(n.closest('#__mydes_hud,#__mydes_backdrop,nav,header,footer')) continue;
+      if(n.closest('#__mydes_backdrop,nav,header,footer')) continue;
       var r = n.getBoundingClientRect();
       if(r.width < 60 || r.height < 24) continue;
       var txt = (n.textContent || '').replace(/\s+/g, ' ').trim();
@@ -381,7 +616,7 @@ window.MydesBridge = {
     var l = document.querySelectorAll(sel);
     for(var i=0; i<l.length; i++) {
       var e = l[i];
-      if(e.closest('#__mydes_hud,#__mydes_backdrop')) continue;
+      if(e.closest('#__mydes_backdrop')) continue;
       var r = e.getBoundingClientRect();
       if(r.width > 0 && r.height > 0) {
         e.scrollIntoView({behavior:'smooth', block:'center'});
@@ -422,33 +657,7 @@ window.MydesBridge = {
     return false;
   },
 
-  zoom: function(delta) {
-    var cur = parseFloat(document.documentElement.getAttribute('data-m-zoom') || '1');
-    var next = Math.min(1.8, Math.max(0.8, cur + delta));
-    document.documentElement.setAttribute('data-m-zoom', String(next));
-    document.documentElement.style.setProperty('font-size', Math.round(next * 100) + '%', 'important');
-  },
-
-  speakPage: function(customText) {
-    try {
-      if(!window.speechSynthesis) return;
-      window.speechSynthesis.cancel();
-      var txt = customText;
-      if(!txt) {
-        var nodes = document.querySelectorAll('[data-mydes="title"],[data-mydes="heading"],p,h1,h2,h3');
-        var arr = [];
-        for(var i=0; i<nodes.length && arr.length<12; i++) {
-          var t = (nodes[i].textContent||'').trim();
-          if(t.length > 3) arr.push(t);
-        }
-        txt = arr.join('. ') || document.title;
-      }
-      var u = new SpeechSynthesisUtterance(txt.slice(0, 600));
-      u.rate = 0.92;
-      window.speechSynthesis.speak(u);
-    } catch(e){}
-  },
-
+  /* Drives live 3D scroll & touch tilt variables (--m-rx, --m-ry, --m-scroll) */
   enable3DTilt: function(intensity) {
     var mult = typeof intensity === 'number' ? intensity : 1.0;
     var raf = 0, lastY = window.scrollY;
@@ -456,7 +665,7 @@ window.MydesBridge = {
       if(raf) return;
       raf = requestAnimationFrame(function() {
         var sy = window.scrollY;
-        var dy = Math.max(-18, Math.min(18, (sy - lastY) * 0.4 * mult));
+        var dy = Math.max(-14, Math.min(14, (sy - lastY) * 0.35 * mult));
         lastY = sy;
         document.documentElement.style.setProperty('--m-rx', dy.toFixed(2) + 'deg');
         document.documentElement.style.setProperty('--m-scroll', sy + 'px');
@@ -470,8 +679,8 @@ window.MydesBridge = {
       var cy = e.touches[0].clientY;
       if(touchRaf) return;
       touchRaf = requestAnimationFrame(function() {
-        var ry = ((cx / Math.max(1, innerWidth)) - 0.5) * 22 * mult;
-        var rx = (0.5 - (cy / Math.max(1, innerHeight))) * 16 * mult;
+        var ry = ((cx / Math.max(1, innerWidth)) - 0.5) * 16 * mult;
+        var rx = (0.5 - (cy / Math.max(1, innerHeight))) * 12 * mult;
         document.documentElement.style.setProperty('--m-rx', rx.toFixed(2) + 'deg');
         document.documentElement.style.setProperty('--m-ry', ry.toFixed(2) + 'deg');
         touchRaf = 0;
@@ -500,76 +709,44 @@ function updateViewportVars() {
 
 function applySheets() {
   updateViewportVars();
-  /*
-   * Multi-Device Responsive Containment:
-   * - Uses `100%` (rather than `100vw` which ignores scrollbars/margins) to fit any screen size from 280px foldables
-   *   up to 1280px+ tablets.
-   * - Forces `min-width: 0` and `max-width: 100%` on all grid/flex descendants so child items never push past the
-   *   available screen width on any device.
-   * - Preserves infinite-scroll sentinels at the bottom of grids (`grid-column: 1 / -1`).
-   */
+  var baseVars = ':root{' +
+    '--m-bg:'+cfg.bg+';--bg:'+cfg.bg+';' +
+    '--m-surface:'+cfg.surface+';--surface:'+cfg.surface+';' +
+    '--m-surface2:'+cfg.surface2+';--surface2:'+cfg.surface2+';' +
+    '--m-fg:'+cfg.fg+';--fg:'+cfg.fg+';' +
+    '--m-ink:'+cfg.ink+';--ink:'+cfg.ink+';' +
+    '--m-accent:'+cfg.accent+';--accent:'+cfg.accent+';' +
+    '--m-rx:0deg;--m-ry:0deg;--m-scroll:0px;}\n';
+
   var universalSafetyCss =
-    '/* 1. Multi-Device Viewport Containment */\n' +
     '*, *::before, *::after { box-sizing: border-box; }\n' +
-    'html, body {\n' +
+    'html {\n' +
+    '  background-color: var(--m-bg) !important; color: var(--m-fg) !important;\n' +
     '  width: 100% !important; max-width: 100% !important; overflow-x: hidden !important;\n' +
-    '  overflow-y: visible !important; height: auto !important; min-height: 100% !important;\n' +
-    '  margin-left: 0 !important; margin-right: 0 !important;\n' +
     '}\n' +
-    'html body [data-mydes="main"], html body [data-mydes="header"], html body [data-mydes="nav"],\n' +
-    'html body [data-mydes="footer"], html body [data-mydes="grid"] {\n' +
-    '  width: 100% !important; max-width: 100% !important;\n' +
-    '  margin-left: 0 !important; margin-right: 0 !important;\n' +
-    '  box-sizing: border-box !important;\n' +
+    'html body {\n' +
+    '  background: transparent !important; background-color: transparent !important;\n' +
+    '  color: var(--m-fg) !important; width: 100% !important; max-width: 100% !important;\n' +
+    '  overflow-x: hidden !important; overflow-y: visible !important;\n' +
+    '  margin: 0 !important; position: relative !important; z-index: 1 !important;\n' +
     '}\n' +
-    'html body [data-mydes="grid"] > *,\n' +
-    'html body [data-mydes="card"], html body [data-mydes="card"] *,\n' +
-    'html body [data-mydes="item"], html body [data-mydes="item"] * {\n' +
-    '  min-width: 0 !important; max-width: 100% !important;\n' +
-    '  box-sizing: border-box !important;\n' +
+    '#__mydes_backdrop {\n' +
+    '  position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important;\n' +
+    '  pointer-events: none !important; z-index: -1 !important; overflow: hidden !important;\n' +
     '}\n' +
-    'html body [data-mydes="card"], html body [data-mydes="item"] {\n' +
-    '  width: 100% !important; margin-left: 0 !important; margin-right: 0 !important;\n' +
-    '  overflow: hidden !important;\n' +
-    '}\n' +
-    'html body img, html body video, html body canvas, html body svg, html body iframe {\n' +
-    '  max-width: 100% !important; height: auto !important; box-sizing: border-box !important;\n' +
-    '}\n' +
-    '/* 2. Infinite Scroll Sentinel Preservation */\n' +
+    '/* Multi-item shelves / carousels inside a CSS Grid must span all columns so they never get crushed into a 47px column! */\n' +
+    'html body [data-mydes="grid"] > [data-mydes-shelf="true"],\n' +
     'html body [data-mydes="grid"] > :not([data-mydes="card"]):not([data-mydes="item"]),\n' +
     'html body [data-mydes-sentinel="true"] {\n' +
-    '  grid-column: 1 / -1 !important; width: 100% !important;\n' +
-    '  min-height: 28px !important; display: block !important;\n' +
-    '  visibility: visible !important; opacity: 1 !important;\n' +
+    '  grid-column: 1 / -1 !important; width: 100% !important; max-width: 100% !important;\n' +
     '}\n' +
-    '/* 3. Universal Text Unclamping */\n' +
-    'html body [data-mydes="heading"], html body [data-mydes="title"], html body [data-mydes-clamped="true"],\n' +
-    'html body h1, html body h2, html body h3, html body h4 {\n' +
-    '  -webkit-line-clamp: unset !important; line-clamp: unset !important;\n' +
-    '  max-height: none !important; height: auto !important;\n' +
-    '  overflow: visible !important; text-overflow: unset !important;\n' +
-    '  white-space: normal !important; overflow-wrap: anywhere !important; word-break: break-word !important;\n' +
-    '}\n' +
-    '/* 4. Universal Media Overlay Separation */\n' +
-    'html body [data-mydes-overlay-parent="true"] {\n' +
-    '  display: flex !important; flex-direction: column !important; height: auto !important;\n' +
-    '}\n' +
-    'html body [data-mydes-overlay="true"] {\n' +
-    '  position: static !important; inset: auto !important;\n' +
-    '  width: 100% !important; height: auto !important;\n' +
-    '  max-height: none !important; box-sizing: border-box !important;\n' +
-    '  transform: none !important;\n' +
+    '/* Prevent 2-letter vertical noodle text wrapping */\n' +
+    'html body [data-mydes="heading"], html body [data-mydes="title"], html body h1, html body h2, html body h3, html body h4 {\n' +
+    '  white-space: normal !important; word-break: normal !important; overflow-wrap: break-word !important;\n' +
     '}\n';
 
-  var baseVars = ':root{--m-bg:'+cfg.bg+';--m-surface:'+cfg.surface+';--m-surface2:'+cfg.surface2+
-    ';--m-fg:'+cfg.fg+';--m-ink:'+cfg.ink+';--m-accent:'+cfg.accent+';--m-rx:0deg;--m-ry:0deg;--m-scroll:0px;}\n' +
-    'html{background-color:var(--m-bg)!important;color:var(--m-fg)!important;}\n' +
-    'html body{background-color:transparent!important;color:var(--m-fg)!important;position:relative;z-index:1;}\n' +
-    '#__mydes_backdrop{position:fixed;inset:0;width:100%;height:100%;pointer-events:none!important;z-index:-1;overflow:hidden;transform:translateZ(0);will-change:transform;}\n' +
-    '#__mydes_hud{position:fixed;z-index:2147483640;pointer-events:none;inset:0;transform:translateZ(0);}\n' +
-    '#__mydes_hud *{pointer-events:auto;}\n';
-
-  var fullCss = baseVars + '\n' + universalSafetyCss + '\n' + (cfg.customCss || '');
+  // Put universalSafetyCss AFTER cfg.customCss so the model can never accidentally make `html` transparent!
+  var fullCss = baseVars + '\n' + (cfg.customCss || '') + '\n' + universalSafetyCss;
   var root = document.head || document.documentElement;
   if(!root) return;
   if(!eStyle || !eStyle.isConnected) {
@@ -580,7 +757,7 @@ function applySheets() {
   if(eStyle.textContent !== fullCss) eStyle.textContent = fullCss;
 }
 
-/* ---------- 3. Custom Stage Layers (Backdrop + HUD + Sandbox JS) ---------- */
+/* ---------- 3. Custom Stage Layers (Backdrop + Sandbox JS + Live Decorations) ---------- */
 function mountLayers() {
   if(!document.body) return;
   var bd = document.getElementById('__mydes_backdrop');
@@ -597,19 +774,6 @@ function mountLayers() {
     }
   } else if(bd) { bd.remove(); }
 
-  var hud = document.getElementById('__mydes_hud');
-  if(cfg.hudHtml) {
-    if(!hud) {
-      hud = document.createElement('div');
-      hud.id = '__mydes_hud';
-      document.body.appendChild(hud);
-    }
-    if(hud.getAttribute('data-m-id') !== cfg.id) {
-      hud.innerHTML = cfg.hudHtml;
-      hud.setAttribute('data-m-id', cfg.id);
-    }
-  } else if(hud) { hud.remove(); }
-
   if(cfg.customJs && document.body.getAttribute('data-m-js') !== cfg.id) {
     document.body.setAttribute('data-m-js', cfg.id);
     try {
@@ -617,6 +781,7 @@ function mountLayers() {
       fn(window.MydesBridge, cfg);
     } catch(e) { console.warn('[Mydes CustomJS Error]', e); }
   }
+  window.MydesBridge._applyDecorators();
 }
 
 /* ---------- 4. Geometry-Driven Universal DOM Tagger & Live Bounds Clamper ---------- */
@@ -634,7 +799,7 @@ function isUnitLike(e){
     e.setAttribute('data-mydes-sentinel', 'true');
     return false;
   }
-  if(e.closest('nav,footer,header,#__mydes_hud,#__mydes_backdrop,[data-mydes="nav"],[data-mydes="footer"],[data-mydes="header"]')) return false;
+  if(e.closest('nav,footer,header,#__mydes_backdrop,[data-mydes="nav"],[data-mydes="footer"],[data-mydes="header"],.__mydes_deco')) return false;
   var t = (e.textContent||'').trim().length;
   if(t < 6 || t > 1800) return false;
   var r = e.getBoundingClientRect();
@@ -651,7 +816,7 @@ function normalizeUnitInternals(unit){
   var mediaEl = unit.querySelector('img,video,picture');
   var mediaRect = mediaEl ? mediaEl.getBoundingClientRect() : null;
 
-  var sub = unit.querySelectorAll('*');
+  var sub = unit.querySelectorAll('*:not(.__mydes_deco):not(.__mydes_deco *)');
   for(var i=0; i<sub.length && i<80; i++){
     var x = sub[i];
     var cs = getComputedStyle(x);
@@ -682,7 +847,7 @@ function normalizeUnitInternals(unit){
 }
 
 function findCollections(){
-  var ps = document.body.querySelectorAll('*:not(#__mydes_hud *):not(#__mydes_backdrop *)'), n = 0;
+  var ps = document.body.querySelectorAll('*:not(#__mydes_backdrop *):not(.__mydes_deco):not(.__mydes_deco *)'), n = 0;
   for(var i = ps.length - 1; i >= 0 && n < 3000; i--){
     var p = ps[i], k = p.children.length;
     if(k < 2 || k > 150) continue;
@@ -697,7 +862,7 @@ function findCollections(){
       }
       continue;
     }
-    if(p.closest('nav,footer,header,#__mydes_hud,#__mydes_backdrop,[data-mydes="nav"],[data-mydes="footer"],[data-mydes="header"]')) continue;
+    if(p.closest('nav,footer,header,#__mydes_backdrop,[data-mydes="nav"],[data-mydes="footer"],[data-mydes="header"]')) continue;
     if(p.querySelector('[data-mydes="item"],[data-mydes="card"]')) continue;
 
     var groups = {}, best = null;
@@ -725,7 +890,7 @@ function markPricesAndMeta(){
   var l = document.querySelectorAll('span,div,p,strong,b,em,ins,bdi,time'), n = 0;
   for(var i=0; i<l.length && n<400; i++){
     var e = l[i];
-    if(e.closest('#__mydes_hud,#__mydes_backdrop')) continue;
+    if(e.closest('#__mydes_backdrop,.__mydes_deco')) continue;
     if(e.children.length > 2 || e.hasAttribute('data-mydes')) continue;
     var t = (e.textContent||'').trim();
     if(t.length > 24 || t.length < 2) continue;
@@ -733,16 +898,36 @@ function markPricesAndMeta(){
   }
 }
 
-/*
- * Device-Agnostic Post-Render Geometry Clamper:
- * Measures actual rendered bounding boxes against the current device's `clientWidth`.
- * If any grid container, card, header, or child extends past the left (< 0) or right (> clientWidth)
- * edge of the screen on ANY device size, it automatically clamps its width, grid-template-columns,
- * or horizontal margins so nothing is ever cut off.
- */
 function clampOutOfBoundsElements() {
   var vw = document.documentElement.clientWidth || window.innerWidth;
   if(vw <= 0 || !document.body) return;
+
+  // 1. Any grid child that contains multiple side-by-side items (or whose inner items are crushed < 110px wide)
+  // must span the full width of the parent grid (grid-column: 1 / -1)
+  var gridChildren = document.querySelectorAll('[data-mydes="grid"] > *, lazy-list > *');
+  for(var c=0; c<gridChildren.length && c<120; c++) {
+    var child = gridChildren[c];
+    var subCards = child.querySelectorAll('[data-mydes="card"], [data-mydes="item"], a[href] img');
+    if(subCards.length >= 2) {
+      setProp(child, 'grid-column', '1 / -1');
+      setProp(child, 'width', '100%');
+      setProp(child, 'max-width', '100%');
+    }
+  }
+
+  // 2. If any text heading is crushed narrower than 90px (causing 2-letter vertical wrapping),
+  // force its ancestor grid container back to 1 column or span the item full-width
+  var headings = document.querySelectorAll('h1, h2, h3, [data-mydes="heading"], [data-mydes="title"]');
+  for(var h=0; h<headings.length && h<80; h++) {
+    var hr = headings[h].getBoundingClientRect();
+    if(hr.width > 0 && hr.width < 95 && hr.height > hr.width * 1.8) {
+      var cardAnc = headings[h].closest('[data-mydes="card"], [data-mydes="item"]') || headings[h].parentElement;
+      if(cardAnc) {
+        setProp(cardAnc, 'grid-column', '1 / -1');
+        setProp(cardAnc, 'width', '100%');
+      }
+    }
+  }
 
   var grids = document.querySelectorAll('[data-mydes="grid"]');
   for(var g=0; g<grids.length; g++) {
@@ -779,7 +964,6 @@ function clampOutOfBoundsElements() {
       setProp(el, 'margin-left', '0px');
       setProp(el, 'margin-right', '0px');
       setProp(el, 'box-sizing', 'border-box');
-      // If a parent grid wasn't tagged [data-mydes="grid"] but its children overflow horizontally, clamp the parent too
       var p = el.parentElement;
       if(p && p !== document.body) {
         var pcs = getComputedStyle(p);
@@ -812,15 +996,15 @@ function retag(){
 
   if(performance.now() - t0 < 45) findCollections();
 
-  each('h1', function(e){ if(!e.closest('#__mydes_hud')){ putNew(e,'title'); e.setAttribute('data-mydes-clamped','true'); } });
-  each('h2,h3,h4', function(e){ if(!e.closest('#__mydes_hud')){ putNew(e,'heading'); e.setAttribute('data-mydes-clamped','true'); } });
+  each('h1', function(e){ if(!e.closest('.__mydes_deco')){ putNew(e,'title'); e.setAttribute('data-mydes-clamped','true'); } });
+  each('h2,h3,h4', function(e){ if(!e.closest('.__mydes_deco')){ putNew(e,'heading'); e.setAttribute('data-mydes-clamped','true'); } });
   each('button,input[type="submit"],input[type="button"],[role="button"]', function(e){
-    if(!e.closest('#__mydes_hud')) putNew(e,'btn');
+    if(!e.closest('.__mydes_deco')) putNew(e,'btn');
   });
   each('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]),textarea,select', function(e){
-    if(!e.closest('#__mydes_hud')) putNew(e,'field');
+    if(!e.closest('.__mydes_deco')) putNew(e,'field');
   });
-  each('img,video,picture', function(e){ if(!e.closest('#__mydes_hud,#__mydes_backdrop')) putNew(e,'media'); });
+  each('img,video,picture', function(e){ if(!e.closest('#__mydes_backdrop,.__mydes_deco')) putNew(e,'media'); });
   markPricesAndMeta();
   clampOutOfBoundsElements();
 }
@@ -906,7 +1090,11 @@ function undoAll(){
     var c=changes[i];
     try{if(c.v)c.el.style.setProperty(c.p,c.v,c.pr);else c.el.style.removeProperty(c.p);}catch(e){}
   }
-  changes=[];EB=new WeakMap();done=new WeakSet();
+  changes=[];EB=new WeakMap();done=new WeakSet();unitDecorators=[];
+  var decos = document.querySelectorAll('.__mydes_deco');
+  for(var d=0; d<decos.length; d++){ try{decos[d].remove();}catch(e){} }
+  var marked = document.querySelectorAll('[data-m-deco]');
+  for(var m=0; m<marked.length; m++){ try{marked[m].removeAttribute('data-m-deco');}catch(e){} }
   for(var j=0;j<cleanupFns.length;j++){try{cleanupFns[j]();}catch(e){}}
   cleanupFns=[];
 }
@@ -933,7 +1121,7 @@ function pickInk(bg){
 function handle(el){
   if(done.has(el))return;
   done.add(el);
-  if(el.closest && el.closest('#__mydes_hud,#__mydes_backdrop'))return;
+  if(el.closest && el.closest('#__mydes_backdrop,.__mydes_deco'))return;
   var tag=el.tagName.toUpperCase();
   if(SKIPTAG.test(tag))return;
   var cs=getComputedStyle(el);
@@ -1006,7 +1194,7 @@ function observe(){
       for(var i=0;i<muts.length&&n<120;i++){
         var a=muts[i].addedNodes;
         for(var j=0;j<a.length;j++){
-          if(a[j].nodeType===1 && a[j].id!=='__mydes_backdrop' && a[j].id!=='__mydes_hud'){
+          if(a[j].nodeType===1 && a[j].id!=='__mydes_backdrop' && !a[j].classList.contains('__mydes_deco')){
             enqueue(a[j]);n++;
           }
         }
@@ -1045,7 +1233,6 @@ window.__mydes={
     if(mo)mo.disconnect();
     var s=document.getElementById('__mydes_style');if(s)s.remove();
     var b=document.getElementById('__mydes_backdrop');if(b)b.remove();
-    var h=document.getElementById('__mydes_hud');if(h)h.remove();
   }
 };
 start();
@@ -1066,7 +1253,7 @@ start();
             if(!e || e===document.body || e===document.documentElement) return '';
             var s = e.tagName.toLowerCase();
             if(e.id && !/\d{4,}/.test(e.id)) return s + '#' + CSS.escape(e.id);
-            var cl = (e.className && typeof e.className === 'string') ? e.className.trim().split(/\s+/).filter(Boolean) : [];
+            var cl = (e.className && typeof e.className === 'string') ? e.className.trim().split(/\s+/).filter(function(c){ return c && c !== '__mydes_deco'; }) : [];
             if(cl.length) s += '.' + cl.slice(0,2).map(function(c){ return window.CSS && CSS.escape ? CSS.escape(c) : c; }).join('.');
             return s;
           }
@@ -1074,52 +1261,82 @@ start();
           var vw = document.documentElement.clientWidth || innerWidth;
           var vh = document.documentElement.clientHeight || innerHeight;
 
-          var counts={};
-          ['header','nav','main','aside','footer','form','button','input','img','video','article','section','table','ul','ol','h1','h2','h3'].forEach(function(t){
-            counts[t]=document.querySelectorAll(t).length;
-          });
+          // 1. Detect full-screen opaque wrappers that would block backdrop visibility
+          var opaqueWrappers = [];
+          var bodyEls = document.body ? document.body.querySelectorAll('*:not(script):not(style):not(noscript):not(svg):not(path)') : [];
+          for (var w = 0; w < bodyEls.length && opaqueWrappers.length < 8; w++) {
+            var el = bodyEls[w];
+            var r = el.getBoundingClientRect();
+            if (r.width >= vw * 0.85 && r.height >= vh * 0.75) {
+              var bg = getComputedStyle(el).backgroundColor;
+              var m = /rgba?\(([^)]+)\)/.exec(bg || '');
+              if (m) {
+                var p = m[1].split(/[ ,\/]+/).filter(Boolean).map(parseFloat);
+                if (p.length >= 3 && (p.length === 3 || p[3] >= 0.7)) {
+                  var selStr = getSel(el);
+                  if (selStr && opaqueWrappers.indexOf(selStr) === -1) opaqueWrappers.push(selStr);
+                }
+              }
+            }
+          }
 
-          var all = document.body ? document.body.querySelectorAll('*:not(script):not(style):not(noscript):not(svg):not(path)') : [];
+          // 2. Discover repeating structures and inspect internal child box-models
           var groups = {};
-
-          for(var i=0; i<all.length && i<3500; i++){
-            var e = all[i];
-            if(e.closest('#__mydes_hud,#__mydes_backdrop,nav,header,footer')) continue;
-            if(e.children.length < 1 || e.children.length > 25) continue;
+          for (var i = 0; i < bodyEls.length && i < 3500; i++) {
+            var e = bodyEls[i];
+            if (e.closest('#__mydes_backdrop,nav,header,footer,.__mydes_deco')) continue;
+            if (e.children.length < 1 || e.children.length > 25) continue;
 
             var r = e.getBoundingClientRect();
-            if(r.width < 60 || r.height < 24) continue;
+            if (r.width < 60 || r.height < 24) continue;
 
             var t = (e.textContent || '').replace(/\s+/g,' ').trim();
-            if(t.length < 10 || t.length > 1000) continue;
+            if (t.length < 10 || t.length > 1000) continue;
 
             var hasMedia = !!e.querySelector('img,video,picture,canvas');
-            if(!hasMedia && e.parentElement) {
+            if (!hasMedia && e.parentElement) {
               var pr = e.parentElement.getBoundingClientRect();
-              if(r.width < pr.width * 0.72 && e.parentElement.querySelector('img,video,picture')) continue;
+              if (r.width < pr.width * 0.72 && e.parentElement.querySelector('img,video,picture')) continue;
             }
 
             var p = e.parentElement;
-            if(!p || p === document.body) continue;
+            if (!p || p === document.body) continue;
             var k = getSel(e);
-            if(!k) continue;
+            if (!k) continue;
 
             var parentSel = getSel(p);
             var cs = getComputedStyle(e);
             var pcs = getComputedStyle(p);
             var key = parentSel + ' > ' + k;
 
-            var g = groups[key] || (groups[key] = {
-              sel: k,
-              parentSel: parentSel,
-              n: 0,
-              hasMedia: hasMedia,
-              itemDisplay: cs.display + (cs.flexDirection && cs.display.indexOf('flex')>=0 ? ' ('+cs.flexDirection+')' : ''),
-              parentDisplay: pcs.display,
-              widthPct: Math.round((r.width / Math.max(1, vw)) * 100),
-              sample: t.slice(0, 45)
-            });
-            g.n++;
+            if (!groups[key]) {
+              var childrenInfo = [];
+              for (var c = 0; c < e.children.length && c < 5; c++) {
+                var ch = e.children[c];
+                var cr = ch.getBoundingClientRect();
+                var ccs = getComputedStyle(ch);
+                childrenInfo.push({
+                  sel: getSel(ch),
+                  w: Math.round(cr.width),
+                  h: Math.round(cr.height),
+                  display: ccs.display,
+                  isMedia: !!ch.matches('img,video,picture') || !!ch.querySelector('img,video,picture')
+                });
+              }
+
+              groups[key] = {
+                sel: k,
+                parentSel: parentSel,
+                n: 0,
+                hasMedia: hasMedia,
+                itemDisplay: cs.display + (cs.flexDirection && cs.display.indexOf('flex')>=0 ? ' ('+cs.flexDirection+')' : ''),
+                parentDisplay: pcs.display,
+                widthPct: Math.round((r.width / Math.max(1, vw)) * 100),
+                sample: t.slice(0, 45),
+                childBoxModels: childrenInfo
+              };
+            }
+            groups[key].n++;
           }
 
           var rep = Object.keys(groups).map(function(k){ return groups[k]; })
@@ -1130,20 +1347,20 @@ start();
           var heads = [].slice.call(document.querySelectorAll('h1,h2,h3,[role="heading"]')).slice(0, 6)
             .map(function(h){ return (h.textContent || '').replace(/\s+/g,' ').trim().slice(0, 45); });
 
-          var o;
-          if(window.__mydes && window.__mydes.outline){
-            try { o = JSON.parse(window.__mydes.outline()); } catch(e){}
-          }
-          if(!o) {
-            o = { url: location.href, host: location.hostname, title: (document.title||'').slice(0, 80), viewport: { w: vw, h: vh }, counts: counts };
-          }
-          o.repeatedStructures = rep;
-          o.headings = heads;
+          var o = {
+            url: location.href,
+            host: location.hostname,
+            title: (document.title||'').slice(0, 80),
+            viewport: { w: vw, h: vh },
+            opaqueWrappers: opaqueWrappers,
+            repeatedStructures: rep,
+            headings: heads
+          };
           return o;
         })();
     """
 
-    const val CONTRAST_AUDIT_JS = """
+    const val VISUAL_AND_DOM_AUDIT_JS = """
         (function(){
           try{
             var vw = document.documentElement.clientWidth || innerWidth;
@@ -1153,24 +1370,60 @@ start();
             function R(a,b){var x=L(a),y=L(b);if(x<y){var t=x;x=y;y=t;}return (x+0.05)/(y+0.05);}
             function mix(t,b){var a=t.a;return {r:t.r*a+b.r*(1-a),g:t.g*a+b.g*(1-a),b:t.b*a+b.b*(1-a),a:1};}
             function hx(c){function h(v){v=Math.max(0,Math.min(255,Math.round(v)));return (v<16?'0':'')+v.toString(16);}return '#'+h(c.r)+h(c.g)+h(c.b);}
-            function sel(e){var s=e.tagName.toLowerCase();var d=e.getAttribute('data-mydes');if(d)s+='[data-mydes="'+d+'"]';var cl=e.classList;for(var i=0;i<cl.length&&i<2;i++){s+='.'+(window.CSS&&CSS.escape?CSS.escape(cl[i]):cl[i]);}return s;}
-            var hasBackdrop=!!document.getElementById('__mydes_backdrop');
-            var rootBg=P(getComputedStyle(document.documentElement).backgroundColor)||{r:255,g:255,b:255,a:1};
-            if(rootBg.a<1)rootBg=mix(rootBg,{r:255,g:255,b:255,a:1});
-            function bgOf(el){
-              var layers=[],opaque=false;
-              for(var n=el;n&&n.nodeType===1;n=n.parentElement){
-                var cs=getComputedStyle(n);
-                if(cs.backgroundImage&&cs.backgroundImage!=='none')return null;
-                var c=P(cs.backgroundColor);
-                if(c&&c.a>0){layers.push(c);if(c.a>=0.99){opaque=true;break;}}
-              }
-              if(!opaque&&hasBackdrop)return null;
-              var base=rootBg;
-              for(var i=layers.length-1;i>=0;i--)base=mix(layers[i],base);
-              return base;
+            function sel(e){
+              if(!e || e===document.body || e===document.documentElement) return '';
+              var s = e.tagName.toLowerCase();
+              var d = e.getAttribute('data-mydes');
+              if(d) s += '[data-mydes="'+d+'"]';
+              var cl = (e.className && typeof e.className === 'string') ? e.className.trim().split(/\s+/).filter(Boolean) : [];
+              if(cl.length) s += '.' + cl.slice(0,2).map(function(c){ return window.CSS&&CSS.escape?CSS.escape(c):c; }).join('.');
+              return s;
             }
-            var found={},clipped=[],checked=0,unknown=0,guard=0,node;
+
+            // 1. Audit whether backdrop is occluded by opaque elements in front of it
+            var occludingWrappers = [];
+            var stack = document.elementsFromPoint(vw / 2, vh / 2);
+            for(var s=0; s<stack.length; s++){
+              var elStack = stack[s];
+              if(elStack.id === '__mydes_backdrop' || elStack.tagName === 'HTML' || elStack.tagName === 'BODY') continue;
+              var bg = P(getComputedStyle(elStack).backgroundColor);
+              if(bg && bg.a >= 0.75) {
+                var rStack = elStack.getBoundingClientRect();
+                if(rStack.width >= vw * 0.8 && rStack.height >= vh * 0.6) {
+                  occludingWrappers.push(sel(elStack));
+                }
+              }
+            }
+
+            // 2. Audit injected ornaments: check if crushed, zero-size, or missing
+            var brokenOrnaments = [];
+            var decos = document.querySelectorAll('.__mydes_deco, [data-m-deco]');
+            for(var d=0; d<decos.length && d<10; d++){
+              var decoEl = decos[d];
+              var dr = decoEl.getBoundingClientRect();
+              var dcs = getComputedStyle(decoEl);
+              if(dr.width < 4 || dr.height < 4 || dcs.display === 'none' || dcs.visibility === 'hidden') {
+                brokenOrnaments.push({ parent: sel(decoEl.parentElement), issue: 'zero_size_or_hidden', w: Math.round(dr.width), h: Math.round(dr.height) });
+              }
+            }
+
+            // 3. Audit unfilled media containers inside cards (e.g. 160px image inside 350px column card)
+            var unfilledMedia = [];
+            var cards = document.querySelectorAll('[data-mydes="card"], [data-mydes="item"]');
+            for(var c=0; c<cards.length && c<8; c++){
+              var card = cards[c];
+              var cardW = card.getBoundingClientRect().width;
+              var media = card.querySelector('img, video, ytm-thumbnail-cover, .media-item-thumbnail-container');
+              if(media && cardW > 140) {
+                var mediaW = media.getBoundingClientRect().width;
+                if(mediaW < cardW * 0.75) {
+                  unfilledMedia.push({ card: sel(card), media: sel(media), cardWidth: Math.round(cardW), mediaWidth: Math.round(mediaW) });
+                }
+              }
+            }
+
+            // 4. Contrast and Right-Edge Overflow Checks
+            var found={}, clipped=[], checked=0, unknown=0, guard=0, node;
             var seen=new WeakSet();
             var tw=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null);
             var limitY=vh*2.5;
@@ -1179,7 +1432,7 @@ start();
               var el=node.parentElement;
               if(!el||seen.has(el))continue;
               seen.add(el);
-              if(el.closest('#__mydes_hud,#__mydes_backdrop,script,style,noscript'))continue;
+              if(el.closest('#__mydes_backdrop,.__mydes_deco,script,style,noscript'))continue;
               var r=el.getBoundingClientRect();
               if(r.width<4||r.height<4||r.bottom<0||r.top>limitY)continue;
               if((r.right > vw + 2 || r.left < -2) && clipped.length < 6) {
@@ -1189,23 +1442,31 @@ start();
               if(cs2.visibility==='hidden'||cs2.display==='none'||parseFloat(cs2.opacity)===0)continue;
               var fg=P(cs2.color);
               if(!fg||fg.a===0)continue;
-              var bg=bgOf(el);
-              if(!bg){unknown++;continue;}
-              var fgc=fg.a<1?mix(fg,bg):fg;
+              var bg2=P(cs2.backgroundColor);
+              if(!bg2 || bg2.a < 0.5) continue;
               checked++;
-              var ratio=R(fgc,bg);
+              var ratio=R(fg,bg2);
               if(ratio<3){
-                var key=sel(el)+'|'+hx(fgc)+'|'+hx(bg);
-                var f=found[key]||(found[key]={sel:sel(el),text:(node.nodeValue||'').trim().slice(0,28),fg:hx(fgc),bg:hx(bg),ratio:Math.round(ratio*100)/100,count:0});
+                var key=sel(el)+'|'+hx(fg)+'|'+hx(bg2);
+                var f=found[key]||(found[key]={sel:sel(el),text:(node.nodeValue||'').trim().slice(0,28),fg:hx(fg),bg:hx(bg2),ratio:Math.round(ratio*100)/100,count:0});
                 f.count++;
               }
             }
-            var worst=Object.keys(found).map(function(k){return found[k];}).sort(function(a,b){return a.ratio-b.ratio;});
-            var failing=0;worst.forEach(function(w){failing+=w.count;});
-            return {viewport:{w:vw,h:vh},checked:checked,unknownBg:unknown,failing:failing,overflowX:document.documentElement.scrollWidth-vw,clippedElements:clipped,worst:worst.slice(0,10)};
+
+            return {
+              viewport: { w: vw, h: vh },
+              backdropOccludedBy: occludingWrappers,
+              brokenOrnaments: brokenOrnaments,
+              unfilledMediaContainers: unfilledMedia,
+              clippedElements: clipped,
+              overflowX: document.documentElement.scrollWidth - vw,
+              contrastIssues: Object.keys(found).map(function(k){return found[k];}).slice(0, 8)
+            };
           }catch(e){return {error:String(e)};}
         })();
     """
+
+    const val CONTRAST_AUDIT_JS = VISUAL_AND_DOM_AUDIT_JS
 }
 
 fun WebView.captureJpegBase64(maxWidth: Int = 640): String? {
@@ -1234,16 +1495,15 @@ suspend fun WebView.evaluateJsSuspend(script: String): String? = withContext(Dis
 // ───────────────────── Blueprint Cache ─────────────────────
 
 class ThemeStore(context: Context) {
-    private val prefs = context.applicationContext.getSharedPreferences("mydes_blueprints_v8", Context.MODE_PRIVATE)
+    private val prefs = context.applicationContext.getSharedPreferences("mydes_blueprints_v10", Context.MODE_PRIVATE)
     private fun key(prompt: String, domain: String) =
-        "bp8|" + sha1Hex("${domain.trim().lowercase(Locale.US)}|${prompt.trim().lowercase(Locale.US)}")
+        "bp10|" + sha1Hex("${domain.trim().lowercase(Locale.US)}|${prompt.trim().lowercase(Locale.US)}")
     private fun lastPromptKey(prompt: String) =
-        "bp8_last|" + sha1Hex(prompt.trim().lowercase(Locale.US))
+        "bp10_last|" + sha1Hex(prompt.trim().lowercase(Locale.US))
 
     fun get(prompt: String, domain: String = "*"): UIBlueprint? {
         val exact = prefs.getString(key(prompt, domain), null)?.let { UIBlueprint.parse(it, prompt) }
         if (exact != null) return exact
-        // Fallback if the SPA URL/host shifted slightly between Pass 2 and Pass 3 (Review)
         return prefs.getString(lastPromptKey(prompt), null)?.let { UIBlueprint.parse(it, prompt) }
     }
 
@@ -1286,65 +1546,13 @@ class GeminiStylerService {
 
     private val moshi = Moshi.Builder().add(KotlinJsonAdapterFactory()).build()
 
-    /**
-     * Zero-Dependency DNS-over-HTTPS Fallback (compatible with standard okhttp3 in your build.gradle.kts):
-     * Uses system DNS first. If the ISP resolver fails with UnknownHostException, queries Google Public DNS
-     * (8.8.8.8) or Cloudflare (1.1.1.1) over HTTPS by direct IP so no hostname lookup is needed for the DNS server.
-     */
-    private val resilientDns = object : Dns {
-        private val dohHttpClient = OkHttpClient.Builder()
-            .connectTimeout(8, TimeUnit.SECONDS)
-            .readTimeout(8, TimeUnit.SECONDS)
-            .build()
-
-        override fun lookup(hostname: String): List<InetAddress> {
-            try {
-                val sys = Dns.SYSTEM.lookup(hostname)
-                if (sys.isNotEmpty()) return sys
-            } catch (_: UnknownHostException) {
-                // Fall through to DoH JSON resolution over raw IP
-            }
-
-            val endpoints = listOf(
-                "https://8.8.8.8/resolve?name=$hostname&type=A",
-                "https://1.1.1.1/dns-query?name=$hostname&type=A"
-            )
-            for (url in endpoints) {
-                try {
-                    val req = Request.Builder()
-                        .url(url)
-                        .header("Accept", "application/dns-json")
-                        .build()
-                    dohHttpClient.newCall(req).execute().use { resp ->
-                        val body = resp.body?.string() ?: return@use
-                        val json = JSONObject(body)
-                        val answers = json.optJSONArray("Answer") ?: return@use
-                        val resolved = mutableListOf<InetAddress>()
-                        for (i in 0 until answers.length()) {
-                            val ans = answers.getJSONObject(i)
-                            if (ans.optInt("type") == 1) { // A record (IPv4)
-                                val ip = ans.optString("data", "").trim()
-                                if (ip.isNotEmpty()) {
-                                    resolved.add(InetAddress.getByName(ip))
-                                }
-                            }
-                        }
-                        if (resolved.isNotEmpty()) return resolved
-                    }
-                } catch (_: Exception) {
-                    // Try next DoH endpoint
-                }
-            }
-            return Dns.SYSTEM.lookup(hostname)
-        }
-    }
-
     private val okHttpClient = OkHttpClient.Builder()
-        .dns(resilientDns)
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
-        .pingInterval(15, TimeUnit.SECONDS)
+        .dns(ResilientGoogleDns)
+        .connectTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(240, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS)
+        .callTimeout(300, TimeUnit.SECONDS)
+        .pingInterval(10, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
 
@@ -1376,16 +1584,19 @@ class GeminiStylerService {
         websiteName: String,
         websiteUrl: String,
         forceFresh: Boolean = false,
-        outlineJson: String? = null
+        outlineJson: String? = null,
+        initialScreenshotBase64: String? = null,
+        onThinkingUpdate: ((phase: String, chunk: String, isComplete: Boolean) -> Unit)? = null
     ): Result<String> = synthesizeBlueprint(
         context = context,
         prompt = userPrompt,
         websiteName = websiteName,
         websiteUrl = websiteUrl,
         pageOutlineJson = outlineJson?.takeIf { it.isNotBlank() && it != "null" },
-        screenshotBase64 = null,
+        screenshotBase64 = initialScreenshotBase64,
         forceFresh = forceFresh,
-        isReviewPass = false
+        isReviewPass = false,
+        onThinkingUpdate = onThinkingUpdate
     ).map { MydesRuntime.script(it) }
 
     suspend fun generateUserScriptWithFeedback(
@@ -1397,7 +1608,8 @@ class GeminiStylerService {
         screenWidth: Int,
         screenHeight: Int,
         outlineJson: String? = null,
-        auditJson: String? = null
+        auditJson: String? = null,
+        onThinkingUpdate: ((phase: String, chunk: String, isComplete: Boolean) -> Unit)? = null
     ): Result<String> = synthesizeBlueprint(
         context = context,
         prompt = userPrompt,
@@ -1408,7 +1620,8 @@ class GeminiStylerService {
         screenshotBase64 = screenshotBase64,
         forceFresh = false,
         auditJson = auditJson,
-        isReviewPass = true // Explicitly locks this call to REVIEW_MODEL (gemini-3.5-flash-lite)
+        isReviewPass = true,
+        onThinkingUpdate = onThinkingUpdate
     ).map { MydesRuntime.script(it) }
 
     suspend fun adaptUserScriptForWebpage(
@@ -1417,7 +1630,8 @@ class GeminiStylerService {
         baseScript: String,
         pageTitle: String,
         pageUrl: String,
-        domain: String
+        domain: String,
+        onThinkingUpdate: ((phase: String, chunk: String, isComplete: Boolean) -> Unit)? = null
     ): Result<String> = synthesizeBlueprint(
         context = context,
         prompt = basePrompt,
@@ -1425,7 +1639,8 @@ class GeminiStylerService {
         websiteUrl = pageUrl,
         pageOutlineJson = null,
         screenshotBase64 = null,
-        isReviewPass = false
+        isReviewPass = false,
+        onThinkingUpdate = onThinkingUpdate
     ).map { MydesRuntime.script(it) }
 
     suspend fun themeSpec(
@@ -1434,7 +1649,8 @@ class GeminiStylerService {
         websiteUrl: String = "*",
         pageOutlineJson: String? = null,
         screenshotBase64: String? = null,
-        forceFresh: Boolean = false
+        forceFresh: Boolean = false,
+        onThinkingUpdate: ((phase: String, chunk: String, isComplete: Boolean) -> Unit)? = null
     ): Result<UIBlueprint> = synthesizeBlueprint(
         context = context,
         prompt = prompt,
@@ -1443,7 +1659,8 @@ class GeminiStylerService {
         pageOutlineJson = pageOutlineJson,
         screenshotBase64 = screenshotBase64,
         forceFresh = forceFresh,
-        isReviewPass = screenshotBase64 != null && !forceFresh
+        isReviewPass = screenshotBase64 != null && !forceFresh,
+        onThinkingUpdate = onThinkingUpdate
     )
 
     // ───── Pass 1: Concept Pass (Art Director using gemini-3.5-flash-lite) ─────
@@ -1453,8 +1670,7 @@ class GeminiStylerService {
     private class ConceptBrief(
         val raw: String,
         val idea: String,
-        val fingerprint: String,
-        val architecture: String // "restyle" | "app_shell"
+        val fingerprint: String
     )
 
     private fun extractJsonObject(raw: String): String? {
@@ -1470,7 +1686,8 @@ class GeminiStylerService {
         parts: List<Part>,
         temperature: Float,
         topP: Float,
-        maxTokens: Int
+        maxTokens: Int,
+        onThoughtChunk: ((String) -> Unit)? = null
     ): String {
         val req = GeminiRequest(
             contents = listOf(Content(parts = parts)),
@@ -1479,11 +1696,10 @@ class GeminiStylerService {
                 temperature = temperature,
                 topP = topP,
                 maxOutputTokens = maxTokens,
-                responseMimeType = "application/json",
-                thinkingConfig = ThinkingConfig(thinkingBudget = 0)
+                responseMimeType = "application/json"
             )
         )
-        return callGeminiStream(model, req, apiKey)
+        return callGeminiStream(model, req, apiKey, onThoughtChunk).first
     }
 
     private suspend fun designBrief(
@@ -1492,55 +1708,82 @@ class GeminiStylerService {
         websiteName: String,
         websiteUrl: String,
         pageOutlineJson: String?,
-        apiKey: String
-    ): ConceptBrief? {
+        apiKey: String,
+        onThinkingUpdate: ((phase: String, chunk: String, isComplete: Boolean) -> Unit)? = null
+    ): Result<ConceptBrief> {
+        onThinkingUpdate?.invoke("Pass 1: Concept Direction ($CONCEPT_MODEL)", "Brainstorming creative aesthetic and visual anatomy...", false)
         val input = buildString {
             appendLine("USER REQUEST: \"$prompt\"")
             appendLine("TARGET WEBSITE: $websiteName ($websiteUrl)")
-            if (!pageOutlineJson.isNullOrBlank()) appendLine("LIVE DOM TOPOLOGY OUTLINE: ${pageOutlineJson.take(4_500)}")
+            if (!pageOutlineJson.isNullOrBlank()) appendLine("LIVE DOM TOPOLOGY OUTLINE: $pageOutlineJson")
             val recent = storeFor(context).recentConcepts()
             if (recent.isNotEmpty()) {
-                appendLine("RECENT DESIGNS ALREADY SHIPPED (avoid repeating their style):")
+                appendLine("RECENT DESIGNS ALREADY SHIPPED (do NOT repeat their aesthetic):")
                 recent.forEach { appendLine("- $it") }
             }
-            appendLine("Write the technical art direction JSON now.")
+            appendLine("Write the Art Director blueprint JSON now.")
         }
         val logInput = buildString {
-            appendLine("MODEL: $CONCEPT_MODEL")
+            appendLine("=== TARGET MODEL ===")
+            appendLine(CONCEPT_MODEL)
+            appendLine()
+            appendLine("=== PASS TYPE ===")
+            appendLine("Pass 1: Concept Brief (Art Director)")
+            appendLine()
+            appendLine("=== SYSTEM INSTRUCTION ===")
+            appendLine(UI_CONCEPT_SYSTEM_PROMPT)
+            appendLine()
+            appendLine("=== GENERATION CONFIG ===")
+            appendLine("""{
+  "temperature": 1.05,
+  "topP": 0.95,
+  "maxOutputTokens": 1024,
+  "responseMimeType": "application/json"
+}""")
+            appendLine()
+            appendLine("=== USER CONTENT & PROMPT ===")
             append(input)
-            if (LOG_SYSTEM_PROMPT) { appendLine(); appendLine("--- SYSTEM PROMPT ---"); append(UI_CONCEPT_SYSTEM_PROMPT) }
-        }.take(if (LOG_SYSTEM_PROMPT) 30_000 else 12_000)
+        }
 
         return try {
-            val raw = callForText(CONCEPT_MODEL, apiKey, UI_CONCEPT_SYSTEM_PROMPT, listOf(Part(text = input)), 1.05f, 0.95f, 1024)
-            val json = JSONObject(extractJsonObject(raw) ?: throw IllegalStateException("No JSON in brief: ${raw.take(200)}"))
+            val raw = callForText(
+                CONCEPT_MODEL,
+                apiKey,
+                UI_CONCEPT_SYSTEM_PROMPT,
+                listOf(Part(text = input)),
+                1.05f,
+                0.95f,
+                1024,
+                onThoughtChunk = { chunk ->
+                    onThinkingUpdate?.invoke("Pass 1: Concept Brainstorming", chunk, false)
+                }
+            )
+            val json = JSONObject(extractJsonObject(raw) ?: throw IllegalStateException("Concept pass returned invalid JSON: ${raw.take(200)}"))
             val idea = json.optString("idea", "").trim()
-            if (idea.isBlank()) throw IllegalStateException("Brief has no idea: ${raw.take(200)}")
+            if (idea.isBlank()) throw IllegalStateException("Concept brief missing 'idea': ${raw.take(200)}")
 
-            val arch = json.optString("architecture", "restyle").lowercase(Locale.US)
             val directions = listOf(
-                "architecture" to "ARCHITECTURE",
-                "idea" to "CONCEPT WORLD",
-                "signature" to "SIGNATURE VISUAL & ANIMATION MECHANIC",
+                "idea" to "CONCEPT",
+                "signature" to "SIGNATURE VISUAL & KINETIC MECHANISM",
                 "palette" to "PALETTE",
                 "type" to "TYPOGRAPHY",
-                "surface" to "SURFACE & BORDERS",
-                "layout" to "RESPONSIVE STRUCTURAL LAYOUT MECHANICS",
-                "rules" to "ELEMENT CHOREOGRAPHY"
+                "surface" to "SURFACE & MATERIALITY",
+                "style" to "VISUAL ATMOSPHERE",
+                "choreography" to "DOM & INTERACTIVE ENHANCEMENTS"
             ).mapNotNull { (k, label) -> json.optString(k, "").trim().takeIf { it.isNotBlank() }?.let { "$label: $it" } }
             .joinToString("\n")
 
             val brief = ConceptBrief(
                 raw = directions,
                 idea = idea.take(300),
-                fingerprint = json.optString("fingerprint", "").take(120),
-                architecture = arch
+                fingerprint = json.optString("fingerprint", "").take(120)
             )
             ApiRequestLogger.logRequest(context, "conceptBrief ($CONCEPT_MODEL)", websiteName, websiteUrl, prompt, logInput, json.toString(2), true)
-            brief
+            Result.success(brief)
         } catch (e: Exception) {
-            ApiRequestLogger.logRequest(context, "conceptBrief ($CONCEPT_MODEL)", websiteName, websiteUrl, prompt, logInput, describe(e), false)
-            null
+            val errMsg = describe(e)
+            ApiRequestLogger.logRequest(context, "conceptBrief ($CONCEPT_MODEL)", websiteName, websiteUrl, prompt, logInput, errMsg, false)
+            Result.failure(Exception("Concept pass failed ($CONCEPT_MODEL): $errMsg", e))
         }
     }
 
@@ -1555,7 +1798,8 @@ class GeminiStylerService {
         screenshotBase64: String?,
         forceFresh: Boolean = false,
         auditJson: String? = null,
-        isReviewPass: Boolean = false
+        isReviewPass: Boolean = false,
+        onThinkingUpdate: ((phase: String, chunk: String, isComplete: Boolean) -> Unit)? = null
     ): Result<UIBlueprint> = withContext(Dispatchers.IO) {
         val cleanPrompt = prompt.trim()
         if (cleanPrompt.isEmpty()) return@withContext Result.failure(IllegalArgumentException("Empty prompt"))
@@ -1575,7 +1819,6 @@ class GeminiStylerService {
             storeFor(context).get(cleanPrompt, domain)
         } else null
 
-        // If generateUserScriptWithFeedback called this (isReviewPass = true), NEVER fall back to SYNTHESIS_MODEL.
         if (isReviewPass && previous == null) {
             return@withContext Result.failure(IllegalStateException("Review pass skipped: no base blueprint cached for $domain"))
         }
@@ -1583,18 +1826,34 @@ class GeminiStylerService {
         val isReview = isReviewPass || (previous != null && !forceFresh && (!screenshotBase64.isNullOrBlank() || !auditJson.isNullOrBlank()))
         val activeModel = if (isReview) REVIEW_MODEL else SYNTHESIS_MODEL
 
-        val brief: ConceptBrief? = if (isReview) null
-            else designBrief(context, cleanPrompt, websiteName, websiteUrl, pageOutlineJson, apiKey)
+        // FAIL-FAST: If Concept Pass fails, immediately abort the pipeline and return the Concept Pass error
+        val brief: ConceptBrief? = if (isReview) {
+            null
+        } else {
+            designBrief(context, cleanPrompt, websiteName, websiteUrl, pageOutlineJson, apiKey, onThinkingUpdate)
+                .getOrElse { conceptError -> return@withContext Result.failure(conceptError) }
+        }
+
+        if (!isReview) {
+            onThinkingUpdate?.invoke("Pass 2: Generative Synthesis ($activeModel)", "Analyzing layout and preparing CSS/backdrop...", false)
+        } else {
+            onThinkingUpdate?.invoke("Pass 3: Visual Review & QA ($activeModel)", "Auditing render and preparing CSS patches...", false)
+        }
 
         val userContextText = if (isReview) buildString {
             appendLine("REVIEW PASS")
             appendLine("USER REQUEST: \"$cleanPrompt\"")
             appendLine("TARGET WEBSITE: $websiteName ($websiteUrl)")
-            appendLine("PALETTE: bg ${previous!!.bg}, surface ${previous.surface}, surface2 ${previous.surface2}, text ${previous.fg}, ink ${previous.ink}, accent ${previous.accent}")
-            if (!pageOutlineJson.isNullOrBlank()) appendLine("LIVE DOM TOPOLOGY OUTLINE: ${pageOutlineJson.take(2_500)}")
-            appendLine("MEASURED AUDIT (check overflowX and clippedElements!): ${auditJson?.takeIf { it.isNotBlank() && it != "null" }?.take(3_000) ?: "not available"}")
+            appendLine("INTENDED CONCEPT: ${previous!!.concept}")
+            appendLine("PALETTE: bg ${previous.bg}, surface ${previous.surface}, surface2 ${previous.surface2}, text ${previous.fg}, ink ${previous.ink}, accent ${previous.accent}")
+            if (!pageOutlineJson.isNullOrBlank()) appendLine("LIVE DOM TOPOLOGY OUTLINE: $pageOutlineJson")
+            appendLine("MEASURED AUDIT (check overflowX and clippedElements!): ${auditJson?.takeIf { it.isNotBlank() && it != "null" } ?: "not available"}")
+            appendLine("BACKDROP HTML:")
+            appendLine(previous.backdropHtml)
             appendLine("CURRENT CSS:")
             appendLine(previous.customCss)
+            appendLine("CURRENT CUSTOM JS:")
+            appendLine(previous.customJs)
             appendLine(if (!screenshotBase64.isNullOrBlank()) "A screenshot of the current render is attached." else "No screenshot is available; rely on the audit.")
             appendLine("Return the review JSON now.")
         } else buildString {
@@ -1602,15 +1861,14 @@ class GeminiStylerService {
             appendLine("TARGET WEBSITE: $websiteName ($websiteUrl)")
             if (!pageOutlineJson.isNullOrBlank()) {
                 appendLine("LIVE DOM TOPOLOGY OUTLINE (repeatedStructures lists parent container selectors `parentSel` and composite item selectors `sel`):")
-                appendLine(pageOutlineJson.take(6_000))
+                appendLine(pageOutlineJson)
+            }
+            if (!screenshotBase64.isNullOrBlank()) {
+                appendLine("LIVE SCREENSHOT ATTACHED: A real visual capture of the un-styled webpage layout is attached. Inspect it alongside the DOM outline to see exact element positions, row alignments, fixed headers, side-by-side rows, and opaque wrappers.")
             }
             appendLine()
-            if (brief != null) {
-                appendLine("DESIGN DIRECTIONS from the art director (implement every visual, layout, and animation mechanic literally):")
-                appendLine(brief.raw)
-            } else {
-                appendLine("No directions were supplied. Invent a specific, cohesive concept, use 'restyle' architecture, and implement it completely.")
-            }
+            appendLine("CREATIVE CONCEPT FROM THE ART DIRECTOR (you must build every single mechanism here—do NOT take shortcuts):")
+            appendLine(brief!!.raw)
             appendLine("Generate the complete UIBlueprint JSON now.")
         }
 
@@ -1623,34 +1881,68 @@ class GeminiStylerService {
             contents = listOf(Content(parts = parts)),
             systemInstruction = Content(listOf(Part(text = if (isReview) UI_REVIEW_SYSTEM_PROMPT else UI_SYNTHESIS_SYSTEM_PROMPT))),
             generationConfig = GenerationConfig(
-                temperature = if (isReview) 0.2f else 0.75f,
+                temperature = if (isReview) 0.2f else 0.8f,
                 topP = 0.95f,
-                maxOutputTokens = if (isReview) 1536 else 8192,
+                maxOutputTokens = if (isReview) 2048 else 8192,
                 responseMimeType = if (jsonMode) "application/json" else null,
-                thinkingConfig = ThinkingConfig(thinkingBudget = 0)
+                thinkingConfig = if (!isReview) ThinkingConfig(thinkingBudget = 2048) else null
             )
         )
 
         val logType = if (isReview) "reviewBlueprint ($activeModel)" else "buildBlueprint ($activeModel)"
         val requestJson = buildString {
-            appendLine("MODEL: $activeModel")
-            appendLine(if (isReview) "MODE: review pass" else if (brief != null) "MODE: build pass (${brief.architecture})" else "MODE: build pass (default restyle)")
+            appendLine("=== TARGET MODEL ===")
+            appendLine(activeModel)
+            appendLine()
+            appendLine("=== PASS TYPE ===")
+            appendLine(if (isReview) "Pass 3: Visual QA & Review Pass" else "Pass 2: Main Generative Synthesis Pass")
+            appendLine()
+            appendLine("=== SYSTEM INSTRUCTION ===")
+            appendLine(if (isReview) UI_REVIEW_SYSTEM_PROMPT else UI_SYNTHESIS_SYSTEM_PROMPT)
+            appendLine()
+            appendLine("=== GENERATION CONFIG ===")
+            appendLine("""{
+  "temperature": ${if (isReview) 0.2f else 0.8f},
+  "topP": 0.95,
+  "maxOutputTokens": ${if (isReview) 2048 else 8192},
+  "responseMimeType": "application/json"${if (!isReview) ",\n  \"thinkingConfig\": { \"thinkingBudget\": 2048 }" else ""}
+}""")
+            appendLine()
+            appendLine("=== USER CONTENT & PROMPT ===")
             append(userContextText)
-            if (!screenshotBase64.isNullOrBlank()) appendLine("[screenshot attached, ${screenshotBase64.length / 1024} KB base64]")
-            if (LOG_SYSTEM_PROMPT) {
+            if (!screenshotBase64.isNullOrBlank()) {
                 appendLine()
-                appendLine("--- SYSTEM PROMPT ---")
-                append(if (isReview) UI_REVIEW_SYSTEM_PROMPT else UI_SYNTHESIS_SYSTEM_PROMPT)
+                appendLine("=== SCREENSHOT ATTACHMENT ===")
+                appendLine("[Attached JPEG screenshot: ${screenshotBase64.length / 1024} KB base64]")
+                appendLine("Preview header: data:image/jpeg;base64,${screenshotBase64.take(160)}...")
             }
-        }.take(if (LOG_SYSTEM_PROMPT) 30_000 else 12_000)
+        }
 
         try {
-            val raw = callGeminiStream(activeModel, buildReq(true), apiKey)
+            val (raw, rawThoughts) = callGeminiStream(
+                activeModel,
+                buildReq(true),
+                apiKey,
+                onThoughtChunk = { chunk ->
+                    onThinkingUpdate?.invoke(
+                        if (isReview) "Pass 3: Visual QA Audit" else "Pass 2: Reasoning & Spatial Choreography",
+                        chunk,
+                        false
+                    )
+                },
+                onOutputChunk = { _ ->
+                    onThinkingUpdate?.invoke(
+                        if (isReview) "Pass 3: Generating Fixes" else "Pass 2: Generating UI Code",
+                        "",
+                        false
+                    )
+                }
+            )
             val blueprint: UIBlueprint? = if (isReview) {
                 applyReviewPatch(previous!!, raw, cleanPrompt)
             } else {
-                val parsed = UIBlueprint.parse(raw, cleanPrompt, brief?.architecture ?: "restyle")
-                if (parsed != null && brief != null) parsed.copy(concept = brief.idea, fingerprint = brief.fingerprint) else parsed
+                val parsed = UIBlueprint.parse(raw, cleanPrompt)
+                parsed?.copy(concept = brief!!.idea, fingerprint = brief.fingerprint)
             }
 
             if (blueprint == null) {
@@ -1659,7 +1951,13 @@ class GeminiStylerService {
                 Result.failure(IllegalStateException(err))
             } else {
                 storeFor(context).put(cleanPrompt, blueprint, domain, remember = !isReview)
-                ApiRequestLogger.logRequest(context, logType, websiteName, websiteUrl, cleanPrompt, requestJson, if (isReview) raw.take(4_000) else blueprint.toJson(), true)
+                val logResponse = if (rawThoughts.isNotBlank()) {
+                    "=== REASONING & THINKING PROCESS ===\n$rawThoughts\n\n=== RESPONSE RESULT ===\n" + (if (isReview) raw else blueprint.toJson())
+                } else {
+                    if (isReview) raw else blueprint.toJson()
+                }
+                ApiRequestLogger.logRequest(context, logType, websiteName, websiteUrl, cleanPrompt, requestJson, logResponse, true)
+                onThinkingUpdate?.invoke("Theme Synthesis Complete", "", true)
                 Result.success(blueprint)
             }
         } catch (e: Exception) {
@@ -1671,10 +1969,19 @@ class GeminiStylerService {
 
     private fun applyReviewPatch(previous: UIBlueprint, raw: String, prompt: String): UIBlueprint {
         val json = try { JSONObject(extractJsonObject(raw) ?: return previous) } catch (_: Exception) { return previous }
-        val fix = stripInventedLabels(json.optString("fixCss", "")).trim().take(3_000)
-        if (fix.isBlank()) return previous
-        val merged = JSONObject(previous.toJson()).put("customCss", previous.customCss + "\n/* review */\n" + fix)
-        return UIBlueprint.parse(merged.toString(), prompt, previous.architecture)
+        val fixCss = stripInventedLabels(json.optString("fixCss", "")).trim()
+        val fixJs = json.optString("fixJs", "").trim()
+
+        if (fixCss.isBlank() && fixJs.isBlank()) return previous
+
+        val mergedCss = if (fixCss.isNotBlank()) previous.customCss + "\n/* review patch */\n" + fixCss else previous.customCss
+        val mergedJs = if (fixJs.isNotBlank()) previous.customJs + "\n/* review patch */\ntry {\n" + fixJs + "\n} catch(e){ console.warn('[Review fixJs error]', e); }" else previous.customJs
+
+        val mergedJson = JSONObject(previous.toJson())
+            .put("customCss", mergedCss)
+            .put("customJs", mergedJs)
+
+        return UIBlueprint.parse(mergedJson.toString(), prompt)
             ?.copy(concept = previous.concept, fingerprint = previous.fingerprint)
             ?: previous
     }
@@ -1682,77 +1989,68 @@ class GeminiStylerService {
     // ───── System Prompts ─────
 
     private val UI_REVIEW_SYSTEM_PROMPT = """
-You are the visual QA engineer for a commercial Android web browser running across all device sizes (compact phones, foldables, tablets). The design concept is final. You receive the user's prompt, palette, CURRENT CSS, a MEASURED AUDIT from the live DOM, and a screenshot.
+You are the Visual QA Engineer for a generative web browser.
+You receive:
+1. A screenshot of how the redesigned page currently looks.
+2. The intended concept, current CSS, backdrop HTML, and custom JS.
+3. Ground-truth visual measurements from the live DOM.
 
-You may ONLY append override CSS in `fixCss`. Never strip out the theme's transforms, animations, borders, or palette.
-Inspect both the screenshot and the audit to fix real rendering defects:
-1. Out-of-bounds elements or horizontal clipping (`overflowX > 2` or `clippedElements` non-empty, or elements cut off at the screen edges):
-   - Use percentage and fluid sizing (`width: 100% !important; max-width: 100% !important; min-width: 0 !important; box-sizing: border-box !important; margin-left: 0 !important; margin-right: 0 !important;`).
-   - For multi-column grids, use `grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)) !important;` so columns adapt fluidly to any screen width without overflowing.
-2. Unreadable or low-contrast text: set explicit `color` (and surface `background-color` if needed) with >= 4.5:1 contrast.
-3. Truncated or clipped text: force `-webkit-line-clamp: unset !important; max-height: none !important; height: auto !important; overflow: visible !important; white-space: normal !important;`.
-4. Text occluding images/media: override the text container to `position: static !important; width: 100% !important;` and its parent wrapper to `display: flex !important; flex-direction: column !important;`.
+Audit the render for technical defects:
+- Check that text has sufficient contrast against its background.
+- Check that important text or elements are not unintentionally clipped or cut off by container bounds.
+- If backdropHtml was intended to be visible, ensure intermediate full-page wrappers allow it to show through.
 
-Keep `fixCss` under 1500 characters. If nothing is broken, return `""`.
-OUTPUT: ONLY one JSON object:
-{"problems": ["short list of defects found"], "fixCss": "css overrides or empty string"}
+OUTPUT: ONLY one valid JSON object, no markdown fences:
+{
+  "problems": ["list of technical issues found"],
+  "fixCss": "CSS overrides to append, or empty string",
+  "fixJs": "optional JS code to repair, append, or empty string"
+}
 """.trimIndent()
 
     private val UI_CONCEPT_SYSTEM_PROMPT = """
-You are the executive Art Director of a commercial generative web browser capable of redesigning ANY website into any world or interface paradigm across all Android device sizes (small phones, foldables, tablets).
+You are the Art Director for a generative web browser. You create creative artistic concepts to transform websites based on the user's prompt.
+You have complete artistic freedom to imagine any visual aesthetic, mood, or experience that reflects and visually enhances the user's request.
 
-1. CHOOSE THE ARCHITECTURE:
-- "restyle" (DEFAULT - 95% of requests): Transforms the live DOM in-place using responsive CSS layout reflows (CSS Grid, Flexbox, 3D perspective, clip-path, keyframe animations), custom SVG/Canvas backdrops, and touch choreography. Zero invented floating docks or fake buttons.
-- "app_shell" (OPT-IN ONLY): Select ONLY when the user or concept explicitly demands replacing the page with a brand-new interactive application layout (e.g., "dual-lane split comparator", "swipeable card deck", "full-screen comic book reader", "interactive terminal OS", or explicit assistive toolbars).
+Provide your creative concept across these dimensions:
+1. `idea`: A concise summary of the visual concept.
+2. `signature`: The key visual, kinetic, or artistic centerpiece of this concept.
+3. `palette`: Color roles (bg, surface, surface2, fg, accent).
+4. `type`: Typography choices and styling.
+5. `surface`: Materiality, textures, borders, or styling of elements.
+6. `style`: Overall visual atmosphere.
+7. `choreography`: Interactive, motion, or DOM enhancements.
 
-2. TRANSLATE VISION INTO DEVICE-AGNOSTIC TECHNICAL MECHANICS:
-Do not assume a fixed screen width. Every layout rule must be fluid and responsive:
-- In `signature`: Specify the exact `@keyframes` animation, SVG filter/pattern, 3D scroll tilt, or interactive effect.
-- In `layout`: Inspect `repeatedStructures` in the outline. Specify how parent containers (`parentSel`) and repeating units (`sel`) must be arranged using fluid CSS mechanics (e.g., `grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr))` or `repeat(2, minmax(0, 1fr))` with `width: 100%; box-sizing: border-box;` so elements never overflow on any screen size).
-- In `rules`: Detail how headers, navigation, search inputs, content units, typography, and media behave on touch screens.
-
-OUTPUT: ONLY one valid JSON object:
+OUTPUT: ONLY one valid JSON object, no markdown fences:
 {
-  "architecture": "restyle" or "app_shell",
-  "idea": "one sentence defining the world or interface",
-  "signature": "concrete visual signature + exact @keyframes or SVG/JS mechanic",
-  "palette": "5 hex colors with exact roles (bg, surface, surface2, fg, accent)",
-  "type": "font stack + weight, casing, letter-spacing, and fluid clamp() scale hierarchy",
-  "surface": "exact border styles, corner radii, clip-paths, shadows, and backdrop textures",
-  "layout": "fluid, device-agnostic CSS layout rules for parent containers and child units",
-  "rules": "concrete styling rules for header, search/inputs, content units, headings, media, and touch states",
-  "fingerprint": "max 6 words summarizing type, palette, shape, layout"
+  "idea": "summary of the visual concept",
+  "signature": "central visual or artistic mechanism",
+  "palette": "color palette description with roles",
+  "type": "typography direction and styling",
+  "surface": "materiality and element styling",
+  "style": "overall visual atmosphere",
+  "choreography": "interactive, motion, or DOM enhancements",
+  "fingerprint": "short keyword summary"
 }
 """.trimIndent()
 
     private val UI_SYNTHESIS_SYSTEM_PROMPT = """
-You are the Principal Front-End Synthesis Engine inside a commercial Android browser running on all device form factors. You receive the Art Director's DESIGN DIRECTIONS and the target webpage's LIVE DOM TOPOLOGY OUTLINE. You author responsive, production-grade CSS3, SVG/Canvas backdrops, and JS.
+You are the Front-End Synthesis Engine for a generative web browser. You translate the Art Director's concept and the webpage's DOM structure into a complete UIBlueprint.
+You have complete artistic freedom to style and transform the page to realize the design.
 
-1. ARCHITECTURAL EXECUTION
-- When ARCHITECTURE is "restyle":
-  - `needsHud` MUST be `false`, `hudHtml` MUST be `""`. Never invent fake toolbars, docks, or decorative buttons.
-  - Transform the real DOM using `customCss`, `backdropHtml`, and optional `customJs` (e.g. `MydesBridge.enable3DTilt(1.0)`).
-- When ARCHITECTURE is "app_shell":
-  - `needsHud` is `true`. Build the custom interface inside `hudHtml` (`#__mydes_hud`).
-  - In `customJs`, call `MydesBridge.extractNodes()` to harvest live page content (`{uid, title, body, meta, img, hasVideo, href}`), render your custom interactive view, bind clicks to `MydesBridge.triggerNode(uid)` so the real site's router/state handles navigation, and call `MydesBridge.loadMore(cb)` for pagination.
+Tools available:
+1. `customCss`: CSS injected into the page. Supports web fonts via `@import`, animations via `@keyframes`, and CSS variables `--m-bg`, `--m-surface`, `--m-surface2`, `--m-fg`, `--m-ink`, `--m-accent`, `--m-rx`, `--m-ry`.
+2. `backdropHtml`: Optional HTML/SVG/Canvas fixed behind the page content.
+3. `customJs`: Optional JavaScript executed in the page context. You can use the `MydesBridge` API:
+   - `MydesBridge.decorateUnits(selector, htmlOrBuilderFn)`: Injects HTML/SVG elements into matched elements and retains them during dynamic scrolling.
+   - `MydesBridge.injectOrnament(targetSelector, htmlString, position)`: Mounts HTML/SVG into a target container.
+   - `MydesBridge.enable3DTilt(intensity)`: Binds scroll and touch motion to CSS variables `--m-rx` and `--m-ry`.
+   - `MydesBridge.extractNodes(selector)` / `MydesBridge.triggerNode(uid)`: Extracts content nodes or routes interaction events.
 
-2. MULTI-DEVICE RESPONSIVE CONTAINMENT (ZERO OUT-OF-BOUNDS ELEMENTS)
-- Never assume fixed pixel widths. Your CSS must fit everything from compact 320px screens to wide foldables and tablets:
-  - Always use `width: 100% !important; max-width: 100% !important; box-sizing: border-box !important;` (avoid `100vw` which causes horizontal overflow when combined with margins or borders).
-  - For multi-column grids on `[data-mydes="grid"]` or `parentSel`, ALWAYS use `minmax(0, 1fr)` or `repeat(auto-fit, minmax(min(100%, 150px), 1fr))` so grid tracks shrink gracefully on narrow screens and expand on wider screens.
-  - On all grid/flex children (`sel` and `[data-mydes="card"]`), ALWAYS set `min-width: 0 !important; width: 100% !important; max-width: 100% !important; box-sizing: border-box !important; margin-left: 0 !important; margin-right: 0 !important;`.
-  - Use `clamp()` for typography (e.g. `font-size: clamp(0.85rem, 2.5vw, 1.15rem) !important;`) so text scales proportionally to the device width.
-- PRESERVE INFINITE SCROLL:
-  - Never set `overflow: hidden` or fixed `height` on `html`, `body`, `main`, or feed containers (`parentSel`).
-  - Keep non-card continuation/sentinel elements at the bottom of feeds visible (`grid-column: 1 / -1 !important;`).
-
-3. DOM TOPOLOGY & CONTENT INTEGRITY
-- TARGET WHOLE UNITS, NOT SUB-COLUMNS: Always apply card borders, backgrounds, and padding to the full composite unit selector (`sel` and `[data-mydes="card"]`), NEVER to an inner text-only wrapper.
-- STACKING ROW ITEMS: When turning horizontal row items (`itemDisplay: flex (row)`) into vertical cards or grid cells, force the unit and its internal link/row wrappers to stack vertically:
-  `display: flex !important; flex-direction: column !important; align-items: stretch !important; width: 100% !important;` and set immediate children to `width: 100% !important; max-width: 100% !important;`.
-- NEVER OCCLUDE MEDIA: Text, titles, and badges must never cover images or video previews (`position: static !important`).
-- NEVER TRUNCATE HEADINGS: Allow styled headings and titles to wrap naturally (`-webkit-line-clamp: unset !important; max-height: none !important; height: auto !important; overflow: visible !important; white-space: normal !important;`).
-- REAL ANIMATIONS & TOUCH STATES: Write actual `@keyframes` rules for requested motion/pulses, and use `:active` for mobile touch feedback.
+Technical requirements:
+- Keep `html { background-color: var(--m-bg); }` and `body { background: transparent; }` so the backdrop layer remains compositable.
+- Ensure the page remains scrollable.
+- Never cover media thumbnails with text, and never truncate titles.
 
 OUTPUT: ONLY one valid JSON object, no markdown fences:
 {
@@ -1760,14 +2058,11 @@ OUTPUT: ONLY one valid JSON object, no markdown fences:
   "dark": true or false,
   "bg": "#rrggbb", "surface": "#rrggbb", "surface2": "#rrggbb", "fg": "#rrggbb", "ink": "#rrggbb", "accent": "#rrggbb",
   "remapSurfaces": false,
-  "customCss": "complete responsive CSS implementing all layout, surface, containment, and @keyframes rules",
-  "backdropHtml": "inline SVG/Canvas/HTML stage or empty string",
-  "needsHud": false,
-  "hudReason": "",
-  "hudHtml": "",
-  "customJs": "JS using MydesBridge and T, or empty string",
-  "concept": "one sentence summary",
-  "fingerprint": "max 6 words"
+  "customCss": "complete CSS styles",
+  "backdropHtml": "optional backdrop HTML or SVG",
+  "customJs": "optional JavaScript code",
+  "concept": "concise summary",
+  "fingerprint": "short keyword summary"
 }
 """.trimIndent()
 
@@ -1785,15 +2080,19 @@ OUTPUT: ONLY one valid JSON object, no markdown fences:
     private suspend fun callGeminiStream(
         model: String,
         request: GeminiRequest,
-        apiKey: String
-    ): String = withContext(Dispatchers.IO) {
+        apiKey: String,
+        onThoughtChunk: ((String) -> Unit)? = null,
+        onOutputChunk: ((String) -> Unit)? = null
+    ): Pair<String, String> = withContext(Dispatchers.IO) {
+        var currentRequest = request
         var lastException: Exception? = null
 
-        for (wait in longArrayOf(0, 2_000, 5_000)) {
+        for (wait in longArrayOf(0, 1_500, 4_000)) {
             if (wait > 0) delay(wait)
             try {
-                val responseBody = api.streamGenerateContent(model, apiKey, request)
+                val responseBody = api.streamGenerateContent(model, apiKey, currentRequest)
                 val fullText = StringBuilder()
+                val rawThoughts = StringBuilder()
 
                 responseBody.byteStream().bufferedReader().use { reader ->
                     var line = reader.readLine()
@@ -1805,31 +2104,63 @@ OUTPUT: ONLY one valid JSON object, no markdown fences:
                                     val chunk = JSONObject(jsonStr)
                                     val candidates = chunk.optJSONArray("candidates")
                                     if (candidates != null && candidates.length() > 0) {
-                                        val parts = candidates.getJSONObject(0)
-                                            .optJSONObject("content")
-                                            ?.optJSONArray("parts")
+                                        val candidate = candidates.getJSONObject(0)
+                                        val content = candidate.optJSONObject("content")
+                                        val parts = content?.optJSONArray("parts")
                                         if (parts != null) {
                                             for (i in 0 until parts.length()) {
-                                                val partText = parts.getJSONObject(i).optString("text", "")
-                                                fullText.append(partText)
+                                                val partObj = parts.getJSONObject(i)
+                                                val isThought = partObj.optBoolean("thought", false) ||
+                                                        (partObj.has("thought") && partObj.opt("thought") != JSONObject.NULL && partObj.opt("thought") != false)
+                                                val text = partObj.optString("text", "")
+                                                val thoughtDirect = partObj.optString("thought", "")
+
+                                                if (isThought || (thoughtDirect.isNotEmpty() && thoughtDirect != "false" && thoughtDirect != "true")) {
+                                                    val thoughtPiece = if (isThought) text else thoughtDirect
+                                                    if (thoughtPiece.isNotEmpty()) {
+                                                        rawThoughts.append(thoughtPiece)
+                                                        onThoughtChunk?.invoke(thoughtPiece)
+                                                    }
+                                                } else {
+                                                    if (text.isNotEmpty()) {
+                                                        fullText.append(text)
+                                                        onOutputChunk?.invoke(text)
+                                                    }
+                                                }
                                             }
                                         }
                                     }
-                                } catch (_: Exception) {
-                                    // Skip individual chunk JSON parse errors
-                                }
+                                } catch (_: Exception) {}
                             }
                         }
                         line = reader.readLine()
                     }
                 }
 
-                val result = fullText.toString()
-                if (result.isNotBlank()) return@withContext result
+                var result = fullText.toString()
+                if (result.isBlank() && rawThoughts.isNotBlank()) {
+                    result = rawThoughts.toString()
+                }
+                if (result.isNotBlank()) return@withContext Pair(result, rawThoughts.toString())
                 throw IllegalStateException("Empty streamed response from $model")
 
             } catch (e: Exception) {
                 lastException = e
+                if (e is HttpException && e.code() == 400 && currentRequest.generationConfig != null) {
+                    val gc = currentRequest.generationConfig!!
+                    if (gc.thinkingConfig != null) {
+                        currentRequest = currentRequest.copy(
+                            generationConfig = gc.copy(thinkingConfig = null)
+                        )
+                        continue
+                    } else if (gc.responseMimeType != null) {
+                        currentRequest = currentRequest.copy(
+                            generationConfig = gc.copy(responseMimeType = null)
+                        )
+                        continue
+                    }
+                }
+
                 val retryable = when (e) {
                     is HttpException -> e.code() == 429 || e.code() in 500..599
                     is java.io.IOException -> true

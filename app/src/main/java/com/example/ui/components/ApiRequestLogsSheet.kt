@@ -1,30 +1,65 @@
 package com.example.ui.components
 
+import android.content.Intent
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
-import android.widget.Toast
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.api.ApiLogEntry
@@ -32,7 +67,8 @@ import com.example.data.api.ApiRequestLogger
 
 @Composable
 fun ApiRequestLogsSheet(
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onOpenImportRedesign: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
@@ -48,12 +84,13 @@ fun ApiRequestLogsSheet(
             .fillMaxSize()
             .background(Color(0xE6141619))
             .clickable(onClick = onDismiss)
+            .testTag("api_request_logs_sheet")
     ) {
         Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .fillMaxHeight(0.85f)
-                .padding(top = 40.dp, start = 16.dp, end = 16.dp, bottom = 20.dp)
+                .fillMaxHeight(0.88f)
+                .padding(top = 36.dp, start = 14.dp, end = 14.dp, bottom = 18.dp)
                 .clickable(enabled = false) {},
             shape = RoundedCornerShape(24.dp),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF1E2024))
@@ -61,7 +98,7 @@ fun ApiRequestLogsSheet(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(20.dp)
+                    .padding(18.dp)
             ) {
                 // Header
                 Row(
@@ -70,32 +107,55 @@ fun ApiRequestLogsSheet(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.Description,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(24.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFF2A2E35)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Description,
+                                contentDescription = null,
+                                tint = Color(0xFF64B5F6),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
                         Column {
                             Text(
-                                text = "API Request & Result Logs",
+                                text = "API Logs & Payloads",
                                 color = Color.White,
-                                fontSize = 18.sp,
+                                fontSize = 17.sp,
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "Saved in internal storage file",
-                                color = Color.Gray,
+                                text = "${logs.size} requests logged • Full payloads preserved",
+                                color = Color(0xFF9E9E9E),
                                 fontSize = 11.sp
                             )
                         }
                     }
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        // Quick Import button
+                        IconButton(
+                            onClick = {
+                                onOpenImportRedesign()
+                            },
+                            modifier = Modifier.testTag("logs_import_redesign_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.FileUpload,
+                                contentDescription = "Import Redesign (.json)",
+                                tint = Color(0xFF81C784)
+                            )
+                        }
+
                         if (logs.isNotEmpty()) {
+                            // Copy All
                             IconButton(onClick = {
-                                val allText = logs.joinToString("\n\n---\n\n") { log ->
+                                val allText = logs.joinToString("\n\n" + "=".repeat(40) + "\n\n") { log ->
                                     "Timestamp: ${log.timestamp}\nType: ${log.type}\nWebsite: ${log.websiteName} (${log.websiteUrl})\nPrompt: ${log.userPrompt}\nSuccess: ${log.isSuccess}\nPayload:\n${log.requestPayload}\nResult:\n${log.responseResult}"
                                 }
                                 clipboardManager.setText(AnnotatedString(allText))
@@ -107,7 +167,21 @@ fun ApiRequestLogsSheet(
                                     tint = Color.White
                                 )
                             }
+
+                            // Clear Logs
+                            IconButton(onClick = {
+                                ApiRequestLogger.clearLogs(context)
+                                logs = emptyList()
+                                Toast.makeText(context, "Logs cleared", Toast.LENGTH_SHORT).show()
+                            }) {
+                                Icon(
+                                    imageVector = Icons.Default.DeleteSweep,
+                                    contentDescription = "Clear logs",
+                                    tint = Color(0xFFE57373)
+                                )
+                            }
                         }
+
                         IconButton(onClick = onDismiss) {
                             Icon(
                                 imageVector = Icons.Default.Close,
@@ -118,34 +192,53 @@ fun ApiRequestLogsSheet(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
                 if (logs.isEmpty()) {
                     Box(
                         modifier = Modifier
-                            .fillMaxSize()
+                            .fillMaxWidth()
                             .weight(1f),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            text = "No request logs recorded yet.\nTry using the AI Styler on a website!",
-                            color = Color.Gray,
-                            fontSize = 14.sp,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                        )
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                text = "No request logs recorded yet.",
+                                color = Color.White,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Use the AI Styler on any website to inspect the full request payload here.",
+                                color = Color.Gray,
+                                fontSize = 13.sp,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Button(
+                                onClick = onOpenImportRedesign,
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3F51B5))
+                            ) {
+                                Icon(Icons.Default.FileUpload, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Import External Redesign File")
+                            }
+                        }
                     }
                 } else {
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         items(logs) { log ->
                             Card(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable { selectedLog = log },
+                                    .clickable { selectedLog = log }
+                                    .testTag("log_item_card"),
                                 colors = CardDefaults.cardColors(
                                     containerColor = Color(0xFF262A30)
                                 ),
@@ -161,7 +254,10 @@ fun ApiRequestLogsSheet(
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.weight(1f)
+                                        ) {
                                             Icon(
                                                 imageVector = if (log.isSuccess) Icons.Default.CheckCircle else Icons.Default.Error,
                                                 contentDescription = null,
@@ -173,13 +269,15 @@ fun ApiRequestLogsSheet(
                                                 text = log.type,
                                                 color = Color.White,
                                                 fontWeight = FontWeight.Bold,
-                                                fontSize = 14.sp
+                                                fontSize = 13.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
                                             )
                                         }
                                         Text(
                                             text = log.timestamp,
-                                            color = Color.Gray,
-                                            fontSize = 12.sp
+                                            color = Color(0xFF9E9E9E),
+                                            fontSize = 11.sp
                                         )
                                     }
 
@@ -189,15 +287,55 @@ fun ApiRequestLogsSheet(
                                         color = Color(0xFFB0BEC5),
                                         fontSize = 12.sp,
                                         maxLines = 1,
-                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
                                         text = "Prompt: \"${log.userPrompt}\"",
-                                        color = Color(0xFFE0E0E0),
+                                        color = Color(0xFFECEFF1),
                                         fontSize = 13.sp,
                                         maxLines = 2,
-                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                        overflow = TextOverflow.Ellipsis
                                     )
+
+                                    Spacer(modifier = Modifier.height(8.dp))
+
+                                    // Action bar on each card: shows payload size + 1-tap Copy Payload button
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Surface(
+                                            color = Color(0xFF1B1E22),
+                                            shape = RoundedCornerShape(6.dp)
+                                        ) {
+                                            Text(
+                                                text = "Payload: ${log.requestPayload.length} chars",
+                                                color = Color(0xFF81D4FA),
+                                                fontSize = 11.sp,
+                                                fontFamily = FontFamily.Monospace,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+
+                                        Button(
+                                            onClick = {
+                                                clipboardManager.setText(AnnotatedString(log.requestPayload))
+                                                Toast.makeText(context, "Entire request payload copied! Ready to paste into frontier model.", Toast.LENGTH_SHORT).show()
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF37474F)),
+                                            shape = RoundedCornerShape(8.dp),
+                                            modifier = Modifier.height(30.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.ContentCopy,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(12.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Copy Payload", fontSize = 11.sp)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -206,33 +344,84 @@ fun ApiRequestLogsSheet(
             }
         }
 
-        // Detail dialog if log is selected
+        // Detail dialog if a log entry is selected
         selectedLog?.let { log ->
             AlertDialog(
                 onDismissRequest = { selectedLog = null },
                 containerColor = Color(0xFF1E2024),
                 title = {
-                    Text(
-                        text = "${log.type} Details",
-                        color = Color.White,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = log.type,
+                            color = Color.White,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        IconButton(onClick = { selectedLog = null }) {
+                            Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.Gray)
+                        }
+                    }
                 },
                 text = {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 400.dp)
+                            .heightIn(max = 480.dp)
                             .verticalScroll(rememberScrollState())
                     ) {
                         Text(text = "Timestamp: ${log.timestamp}", color = Color.Gray, fontSize = 12.sp)
-                        Text(text = "Website: ${log.websiteName}", color = Color.Gray, fontSize = 12.sp)
-                        Text(text = "URL: ${log.websiteUrl}", color = Color.Gray, fontSize = 12.sp)
-                        Text(text = "Prompt: ${log.userPrompt}", color = Color.White, fontSize = 13.sp)
-                        
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(text = "Request Payload:", color = Color(0xFF81D4FA), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Text(text = "Website: ${log.websiteName}", color = Color(0xFFB0BEC5), fontSize = 12.sp)
+                        Text(text = "URL: ${log.websiteUrl}", color = Color(0xFF90A4AE), fontSize = 12.sp)
+                        Text(text = "Prompt: \"${log.userPrompt}\"", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Request Payload Header & Actions
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Entire Request Payload (${log.requestPayload.length} chars):",
+                                color = Color(0xFF81D4FA),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+
+                            Row {
+                                IconButton(
+                                    onClick = {
+                                        val sendIntent: Intent = Intent().apply {
+                                            action = Intent.ACTION_SEND
+                                            putExtra(Intent.EXTRA_TEXT, log.requestPayload)
+                                            putExtra(Intent.EXTRA_TITLE, "Mydes Request Payload - ${log.type}")
+                                            type = "text/plain"
+                                        }
+                                        val shareIntent = Intent.createChooser(sendIntent, "Share / Export Request Payload")
+                                        context.startActivity(shareIntent)
+                                    },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(Icons.Default.Share, contentDescription = "Share Payload", tint = Color(0xFF81D4FA), modifier = Modifier.size(16.dp))
+                                }
+
+                                IconButton(
+                                    onClick = {
+                                        clipboardManager.setText(AnnotatedString(log.requestPayload))
+                                        Toast.makeText(context, "Entire request payload copied to clipboard!", Toast.LENGTH_SHORT).show()
+                                    },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy Payload", tint = Color(0xFF81D4FA), modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        }
+
                         Surface(
                             modifier = Modifier.fillMaxWidth(),
                             color = Color(0xFF121417),
@@ -243,12 +432,36 @@ fun ApiRequestLogsSheet(
                                 color = Color(0xFFCFD8DC),
                                 fontSize = 11.sp,
                                 fontFamily = FontFamily.Monospace,
-                                modifier = Modifier.padding(8.dp)
+                                modifier = Modifier.padding(10.dp)
                             )
                         }
 
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(text = "Response Result / Script:", color = Color(0xFFA5D6A7), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // Response Result Header & Actions
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Response Result (${log.responseResult.length} chars):",
+                                color = Color(0xFFA5D6A7),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+
+                            IconButton(
+                                onClick = {
+                                    clipboardManager.setText(AnnotatedString(log.responseResult))
+                                    Toast.makeText(context, "Response result copied to clipboard!", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(Icons.Default.ContentCopy, contentDescription = "Copy Result", tint = Color(0xFFA5D6A7), modifier = Modifier.size(16.dp))
+                            }
+                        }
+
                         Surface(
                             modifier = Modifier.fillMaxWidth(),
                             color = Color(0xFF121417),
@@ -259,7 +472,7 @@ fun ApiRequestLogsSheet(
                                 color = Color(0xFFE8F5E9),
                                 fontSize = 11.sp,
                                 fontFamily = FontFamily.Monospace,
-                                modifier = Modifier.padding(8.dp)
+                                modifier = Modifier.padding(10.dp)
                             )
                         }
                     }
@@ -267,30 +480,39 @@ fun ApiRequestLogsSheet(
                 confirmButton = {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Button(
                             onClick = {
-                                val logText = "Timestamp: ${log.timestamp}\nType: ${log.type}\nWebsite: ${log.websiteName} (${log.websiteUrl})\nPrompt: ${log.userPrompt}\nSuccess: ${log.isSuccess}\nPayload:\n${log.requestPayload}\nResult:\n${log.responseResult}"
-                                clipboardManager.setText(AnnotatedString(logText))
-                                Toast.makeText(context, "Log copied to clipboard", Toast.LENGTH_SHORT).show()
+                                onOpenImportRedesign()
+                                selectedLog = null
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3F51B5))
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50))
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.ContentCopy,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
+                            Icon(Icons.Default.FileUpload, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Copy")
+                            Text("Import Result", fontSize = 12.sp)
                         }
 
-                        Button(
-                            onClick = { selectedLog = null },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242))
-                        ) {
-                            Text("Close")
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    val logText = "Timestamp: ${log.timestamp}\nType: ${log.type}\nWebsite: ${log.websiteName} (${log.websiteUrl})\nPrompt: ${log.userPrompt}\nSuccess: ${log.isSuccess}\nPayload:\n${log.requestPayload}\nResult:\n${log.responseResult}"
+                                    clipboardManager.setText(AnnotatedString(logText))
+                                    Toast.makeText(context, "Full log entry copied", Toast.LENGTH_SHORT).show()
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3F51B5))
+                            ) {
+                                Text("Copy All", fontSize = 12.sp)
+                            }
+
+                            Button(
+                                onClick = { selectedLog = null },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242))
+                            ) {
+                                Text("Close", fontSize = 12.sp)
+                            }
                         }
                     }
                 }

@@ -20,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Javascript
@@ -64,6 +65,7 @@ fun SettingsSheet(
     onToggleFullScreenMode: (Boolean) -> Unit,
     onClearBrowsingData: () -> Unit,
     onOpenApiLogs: () -> Unit,
+    onOpenImportRedesign: () -> Unit = {},
     customApiKey: String,
     onUpdateCustomApiKey: (String) -> Unit,
     onDismiss: () -> Unit,
@@ -308,6 +310,47 @@ fun SettingsSheet(
                             )
                             Text(
                                 text = "View logs of sent requests and received results",
+                                color = Color(0xFF8E9297),
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = Color(0x1AFFFFFF), modifier = Modifier.padding(vertical = 12.dp))
+
+                // Section: Import Frontier Redesign
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = {
+                            onOpenImportRedesign()
+                            onDismiss()
+                        })
+                        .padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.FileUpload,
+                            contentDescription = null,
+                            tint = Color(0xFF81C784),
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                text = "Import & Apply Redesign (.json)",
+                                color = Color.White,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "Load external UIBlueprint from Claude, GPT-4.5, or Gemini Web",
                                 color = Color(0xFF8E9297),
                                 fontSize = 12.sp
                             )

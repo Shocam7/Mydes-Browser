@@ -1,7 +1,13 @@
 package com.example.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -35,9 +41,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -52,6 +63,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -69,6 +81,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.data.model.GeneratedThemeEntity
+import com.example.ui.viewmodel.AiThinkingState
 import kotlinx.coroutines.delay
 import java.io.File
 
@@ -87,12 +100,14 @@ fun AiStylerPillBar(
     isLoading: Boolean,
     isStyleApplied: Boolean,
     errorMessage: String?,
+    thinkingState: AiThinkingState = AiThinkingState(),
     previousGenerations: List<GeneratedThemeEntity> = emptyList(),
     currentAppliedPrompt: String? = null,
     onApplyStyle: (prompt: String) -> Unit,
     onApplySavedTheme: (GeneratedThemeEntity) -> Unit = {},
     onDeleteSavedTheme: (GeneratedThemeEntity) -> Unit = {},
     onResetStyle: () -> Unit,
+    onOpenImportRedesign: () -> Unit = {},
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -176,6 +191,11 @@ fun AiStylerPillBar(
                     .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                StylerSuggestionChip(
+                    text = "Import Redesign (.json)",
+                    isHighlight = true,
+                    onClick = onOpenImportRedesign
+                )
                 StylerSuggestionChip(
                     text = "Masonry art wall",
                     onClick = {
@@ -293,6 +313,23 @@ fun AiStylerPillBar(
                         )
                     }
 
+                    // Import external redesign file button
+                    IconButton(
+                        onClick = onOpenImportRedesign,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF2C323D))
+                            .testTag("ai_styler_import_file_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.FileUpload,
+                            contentDescription = "Import external redesign file",
+                            tint = Color(0xFF81D4FA),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+
                     Spacer(modifier = Modifier.width(6.dp))
 
                     // Action: Loading spinner OR Submit button
@@ -341,14 +378,245 @@ fun AiStylerPillBar(
                 }
             }
 
+            // 4. Live AI Thinking & Reasoning Display (Chatbot-style)
+            if (thinkingState.isActive || (thinkingState.isFinished && thinkingState.summarizedStatements.isNotEmpty())) {
+                Spacer(modifier = Modifier.height(8.dp))
+                AiThinkingDisplayPanel(
+                    state = thinkingState,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
             // Error notice if generation had an issue
-            if (!errorMessage.isNullOrBlank()) {
+            if (!errorMessage.isNullOrBlank() && !thinkingState.isActive) {
                 Text(
                     text = errorMessage,
                     color = Color(0xFFD32F2F),
                     fontSize = 12.sp,
                     modifier = Modifier.padding(top = 6.dp)
                 )
+            }
+        }
+    }
+}
+
+/**
+ * Modern Chatbot-style Thinking Display Panel.
+ * Shows live streaming thinking tokens parsed into readable, concise summarized statements,
+ * an active typing cursor for the currently arriving reasoning sentence, elapsed duration,
+ * and an expand/collapse toggle.
+ */
+@Composable
+fun AiThinkingDisplayPanel(
+    state: AiThinkingState,
+    modifier: Modifier = Modifier
+) {
+    var isExpanded by remember { mutableStateOf(true) }
+
+    // Auto-expand whenever active thinking begins
+    LaunchedEffect(state.isActive) {
+        if (state.isActive) {
+            isExpanded = true
+        }
+    }
+
+    val infiniteTransition = rememberInfiniteTransition(label = "thinking_anim")
+    val pulseAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.45f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(850, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseAlpha"
+    )
+    val rotationAngle by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(2800, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "rotation"
+    )
+
+    Box(
+        modifier = modifier
+            .shadow(8.dp, RoundedCornerShape(18.dp))
+            .clip(RoundedCornerShape(18.dp))
+            .background(Color(0xFF191C22))
+            .border(
+                1.dp,
+                if (state.isActive) Color(0xFF384050).copy(alpha = pulseAlpha) else Color(0xFF2A2E38),
+                RoundedCornerShape(18.dp)
+            )
+            .padding(horizontal = 14.dp, vertical = 10.dp)
+            .testTag("ai_thinking_display_panel")
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            // Header Row: Icon, Phase Title, Duration, Expand/Collapse
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(
+                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        indication = null,
+                        onClick = { isExpanded = !isExpanded }
+                    ),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Status icon with live animation
+                Box(
+                    modifier = Modifier.size(20.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    when {
+                        state.isActive -> {
+                            Icon(
+                                imageVector = Icons.Default.AutoAwesome,
+                                contentDescription = "AI Thinking",
+                                tint = Color(0xFFF6C343),
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .rotate(rotationAngle)
+                            )
+                        }
+                        state.errorMessage != null -> {
+                            Icon(
+                                imageVector = Icons.Default.ErrorOutline,
+                                contentDescription = "Thinking Error",
+                                tint = Color(0xFFE57373),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                        else -> {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = "Thinking Completed",
+                                tint = Color(0xFF4CAF50),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                // Phase Title / Status
+                val displayTitle = when {
+                    state.isActive -> state.phase.ifBlank { "Thinking & Reasoning..." }
+                    state.errorMessage != null -> "Thinking interrupted"
+                    else -> "Thought process complete (${state.summarizedStatements.size} steps)"
+                }
+
+                Text(
+                    text = displayTitle,
+                    color = if (state.isActive) Color(0xFFE8ECF2) else Color(0xFFBAC2CF),
+                    fontSize = 12.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+
+                // Duration badge
+                if (state.durationSeconds > 0) {
+                    Text(
+                        text = "• ${state.durationSeconds}s",
+                        color = Color(0xFF8B94A3),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.padding(horizontal = 4.dp)
+                    )
+                }
+
+                // Expand / Collapse Chevron
+                IconButton(
+                    onClick = { isExpanded = !isExpanded },
+                    modifier = Modifier.size(24.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                        contentDescription = if (isExpanded) "Collapse thoughts" else "Expand thoughts",
+                        tint = Color(0xFF8B94A3),
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+
+            // Expanded Body: Summarized Statements & Active Streaming Snippet
+            AnimatedVisibility(
+                visible = isExpanded,
+                enter = fadeIn() + slideInVertically(),
+                exit = fadeOut() + slideOutVertically()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp)
+                ) {
+                    // Divider
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(1.dp)
+                            .background(Color(0xFF2B303B))
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Summarized Statements List
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        state.summarizedStatements.forEachIndexed { index, statement ->
+                            val isLatest = index == state.summarizedStatements.lastIndex && state.isActive && state.currentStreamSnippet.isEmpty()
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .padding(top = 5.dp, end = 8.dp)
+                                        .size(5.dp)
+                                        .clip(CircleShape)
+                                        .background(if (isLatest) Color(0xFF00E5FF) else Color(0xFF6B7485))
+                                )
+                                Text(
+                                    text = statement,
+                                    color = if (isLatest) Color(0xFFF0F4F8) else Color(0xFFC4CBD4),
+                                    fontSize = 12.sp,
+                                    fontWeight = if (isLatest) FontWeight.Medium else FontWeight.Normal,
+                                    lineHeight = 16.sp
+                                )
+                            }
+                        }
+
+                        // Live Streaming Active Snippet with animated cursor
+                        if (state.isActive && state.currentStreamSnippet.isNotBlank()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .padding(top = 5.dp, end = 8.dp)
+                                        .size(5.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFF00E5FF).copy(alpha = pulseAlpha))
+                                )
+                                Text(
+                                    text = "${state.currentStreamSnippet} ▊",
+                                    color = Color(0xFF81D4FA),
+                                    fontSize = 12.sp,
+                                    fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                                    lineHeight = 16.sp
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }

@@ -60,6 +60,7 @@ import com.example.ui.components.BookmarksSheet
 import com.example.ui.components.DownloadsSheet
 import com.example.ui.components.FindInPageBar
 import com.example.ui.components.HistorySheet
+import com.example.ui.components.ImportRedesignDialog
 import com.example.ui.components.MorphingOptionsButton
 import com.example.ui.components.NewTabPlusButton
 import com.example.ui.components.OptionsPillMenu
@@ -94,6 +95,7 @@ fun BrowserScreen(
     val isDownloadsOpen by viewModel.isDownloadsOpen.collectAsState()
     val isSettingsOpen by viewModel.isSettingsOpen.collectAsState()
     val isApiLogsOpen by viewModel.isApiLogsOpen.collectAsState()
+    val isImportRedesignDialogOpen by viewModel.isImportRedesignDialogOpen.collectAsState()
     val isFindInPageOpen by viewModel.isFindInPageOpen.collectAsState()
     val findInPageQuery by viewModel.findInPageQuery.collectAsState()
     val isReadingMode by viewModel.isReadingMode.collectAsState()
@@ -122,6 +124,7 @@ fun BrowserScreen(
     val isAiStylerPillVisible by viewModel.isAiStylerPillVisible.collectAsState()
     val isAiStylerLoading by viewModel.isAiStylerLoading.collectAsState()
     val aiStylerErrorMessage by viewModel.aiStylerErrorMessage.collectAsState()
+    val aiThinkingState by viewModel.aiThinkingState.collectAsState()
     val pendingUserScriptToInject by viewModel.pendingUserScriptToInject.collectAsState()
     val isCustomStyleApplied by viewModel.isCustomStyleApplied.collectAsState()
     val isThemeUpdatingInBackground by viewModel.isThemeUpdatingInBackground.collectAsState()
@@ -199,6 +202,7 @@ fun BrowserScreen(
     // Back handler: pop modals first, then navigate back in WebView
     BackHandler {
         when {
+            isImportRedesignDialogOpen -> viewModel.closeImportRedesignDialog()
             isAiStylerPillVisible -> viewModel.closeAiStylerPill()
             isFindInPageOpen -> viewModel.toggleFindInPage()
             isBookmarksOpen -> viewModel.toggleBookmarks()
@@ -451,12 +455,14 @@ fun BrowserScreen(
             isLoading = isAiStylerLoading,
             isStyleApplied = isCustomStyleApplied,
             errorMessage = aiStylerErrorMessage,
+            thinkingState = aiThinkingState,
             previousGenerations = previousGenerations,
             currentAppliedPrompt = currentAppliedPrompt,
             onApplyStyle = { viewModel.applyAiStyle(it) },
             onApplySavedTheme = { viewModel.applySavedTheme(it) },
             onDeleteSavedTheme = { viewModel.deleteSavedTheme(it) },
             onResetStyle = { viewModel.resetCustomStyle() },
+            onOpenImportRedesign = { viewModel.openImportRedesignDialog() },
             onDismiss = { viewModel.closeAiStylerPill() },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -517,6 +523,7 @@ fun BrowserScreen(
                 onToggleFullScreenMode = { viewModel.toggleFullScreenMode(it) },
                 onClearBrowsingData = { viewModel.clearBrowsingData() },
                 onOpenApiLogs = { viewModel.toggleApiLogs() },
+                onOpenImportRedesign = { viewModel.openImportRedesignDialog() },
                 customApiKey = customApiKey,
                 onUpdateCustomApiKey = { viewModel.updateCustomApiKey(it) },
                 onDismiss = { viewModel.toggleSettings() }
@@ -525,7 +532,21 @@ fun BrowserScreen(
 
         if (isApiLogsOpen) {
             ApiRequestLogsSheet(
-                onDismiss = { viewModel.toggleApiLogs() }
+                onDismiss = { viewModel.toggleApiLogs() },
+                onOpenImportRedesign = { viewModel.openImportRedesignDialog() }
+            )
+        }
+
+        if (isImportRedesignDialogOpen) {
+            ImportRedesignDialog(
+                onDismiss = { viewModel.closeImportRedesignDialog() },
+                onApplyRedesign = { jsonContent, sourceName ->
+                    viewModel.importAndApplyRedesign(jsonContent, sourceName)
+                    viewModel.closeImportRedesignDialog()
+                    if (isAiStylerPillVisible) {
+                        viewModel.closeAiStylerPill()
+                    }
+                }
             )
         }
     }

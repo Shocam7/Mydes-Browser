@@ -89,4 +89,16 @@ object ApiRequestLogger {
     fun getLogFilePath(context: Context): String {
         return getLogFile(context).absolutePath
     }
+
+    @Synchronized
+    fun clearLogs(context: Context) {
+        try {
+            val file = getLogFile(context)
+            if (file.exists()) {
+                file.delete()
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
 }

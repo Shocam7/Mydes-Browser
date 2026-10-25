@@ -13,8 +13,11 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.data.api.ApiRequestLogger
 import com.example.data.api.GeminiStylerService
 import com.example.data.api.MydesRuntime
+import com.example.data.api.ThoughtSummarizer
+import com.example.data.api.UIBlueprint
 import com.example.data.api.evaluateJsSuspend
 import com.example.data.model.BookmarkEntity
 import com.example.data.model.GeneratedThemeEntity
@@ -23,6 +26,7 @@ import com.example.data.repository.BrowserRepository
 import com.example.data.repository.WebsiteColorRepository
 import com.example.ui.model.TabItem
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -32,7 +36,19 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+
+data class AiThinkingState(
+    val isActive: Boolean = false,
+    val phase: String = "",
+    val summarizedStatements: List<String> = emptyList(),
+    val currentStreamSnippet: String = "",
+    val durationSeconds: Int = 0,
+    val isFinished: Boolean = false,
+    val errorMessage: String? = null
+)
 
 class BrowserViewModel(
     application: Application,
@@ -103,6 +119,21 @@ class BrowserViewModel(
         _isApiLogsOpen.value = !_isApiLogsOpen.value
     }
 
+    private val _isImportRedesignDialogOpen = MutableStateFlow(false)
+    val isImportRedesignDialogOpen: StateFlow<Boolean> = _isImportRedesignDialogOpen.asStateFlow()
+
+    fun openImportRedesignDialog() {
+        _isImportRedesignDialogOpen.value = true
+    }
+
+    fun closeImportRedesignDialog() {
+        _isImportRedesignDialogOpen.value = false
+    }
+
+    fun toggleImportRedesignDialog() {
+        _isImportRedesignDialogOpen.value = !_isImportRedesignDialogOpen.value
+    }
+
     private val _isFindInPageOpen = MutableStateFlow(false)
     val isFindInPageOpen: StateFlow<Boolean> = _isFindInPageOpen.asStateFlow()
 
@@ -145,6 +176,11 @@ class BrowserViewModel(
 
     private val _aiStylerErrorMessage = MutableStateFlow<String?>(null)
     val aiStylerErrorMessage: StateFlow<String?> = _aiStylerErrorMessage.asStateFlow()
+
+    private val _aiThinkingState = MutableStateFlow(AiThinkingState())
+    val aiThinkingState: StateFlow<AiThinkingState> = _aiThinkingState.asStateFlow()
+
+    private var thinkingTimerJob: kotlinx.coroutines.Job? = null
 
     private val _pendingUserScriptToInject = MutableStateFlow<String?>(null)
     val pendingUserScriptToInject: StateFlow<String?> = _pendingUserScriptToInject.asStateFlow()
@@ -212,11 +248,98 @@ class BrowserViewModel(
         }
     }
 
+    /**
+     * Imports an externally generated UIBlueprint (e.g. from a frontier model like Claude 3.7 or GPT-4.5)
+     * from a file or pasted string, and applies it immediately to the active webpage.
+     */
+    fun importAndApplyRedesign(jsonContent: String, sourceName: String = "External File"): Result<UIBlueprint> {
+        val tab = activeTab.value ?: return Result.failure(IllegalStateException("No active tab open"))
+        val domain = extractDomain(tab.url)
+        if (domain.isBlank()) {
+            val err = "Please navigate to a website first before applying an external redesign."
+            Toast.makeText(getApplication(), err, Toast.LENGTH_LONG).show()
+            return Result.failure(IllegalStateException(err))
+        }
+
+        val parsedBlueprint = UIBlueprint.parse(jsonContent, "Imported Frontier Redesign")
+            ?: return Result.failure(IllegalArgumentException("Could not parse valid UIBlueprint JSON. Ensure fields match the generative blueprint schema."))
+
+        val script = MydesRuntime.script(parsedBlueprint)
+        val promptName = parsedBlueprint.name.ifBlank { parsedBlueprint.concept }.ifBlank { "Imported Frontier Redesign" }
+
+        val websiteTheme = WebsiteTheme(
+            domain = domain,
+            prompt = promptName,
+            baseScript = script,
+            pageScripts = mapOf(tab.url to script)
+        )
+        _websiteThemes.value = _websiteThemes.value + (domain to websiteTheme)
+        _pendingUserScriptToInject.value = script
+
+        val siteName = if (tab.title.isNotBlank()) tab.title else tab.url
+
+        viewModelScope.launch {
+            val initialThemeEntity = GeneratedThemeEntity(
+                domain = domain,
+                websiteUrl = tab.url,
+                websiteTitle = siteName,
+                prompt = "Imported: $promptName",
+                themeName = parsedBlueprint.name,
+                script = script,
+                screenshotPath = null
+            )
+            val insertedId = browserRepository.saveGeneratedTheme(initialThemeEntity)
+
+            // Capture screenshot after DOM stabilizes
+            val wv = activeWebViewRef
+            if (wv != null) {
+                kotlinx.coroutines.delay(4000L)
+                val bitmap = captureWebViewBitmap(wv)
+                val screenshotPath = if (bitmap != null) saveScreenshotToFile(bitmap) else null
+                if (screenshotPath != null) {
+                    browserRepository.updateGeneratedTheme(
+                        initialThemeEntity.copy(id = insertedId, screenshotPath = screenshotPath)
+                    )
+                }
+            }
+
+            // Log import in ApiRequestLogger
+            ApiRequestLogger.logRequest(
+                context = getApplication(),
+                type = "importedRedesign (frontier)",
+                websiteName = siteName,
+                websiteUrl = tab.url,
+                userPrompt = "Imported: $promptName",
+                requestPayload = "=== IMPORT SOURCE ===\n$sourceName\n\n=== BLUEPRINT METADATA ===\nID: ${parsedBlueprint.id}\nName: ${parsedBlueprint.name}\nConcept: ${parsedBlueprint.concept}\nColors: bg=${parsedBlueprint.bg}, surface=${parsedBlueprint.surface}, accent=${parsedBlueprint.accent}\nRaw content length: ${jsonContent.length} chars",
+                responseResult = parsedBlueprint.toJson(),
+                isSuccess = true
+            )
+        }
+
+        Toast.makeText(getApplication(), "Applied imported redesign: $promptName", Toast.LENGTH_SHORT).show()
+        return Result.success(parsedBlueprint)
+    }
+
     fun applyAiStyle(prompt: String) {
         val tab = activeTab.value ?: return
         val domain = extractDomain(tab.url)
         _isAiStylerLoading.value = true
         _aiStylerErrorMessage.value = null
+
+        thinkingTimerJob?.cancel()
+        _aiThinkingState.value = AiThinkingState(
+            isActive = true,
+            phase = "Directing visual concept...",
+            summarizedStatements = listOf("Analyzing webpage layout and user prompt"),
+            durationSeconds = 0,
+            isFinished = false
+        )
+        thinkingTimerJob = viewModelScope.launch {
+            while (isActive && _aiThinkingState.value.isActive && !_aiThinkingState.value.isFinished) {
+                delay(1000L)
+                _aiThinkingState.update { it.copy(durationSeconds = it.durationSeconds + 1) }
+            }
+        }
 
         viewModelScope.launch {
             val siteName = if (tab.title.isNotBlank()) tab.title else tab.url
@@ -226,6 +349,38 @@ class BrowserViewModel(
             } catch (_: Exception) {
                 null
             }
+            val initialBitmap = activeWebViewRef?.let { captureWebViewBitmap(it) }
+            val initialScreenshotBase64 = if (initialBitmap != null) bitmapToBase64(initialBitmap) else null
+
+            val thoughtBuffer = StringBuilder()
+            val onThinkingProgress: (phase: String, chunk: String, isComplete: Boolean) -> Unit = { phase, chunk, isComplete ->
+                if (isComplete) {
+                    val (summarized, _) = ThoughtSummarizer.summarize(thoughtBuffer.toString())
+                    _aiThinkingState.update {
+                        it.copy(
+                            phase = phase,
+                            summarizedStatements = if (summarized.isNotEmpty()) summarized else it.summarizedStatements,
+                            currentStreamSnippet = "",
+                            isFinished = true
+                        )
+                    }
+                } else {
+                    if (chunk.isNotEmpty()) {
+                        thoughtBuffer.append(chunk)
+                        val (summarized, pending) = ThoughtSummarizer.summarize(thoughtBuffer.toString())
+                        _aiThinkingState.update {
+                            it.copy(
+                                phase = phase,
+                                summarizedStatements = if (summarized.isNotEmpty()) summarized else it.summarizedStatements,
+                                currentStreamSnippet = pending
+                            )
+                        }
+                    } else {
+                        _aiThinkingState.update { it.copy(phase = phase) }
+                    }
+                }
+            }
+
             val result = geminiStylerService.generateUserScript(
                 context = getApplication(),
                 userPrompt = prompt,
@@ -233,10 +388,24 @@ class BrowserViewModel(
                 websiteUrl = tab.url,
                 // The user pressed "apply": always design something new instead of replaying the cached design
                 forceFresh = true,
-                outlineJson = preOutline
+                outlineJson = preOutline,
+                initialScreenshotBase64 = initialScreenshotBase64,
+                onThinkingUpdate = onThinkingProgress
             )
             _isAiStylerLoading.value = false
             result.onSuccess { script ->
+                thinkingTimerJob?.cancel()
+                val (finalSummaries, _) = ThoughtSummarizer.summarize(thoughtBuffer.toString())
+                _aiThinkingState.update {
+                    it.copy(
+                        isActive = false,
+                        isFinished = true,
+                        phase = "Theme Synthesized & Applied",
+                        summarizedStatements = if (finalSummaries.isNotEmpty()) finalSummaries else it.summarizedStatements,
+                        currentStreamSnippet = ""
+                    )
+                }
+
                 if (domain.isNotBlank()) {
                     val theme = WebsiteTheme(
                         domain = domain,
@@ -291,7 +460,8 @@ class BrowserViewModel(
                             screenWidth = width,
                             screenHeight = height,
                             outlineJson = outline,
-                            auditJson = audit
+                            auditJson = audit,
+                            onThinkingUpdate = onThinkingProgress
                         )
                         optimizedResult.onSuccess { optScript ->
                             // The user may have navigated to another site while the review was running
@@ -336,7 +506,18 @@ class BrowserViewModel(
                     browserRepository.saveGeneratedTheme(fallbackTheme)
                 }
             }.onFailure { err ->
-                _aiStylerErrorMessage.value = err.message ?: "Failed to generate styling."
+                thinkingTimerJob?.cancel()
+                val errMsg = err.message ?: "Failed to generate styling."
+                _aiStylerErrorMessage.value = errMsg
+                _aiThinkingState.update {
+                    it.copy(
+                        isActive = false,
+                        isFinished = true,
+                        phase = "Synthesis Encountered an Issue",
+                        currentStreamSnippet = "",
+                        errorMessage = errMsg
+                    )
+                }
             }
         }
     }
