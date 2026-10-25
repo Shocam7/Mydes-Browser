@@ -36,27 +36,26 @@ import java.net.InetAddress
 import java.net.UnknownHostException
 import java.security.MessageDigest
 import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.math.roundToInt
 
 /*
- * v10 - "Fast, High-Craft Universal UI Synthesis Engine"
+ * v8 - "Commercial Multi-Device Generative UI Synthesis Engine"
  *
- * Key Fixes in v10:
- * 1. Fast & Free-Tier Optimized ("gemini-3.5-flash-lite"):
- *    - Uses `gemini-3.5-flash-lite` across all passes for 5-10s total generation time.
- *    - Removes deprecated `temperature`, `topP`, and `thinkingConfig` fields that caused HTTP 400 errors and 5-minute stalls.
- * 2. Eliminates the "Giant Black Rectangle" / Header Occlusion Bug:
- *    - Never forces `height: auto` or `overflow: visible` on `<header>`, topbars, or hidden search overlays.
- *    - Enforces a strict `max-height: 60px` on sticky/fixed headers and hides inactive autocomplete overlays.
- * 3. Preserves Natural Full-Width Card Proportions (No More Tiny Crushed Thumbnails):
- *    - Stops forcing full-width feeds (widthPct >= 75%) into cramped 2-column sub-grids where thumbnails become tiny
- *      and titles wrap into 1-word vertical strips.
- *    - Prevents nested grids (a grid inside another grid).
- * 4. Real Typography Support:
- *    - Allows Google Fonts `@import` in `customCss` with clean sans-serif/serif fallbacks (banning ugly raw Android monospace).
+ * Key Upgrades in v8:
+ * 1. Explicit Tri-Stage Model Routing (Fixes Review Pass Model Bug):
+ *    - Pass 1 (Concept): CONCEPT_MODEL ("gemini-3.5-flash-lite")
+ *    - Pass 2 (Synthesis): SYNTHESIS_MODEL ("gemini-3.8-flash")
+ *    - Pass 3 (Review): REVIEW_MODEL ("gemini-3.5-flash-lite") — explicitly enforced via `isReviewPass = true`
+ *      and `android.net.Uri` domain normalization so SPA URL changes never cause a fallback to 3.8-flash.
+ * 2. Device-Agnostic Responsive Containment & Live Geometry Guard:
+ *    - Works across all Android form factors (compact phones, large phones, foldables, tablets, landscape/portrait).
+ *    - Post-render `clampOutOfBoundsElements()` inspects live `getBoundingClientRect()` against `clientWidth`
+ *      and automatically pulls in any element or grid track that overflows the viewport.
+ * 3. Zero-Dependency DNS-over-HTTPS Fallback:
+ *    - Uses only standard `okhttp3` + `org.json.JSONObject` (matching your build.gradle.kts) to resolve
+ *      `generativelanguage.googleapis.com` via 8.8.8.8 / 1.1.1.1 whenever carrier DNS throws UnknownHostException.
  */
 
 // ───────────────────────── Gemini wire models ─────────────────────────
@@ -77,14 +76,18 @@ data class Part(val text: String? = null, val inlineData: InlineData? = null)
 @JsonClass(generateAdapter = true)
 data class InlineData(val mimeType: String, val data: String)
 
-/**
- * Clean GenerationConfig without deprecated sampling/thinking parameters
- * that trigger HTTP 400 INVALID_ARGUMENT on Gemini 3.5+ models.
- */
 @JsonClass(generateAdapter = true)
 data class GenerationConfig(
+    val temperature: Float = 0.7f,
     val maxOutputTokens: Int? = null,
-    val responseMimeType: String? = null
+    val responseMimeType: String? = null,
+    val topP: Float? = null,
+    val thinkingConfig: ThinkingConfig? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class ThinkingConfig(
+    val thinkingBudget: Int? = 0
 )
 
 @JsonClass(generateAdapter = true)
@@ -158,6 +161,10 @@ object Hex {
 
 // ───────────────────── Generative UI Blueprint ─────────────────────
 
+/**
+ * Strips ::before/::after rules that inject readable words (e.g. content:"> SYS.RECORD").
+ * Icons, bullets and attr() content are preserved.
+ */
 internal fun stripInventedLabels(css: String): String =
     css.replace(
         Regex("""[^{}]*::?(?:before|after)\s*\{[^{}]*content\s*:\s*(["'])[^"'{}]*[A-Za-z]{3,}[^"'{}]*\1[^{}]*\}""", RegexOption.IGNORE_CASE),
@@ -180,7 +187,7 @@ data class UIBlueprint(
     val hudHtml: String,
     val customJs: String,
     val concept: String = "",
-    val architecture: String = "restyle",
+    val architecture: String = "restyle", // "restyle" (default) or "app_shell"
     val needsHud: Boolean = false,
     val hudReason: String = "",
     val fingerprint: String = ""
@@ -208,7 +215,7 @@ data class UIBlueprint(
         .toString()
 
     companion object {
-        const val RUNTIME_VERSION = 10
+        const val RUNTIME_VERSION = 8
 
         private fun jsonSlice(raw: String): String {
             var s = raw.trim()
@@ -220,7 +227,7 @@ data class UIBlueprint(
             return if (a >= 0 && b > a) s.substring(a, b + 1) else s
         }
 
-        fun parse(raw: String, prompt: String, allowedArchitecture: String? = null): UIBlueprint? {
+        fun parse(raw: String, prompt: String, allowedArchitecture: String = "restyle"): UIBlueprint? {
             val j = try { JSONObject(jsonSlice(raw)) } catch (_: Exception) { return null }
             val dark = j.optBoolean("dark", true)
             val white = "#ffffff"
@@ -237,8 +244,7 @@ data class UIBlueprint(
             val ink = Hex.norm(j.optString("ink"), "#111215")
             val accent = Hex.norm(j.optString("accent"), if (dark) "#00e5ff" else "#0055ff")
 
-            val effectiveArch = (allowedArchitecture ?: j.optString("architecture", "restyle")).lowercase(Locale.US)
-            val isAppShellApproved = effectiveArch == "app_shell"
+            val isAppShellApproved = allowedArchitecture.equals("app_shell", ignoreCase = true)
             val needsHud = isAppShellApproved &&
                 j.optBoolean("needsHud", false) &&
                 j.optString("hudReason").isNotBlank() &&
@@ -285,7 +291,7 @@ if(window.__mydes && window.__mydes.clear){try{window.__mydes.clear();}catch(e){
 if(BP.skip && BP.skip.indexOf(location.hostname)>=0) return;
 
 var cfg = BP;
-var changes=[], EB=new WeakMap(), done=new WeakSet(), clampedDone=new WeakSet(), jobs=[], draining=false;
+var changes=[], EB=new WeakMap(), done=new WeakSet(), jobs=[], draining=false;
 var tagDirty=true, lastTag=0, tagDelay=120, BG, FG, INK;
 var cleanupFns=[], mo=null;
 var nodeUidCounter=0;
@@ -294,15 +300,6 @@ function hex(h){return {r:parseInt(h.substr(1,2),16),g:parseInt(h.substr(3,2),16
 function rgbStr(c){return 'rgb('+Math.round(c.r)+','+Math.round(c.g)+','+Math.round(c.b)+')';}
 function configure(){BG=hex(cfg.bg);FG=hex(cfg.fg);INK=hex(cfg.ink);}
 configure();
-
-function vw(){ return Math.max(1, document.documentElement.clientWidth || window.innerWidth || 360); }
-function vh(){ return Math.max(1, document.documentElement.clientHeight || window.innerHeight || 640); }
-
-function syncViewportTokens(){
-  var w = vw(), h = vh();
-  document.documentElement.style.setProperty('--m-vw', w + 'px');
-  document.documentElement.style.setProperty('--m-vh', h + 'px');
-}
 
 /* ---------- 1. MydesBridge: Universal DOM Control & State-Safe Proxy API ---------- */
 window.MydesBridge = {
@@ -473,8 +470,8 @@ window.MydesBridge = {
       var cy = e.touches[0].clientY;
       if(touchRaf) return;
       touchRaf = requestAnimationFrame(function() {
-        var ry = ((cx / vw()) - 0.5) * 22 * mult;
-        var rx = (0.5 - (cy / vh())) * 16 * mult;
+        var ry = ((cx / Math.max(1, innerWidth)) - 0.5) * 22 * mult;
+        var rx = (0.5 - (cy / Math.max(1, innerHeight))) * 16 * mult;
         document.documentElement.style.setProperty('--m-rx', rx.toFixed(2) + 'deg');
         document.documentElement.style.setProperty('--m-ry', ry.toFixed(2) + 'deg');
         touchRaf = 0;
@@ -492,50 +489,76 @@ window.MydesBridge = {
   onCleanup: function(fn) { if(typeof fn === 'function') cleanupFns.push(fn); }
 };
 
-/* ---------- 2. Safe Responsive Normalization (Prevents Giant Black Header & Crushed Cards) ---------- */
+/* ---------- 2. Device-Agnostic Responsive Variables & Containment Stylesheets ---------- */
 var eStyle = null;
+function updateViewportVars() {
+  var vw = document.documentElement.clientWidth || window.innerWidth || 360;
+  var vh = document.documentElement.clientHeight || window.innerHeight || 640;
+  document.documentElement.style.setProperty('--m-vw', vw + 'px');
+  document.documentElement.style.setProperty('--m-vh', vh + 'px');
+}
+
 function applySheets() {
-  syncViewportTokens();
+  updateViewportVars();
+  /*
+   * Multi-Device Responsive Containment:
+   * - Uses `100%` (rather than `100vw` which ignores scrollbars/margins) to fit any screen size from 280px foldables
+   *   up to 1280px+ tablets.
+   * - Forces `min-width: 0` and `max-width: 100%` on all grid/flex descendants so child items never push past the
+   *   available screen width on any device.
+   * - Preserves infinite-scroll sentinels at the bottom of grids (`grid-column: 1 / -1`).
+   */
   var universalSafetyCss =
-    '/* 1. Universal Box-Sizing & Viewport Containment */\n' +
-    '*, *::before, *::after { box-sizing: border-box !important; }\n' +
+    '/* 1. Multi-Device Viewport Containment */\n' +
+    '*, *::before, *::after { box-sizing: border-box; }\n' +
     'html, body {\n' +
-    '  width: 100% !important; max-width: 100% !important; overflow-x: clip !important;\n' +
-    '  overflow-y: visible !important; height: auto !important; min-height: 100vh !important;\n' +
+    '  width: 100% !important; max-width: 100% !important; overflow-x: hidden !important;\n' +
+    '  overflow-y: visible !important; height: auto !important; min-height: 100% !important;\n' +
     '  margin-left: 0 !important; margin-right: 0 !important;\n' +
     '}\n' +
-    '/* 2. Prevent Giant Black Header / Topbar Occlusion Bug */\n' +
-    'html body header, html body [data-mydes="header"], html body [role="banner"] {\n' +
-    '  max-height: 64px !important; overflow: visible !important;\n' +
+    'html body [data-mydes="main"], html body [data-mydes="header"], html body [data-mydes="nav"],\n' +
+    'html body [data-mydes="footer"], html body [data-mydes="grid"] {\n' +
+    '  width: 100% !important; max-width: 100% !important;\n' +
+    '  margin-left: 0 !important; margin-right: 0 !important;\n' +
+    '  box-sizing: border-box !important;\n' +
     '}\n' +
-    '/* 3. Prevent Nested Grids from Crushing Full-Width Shelves */\n' +
-    'html body [data-mydes="grid"] > [data-mydes="grid"],\n' +
-    'html body [data-mydes="grid"] > ytm-reel-shelf-renderer,\n' +
-    'html body [data-mydes="grid"] > section {\n' +
-    '  grid-column: 1 / -1 !important; width: 100% !important; max-width: 100% !important;\n' +
+    'html body [data-mydes="grid"] > *,\n' +
+    'html body [data-mydes="card"], html body [data-mydes="card"] *,\n' +
+    'html body [data-mydes="item"], html body [data-mydes="item"] * {\n' +
+    '  min-width: 0 !important; max-width: 100% !important;\n' +
+    '  box-sizing: border-box !important;\n' +
     '}\n' +
-    '/* 4. Infinite Scroll Sentinel Preservation */\n' +
+    'html body [data-mydes="card"], html body [data-mydes="item"] {\n' +
+    '  width: 100% !important; margin-left: 0 !important; margin-right: 0 !important;\n' +
+    '  overflow: hidden !important;\n' +
+    '}\n' +
+    'html body img, html body video, html body canvas, html body svg, html body iframe {\n' +
+    '  max-width: 100% !important; height: auto !important; box-sizing: border-box !important;\n' +
+    '}\n' +
+    '/* 2. Infinite Scroll Sentinel Preservation */\n' +
     'html body [data-mydes="grid"] > :not([data-mydes="card"]):not([data-mydes="item"]),\n' +
     'html body [data-mydes-sentinel="true"] {\n' +
     '  grid-column: 1 / -1 !important; width: 100% !important;\n' +
-    '  min-height: 28px !important;\n' +
+    '  min-height: 28px !important; display: block !important;\n' +
+    '  visibility: visible !important; opacity: 1 !important;\n' +
     '}\n' +
-    '/* 5. Universal Text Unclamping & Clean Wrapping */\n' +
+    '/* 3. Universal Text Unclamping */\n' +
     'html body [data-mydes="heading"], html body [data-mydes="title"], html body [data-mydes-clamped="true"],\n' +
     'html body h1, html body h2, html body h3, html body h4 {\n' +
     '  -webkit-line-clamp: unset !important; line-clamp: unset !important;\n' +
     '  max-height: none !important; height: auto !important;\n' +
     '  overflow: visible !important; text-overflow: unset !important;\n' +
-    '  white-space: normal !important; word-break: normal !important; overflow-wrap: break-word !important;\n' +
+    '  white-space: normal !important; overflow-wrap: anywhere !important; word-break: break-word !important;\n' +
     '}\n' +
-    '/* 6. Universal Media Overlay Separation */\n' +
+    '/* 4. Universal Media Overlay Separation */\n' +
     'html body [data-mydes-overlay-parent="true"] {\n' +
     '  display: flex !important; flex-direction: column !important; height: auto !important;\n' +
     '}\n' +
     'html body [data-mydes-overlay="true"] {\n' +
     '  position: static !important; inset: auto !important;\n' +
     '  width: 100% !important; height: auto !important;\n' +
-    '  max-height: none !important; transform: none !important;\n' +
+    '  max-height: none !important; box-sizing: border-box !important;\n' +
+    '  transform: none !important;\n' +
     '}\n';
 
   var baseVars = ':root{--m-bg:'+cfg.bg+';--m-surface:'+cfg.surface+';--m-surface2:'+cfg.surface2+
@@ -543,10 +566,10 @@ function applySheets() {
     'html{background-color:var(--m-bg)!important;color:var(--m-fg)!important;}\n' +
     'html body{background-color:transparent!important;color:var(--m-fg)!important;position:relative;z-index:1;}\n' +
     '#__mydes_backdrop{position:fixed;inset:0;width:100%;height:100%;pointer-events:none!important;z-index:-1;overflow:hidden;transform:translateZ(0);will-change:transform;}\n' +
-    '#__mydes_hud{position:fixed;z-index:2147483640;pointer-events:none;inset:0;width:100%;height:100%;transform:translateZ(0);}\n' +
+    '#__mydes_hud{position:fixed;z-index:2147483640;pointer-events:none;inset:0;transform:translateZ(0);}\n' +
     '#__mydes_hud *{pointer-events:auto;}\n';
 
-  var fullCss = baseVars + '\n' + (cfg.customCss || '') + '\n' + universalSafetyCss;
+  var fullCss = baseVars + '\n' + universalSafetyCss + '\n' + (cfg.customCss || '');
   var root = document.head || document.documentElement;
   if(!root) return;
   if(!eStyle || !eStyle.isConnected) {
@@ -596,7 +619,7 @@ function mountLayers() {
   }
 }
 
-/* ---------- 4. Geometry-Driven Universal DOM Tagger & Sentinel Finder ---------- */
+/* ---------- 4. Geometry-Driven Universal DOM Tagger & Live Bounds Clamper ---------- */
 function each(sel,fn){var l=document.querySelectorAll(sel);for(var i=0;i<l.length;i++)fn(l[i]);}
 function put(e,r){if(e.getAttribute('data-mydes')!==r)e.setAttribute('data-mydes',r);}
 function putNew(e,r){if(!e.hasAttribute('data-mydes'))e.setAttribute('data-mydes',r);}
@@ -615,7 +638,7 @@ function isUnitLike(e){
   var t = (e.textContent||'').trim().length;
   if(t < 6 || t > 1800) return false;
   var r = e.getBoundingClientRect();
-  if(r.width < vw() * 0.18 || r.height < 24) return false;
+  if(r.width < 60 || r.height < 24) return false;
   if(!e.querySelector('img,video,picture,canvas,svg') && e.parentElement) {
     var pr = e.parentElement.getBoundingClientRect();
     if(r.width < pr.width * 0.72 && e.parentElement.querySelector('img,video,picture')) return false;
@@ -710,6 +733,70 @@ function markPricesAndMeta(){
   }
 }
 
+/*
+ * Device-Agnostic Post-Render Geometry Clamper:
+ * Measures actual rendered bounding boxes against the current device's `clientWidth`.
+ * If any grid container, card, header, or child extends past the left (< 0) or right (> clientWidth)
+ * edge of the screen on ANY device size, it automatically clamps its width, grid-template-columns,
+ * or horizontal margins so nothing is ever cut off.
+ */
+function clampOutOfBoundsElements() {
+  var vw = document.documentElement.clientWidth || window.innerWidth;
+  if(vw <= 0 || !document.body) return;
+
+  var grids = document.querySelectorAll('[data-mydes="grid"]');
+  for(var g=0; g<grids.length; g++) {
+    var grid = grids[g];
+    var gr = grid.getBoundingClientRect();
+    var gcs = getComputedStyle(grid);
+    if(gr.right > vw + 2 || gr.left < -2 || grid.scrollWidth > vw + 2) {
+      setProp(grid, 'width', '100%');
+      setProp(grid, 'max-width', '100%');
+      setProp(grid, 'margin-left', '0px');
+      setProp(grid, 'margin-right', '0px');
+      setProp(grid, 'padding-left', '6px');
+      setProp(grid, 'padding-right', '6px');
+      setProp(grid, 'box-sizing', 'border-box');
+      if(gcs.display.indexOf('grid') >= 0) {
+        var cols = (gcs.gridTemplateColumns || '').split(/\s+/).filter(Boolean).length;
+        if(cols >= 2) {
+          var safeCols = vw < 340 ? 1 : cols;
+          setProp(grid, 'grid-template-columns', 'repeat(' + safeCols + ', minmax(0, 1fr))');
+          setProp(grid, 'gap', '8px');
+        }
+      }
+    }
+  }
+
+  var items = document.querySelectorAll('[data-mydes="card"], [data-mydes="item"], [data-mydes="header"], [data-mydes="search"]');
+  for(var i=0; i<items.length && i<200; i++) {
+    var el = items[i];
+    var r = el.getBoundingClientRect();
+    if(r.width <= 0) continue;
+    if(r.right > vw + 2 || r.left < -2) {
+      setProp(el, 'max-width', '100%');
+      setProp(el, 'min-width', '0px');
+      setProp(el, 'margin-left', '0px');
+      setProp(el, 'margin-right', '0px');
+      setProp(el, 'box-sizing', 'border-box');
+      // If a parent grid wasn't tagged [data-mydes="grid"] but its children overflow horizontally, clamp the parent too
+      var p = el.parentElement;
+      if(p && p !== document.body) {
+        var pcs = getComputedStyle(p);
+        if(pcs.display.indexOf('grid') >= 0) {
+          var pCols = (pcs.gridTemplateColumns || '').split(/\s+/).filter(Boolean).length;
+          if(pCols >= 2) {
+            setProp(p, 'grid-template-columns', 'repeat(' + (vw < 340 ? 1 : 2) + ', minmax(0, 1fr))');
+            setProp(p, 'width', '100%');
+            setProp(p, 'max-width', '100%');
+            setProp(p, 'box-sizing', 'border-box');
+          }
+        }
+      }
+    }
+  }
+}
+
 function retag(){
   if(!document.body) return;
   var t0 = performance.now();
@@ -735,6 +822,7 @@ function retag(){
   });
   each('img,video,picture', function(e){ if(!e.closest('#__mydes_hud,#__mydes_backdrop')) putNew(e,'media'); });
   markPricesAndMeta();
+  clampOutOfBoundsElements();
 }
 
 /* ---------- 5. Infinite Scroll & Resize Keeper ---------- */
@@ -742,10 +830,10 @@ function setupLifecycleKeepers() {
   var lastKick = 0;
   function checkBottom() {
     var now = Date.now();
-    if(now - lastKick < 450) return;
-    var scrollPos = window.scrollY + vh();
+    if(now - lastKick < 500) return;
+    var scrollPos = window.scrollY + window.innerHeight;
     var docHeight = Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0);
-    if(docHeight - scrollPos < vh() * 0.65) {
+    if(docHeight - scrollPos < 450) {
       lastKick = now;
       var sentinels = document.querySelectorAll('[data-mydes-sentinel="true"], [class*="continuation"], [class*="spinner"], [class*="load-more"]');
       for(var i=0; i<sentinels.length; i++) {
@@ -758,9 +846,8 @@ function setupLifecycleKeepers() {
     }
   }
   function onResize() {
-    syncViewportTokens();
-    clampedDone = new WeakSet();
-    if(document.body) enqueue(document.body);
+    updateViewportVars();
+    clampOutOfBoundsElements();
   }
   window.addEventListener('scroll', checkBottom, {passive: true});
   window.addEventListener('resize', onResize, {passive: true});
@@ -783,17 +870,19 @@ function summary(){
       samples[r]=cls+(txt?' ("'+txt+'")':'');
     }
   });
+  var vw = document.documentElement.clientWidth || innerWidth;
+  var vh = document.documentElement.clientHeight || innerHeight;
   return JSON.stringify({
     url:location.href,
     host:location.hostname,
     title:(document.title||'').slice(0,80),
-    viewport:{w:vw(),h:vh()},
+    viewport:{w:vw,h:vh},
     roleCounts:counts,
     roleSamples:samples
   });
 }
 
-/* ---------- 7. Live Viewport Bounds Clamper, Occlusion Guard & Contrast Guard ---------- */
+/* ---------- 7. Surface Remapper & Contrast Guard ---------- */
 var SKIPTAG=/^(SCRIPT|STYLE|NOSCRIPT|IMG|SVG|PATH|VIDEO|CANVAS|IFRAME|PICTURE|INPUT|TEXTAREA|SELECT|OPTION|BR|HR|META|LINK|TITLE|HEAD|SOURCE|TEMPLATE|BUTTON)$/;
 var SURFACE_ROLE=/^(card|item|header|nav|footer|hero|aside)$/;
 function rgba(s){
@@ -817,7 +906,7 @@ function undoAll(){
     var c=changes[i];
     try{if(c.v)c.el.style.setProperty(c.p,c.v,c.pr);else c.el.style.removeProperty(c.p);}catch(e){}
   }
-  changes=[];EB=new WeakMap();done=new WeakSet();clampedDone=new WeakSet();
+  changes=[];EB=new WeakMap();done=new WeakSet();
   for(var j=0;j<cleanupFns.length;j++){try{cleanupFns[j]();}catch(e){}}
   cleanupFns=[];
 }
@@ -841,70 +930,17 @@ function pickInk(bg){
   for(var i=0;i<cands.length;i++){var c=contrast(cands[i],bg);if(c>=4.5)return cands[i];if(c>bc){bc=c;best=cands[i];}}
   return best;
 }
-
-/*
- * Guards against:
- * 1. Sticky/fixed headers or empty black boxes expanding to cover >18% of screen height.
- * 2. Elements overflowing horizontally past `vw()`.
- */
-function enforceViewportBounds(el, cs){
-  if(clampedDone.has(el)) return;
-  clampedDone.add(el);
-  var maxW = vw(), maxH = vh();
-  var r = el.getBoundingClientRect();
-  if(r.width <= 0 || r.height <= 0) return;
-
-  // Guard 1: Prevent sticky/fixed headers or overlays from turning into giant black rectangles covering the page
-  if((cs.position === 'sticky' || cs.position === 'fixed') && r.height > maxH * 0.16 && r.top <= 10) {
-    if(!el.querySelector('video') && el.id !== '__mydes_backdrop' && el.id !== '__mydes_hud') {
-      setProp(el, 'max-height', '60px');
-      setProp(el, 'overflow', 'hidden');
-    }
-  }
-
-  // Guard 2: Prevent empty or opaque non-media blocks from creating huge blank rectangles in the feed
-  if(r.height > maxH * 0.28 && !el.querySelector('img,video,picture,canvas,iframe') && (el.textContent||'').trim().length < 15) {
-    setProp(el, 'height', 'auto');
-    setProp(el, 'min-height', '0px');
-    setProp(el, 'max-height', '32px');
-    setProp(el, 'overflow', 'hidden');
-  }
-
-  // Guard 3: Clamp horizontal out-of-bounds elements
-  if(r.right > maxW + 2 || r.left < -2) {
-    var parentCs = el.parentElement ? getComputedStyle(el.parentElement) : null;
-    var inHorizontalScroller = parentCs && (parentCs.overflowX === 'auto' || parentCs.overflowX === 'scroll');
-    if(!inHorizontalScroller) {
-      if(r.left < -2) setProp(el, 'margin-left', '0px');
-      if(r.right > maxW + 2) {
-        setProp(el, 'margin-right', '0px');
-        setProp(el, 'max-width', '100%');
-        if(r.width > maxW) setProp(el, 'width', '100%');
-      }
-      var r2 = el.getBoundingClientRect();
-      if(r2.right > maxW + 4 || r2.left < -4) {
-        setProp(el, 'transform', 'none');
-      }
-    }
-  }
-}
-
 function handle(el){
-  if(el.closest && el.closest('#__mydes_hud,#__mydes_backdrop'))return;
-  var tag=el.tagName.toUpperCase();
-  var cs=getComputedStyle(el);
-
-  enforceViewportBounds(el, cs);
-
   if(done.has(el))return;
   done.add(el);
+  if(el.closest && el.closest('#__mydes_hud,#__mydes_backdrop'))return;
+  var tag=el.tagName.toUpperCase();
   if(SKIPTAG.test(tag))return;
+  var cs=getComputedStyle(el);
 
-  // Never un-hide or expand headers, dialogs, or menus; only release main page scroll wrappers
-  if(tag!=='BODY' && tag!=='HTML' && tag!=='HEADER' && !el.closest('header,[role="banner"],[role="dialog"]') &&
-     (cs.overflowY==='hidden' || cs.overflowY==='auto' || cs.overflowY==='scroll')) {
+  if(tag!=='BODY' && tag!=='HTML' && (cs.overflowY==='hidden' || cs.overflowY==='auto' || cs.overflowY==='scroll')) {
     var rr=el.getBoundingClientRect();
-    if(rr.width>=vw()*0.9 && rr.height>=vh()*0.85 && cs.position!=='fixed' && cs.position!=='sticky' && cs.position!=='absolute') {
+    if(rr.width>=innerWidth*0.9 && rr.height>=innerHeight*0.8 && cs.position!=='fixed') {
       setProp(el,'overflow-y','visible');
       setProp(el,'height','auto');
       setProp(el,'max-height','none');
@@ -915,7 +951,7 @@ function handle(el){
     var wb=rgba(cs.backgroundColor);
     if(wb&&wb.a>=0.5){
       var wr=el.getBoundingClientRect();
-      if(wr.width>=vw()*0.95&&wr.height>=vh()*0.8){setProp(el,'background-color','transparent');EB.delete(el);}
+      if(wr.width>=innerWidth*0.95&&wr.height>=innerHeight*0.8){setProp(el,'background-color','transparent');EB.delete(el);}
     }
   }
   if(cfg.remapSurfaces && tag!=='BODY' && tag!=='HTML' && !hasBgImage(cs)){
@@ -924,7 +960,7 @@ function handle(el){
     if(b&&b.a>=0.85&&((cfg.dark&&lum(b)>0.5)||(!cfg.dark&&lum(b)<0.2))){
       var role=el.getAttribute('data-mydes')||'';
       var r=el.getBoundingClientRect();
-      if((r.width>=vw()*0.35&&r.height>=20)||SURFACE_ROLE.test(role)){
+      if((r.width>=innerWidth*0.35&&r.height>=20)||SURFACE_ROLE.test(role)){
         setProp(el,'background-color',role==='card'?cfg.surface2:cfg.surface);
         EB.delete(el);
       }
@@ -958,7 +994,7 @@ function drain(){
     while(j.i<j.list.length&&performance.now()-t0<12){try{handle(j.list[j.i]);}catch(e){}j.i++;}
     if(j.i>=j.list.length)jobs.shift();
   }
-  if(jobs.length||tagDirty)setTimeout(drain,20);else draining=false;
+  if(jobs.length||tagDirty)setTimeout(drain,20);else{draining=false;try{clampOutOfBoundsElements();}catch(e){}}
 }
 
 function observe(){
@@ -1026,8 +1062,6 @@ start();
 
     const val OUTLINE_PROBE_JS = """
         (function(){
-          var vw = Math.max(1, document.documentElement.clientWidth || window.innerWidth || 360);
-          var vh = Math.max(1, document.documentElement.clientHeight || window.innerHeight || 640);
           function getSel(e){
             if(!e || e===document.body || e===document.documentElement) return '';
             var s = e.tagName.toLowerCase();
@@ -1036,6 +1070,9 @@ start();
             if(cl.length) s += '.' + cl.slice(0,2).map(function(c){ return window.CSS && CSS.escape ? CSS.escape(c) : c; }).join('.');
             return s;
           }
+
+          var vw = document.documentElement.clientWidth || innerWidth;
+          var vh = document.documentElement.clientHeight || innerHeight;
 
           var counts={};
           ['header','nav','main','aside','footer','form','button','input','img','video','article','section','table','ul','ol','h1','h2','h3'].forEach(function(t){
@@ -1051,7 +1088,7 @@ start();
             if(e.children.length < 1 || e.children.length > 25) continue;
 
             var r = e.getBoundingClientRect();
-            if(r.width < vw * 0.18 || r.height < 28) continue;
+            if(r.width < 60 || r.height < 24) continue;
 
             var t = (e.textContent || '').replace(/\s+/g,' ').trim();
             if(t.length < 10 || t.length > 1000) continue;
@@ -1079,7 +1116,7 @@ start();
               hasMedia: hasMedia,
               itemDisplay: cs.display + (cs.flexDirection && cs.display.indexOf('flex')>=0 ? ' ('+cs.flexDirection+')' : ''),
               parentDisplay: pcs.display,
-              widthPct: Math.round((r.width / vw) * 100),
+              widthPct: Math.round((r.width / Math.max(1, vw)) * 100),
               sample: t.slice(0, 45)
             });
             g.n++;
@@ -1106,14 +1143,11 @@ start();
         })();
     """
 
-    /**
-     * Audits contrast, out-of-bounds elements, giant occluding black/blank blocks, and crushed cards.
-     */
     const val CONTRAST_AUDIT_JS = """
         (function(){
           try{
-            var vw = Math.max(1, document.documentElement.clientWidth || window.innerWidth || 360);
-            var vh = Math.max(1, document.documentElement.clientHeight || window.innerHeight || 640);
+            var vw = document.documentElement.clientWidth || innerWidth;
+            var vh = document.documentElement.clientHeight || innerHeight;
             function P(c){var m=/rgba?\(([^)]+)\)/.exec(c||'');if(!m)return null;var p=m[1].split(/[ ,\/]+/).filter(Boolean).map(parseFloat);return {r:p[0],g:p[1],b:p[2],a:p.length>3?p[3]:1};}
             function L(c){function f(v){v/=255;return v<=0.03928?v/12.92:Math.pow((v+0.055)/1.055,2.4);}return 0.2126*f(c.r)+0.7152*f(c.g)+0.0722*f(c.b);}
             function R(a,b){var x=L(a),y=L(b);if(x<y){var t=x;x=y;y=t;}return (x+0.05)/(y+0.05);}
@@ -1136,17 +1170,7 @@ start();
               for(var i=layers.length-1;i>=0;i--)base=mix(layers[i],base);
               return base;
             }
-            var found={},clipped=[],occludingBlocks=[],checked=0,unknown=0,guard=0,node;
-            var allEls = document.body ? document.body.querySelectorAll('header,[data-mydes="header"],div,section') : [];
-            for(var k=0; k<allEls.length && k<400; k++){
-              var blk = allEls[k];
-              if(blk.id==='__mydes_backdrop'||blk.id==='__mydes_hud') continue;
-              var br = blk.getBoundingClientRect();
-              var bcs = getComputedStyle(blk);
-              if((bcs.position==='sticky'||bcs.position==='fixed') && br.height > vh*0.16 &&occludingBlocks.length<4) {
-                occludingBlocks.push({sel: sel(blk), heightPx: Math.round(br.height)});
-              }
-            }
+            var found={},clipped=[],checked=0,unknown=0,guard=0,node;
             var seen=new WeakSet();
             var tw=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null);
             var limitY=vh*2.5;
@@ -1178,7 +1202,7 @@ start();
             }
             var worst=Object.keys(found).map(function(k){return found[k];}).sort(function(a,b){return a.ratio-b.ratio;});
             var failing=0;worst.forEach(function(w){failing+=w.count;});
-            return {viewport:{w:vw,h:vh},checked:checked,unknownBg:unknown,failing:failing,overflowX:document.documentElement.scrollWidth-vw,occludingBlocks:occludingBlocks,clippedOutOfBounds:clipped,worst:worst.slice(0,10)};
+            return {viewport:{w:vw,h:vh},checked:checked,unknownBg:unknown,failing:failing,overflowX:document.documentElement.scrollWidth-vw,clippedElements:clipped,worst:worst.slice(0,10)};
           }catch(e){return {error:String(e)};}
         })();
     """
@@ -1210,35 +1234,25 @@ suspend fun WebView.evaluateJsSuspend(script: String): String? = withContext(Dis
 // ───────────────────── Blueprint Cache ─────────────────────
 
 class ThemeStore(context: Context) {
-    private val prefs = context.applicationContext.getSharedPreferences("mydes_blueprints_v10", Context.MODE_PRIVATE)
-
-    private val memoryByDomainAndPrompt = ConcurrentHashMap<String, UIBlueprint>()
-    private val memoryByPromptOnly = ConcurrentHashMap<String, UIBlueprint>()
-
+    private val prefs = context.applicationContext.getSharedPreferences("mydes_blueprints_v8", Context.MODE_PRIVATE)
     private fun key(prompt: String, domain: String) =
-        "bp10|" + sha1Hex("${domain.trim().lowercase(Locale.US)}|${prompt.trim().lowercase(Locale.US)}")
-
-    private fun promptKey(prompt: String) =
-        prompt.trim().lowercase(Locale.US)
+        "bp8|" + sha1Hex("${domain.trim().lowercase(Locale.US)}|${prompt.trim().lowercase(Locale.US)}")
+    private fun lastPromptKey(prompt: String) =
+        "bp8_last|" + sha1Hex(prompt.trim().lowercase(Locale.US))
 
     fun get(prompt: String, domain: String = "*"): UIBlueprint? {
-        val k = key(prompt, domain)
-        memoryByDomainAndPrompt[k]?.let { return it }
-        prefs.getString(k, null)?.let { raw ->
-            UIBlueprint.parse(raw, prompt)?.let { bp ->
-                memoryByDomainAndPrompt[k] = bp
-                memoryByPromptOnly[promptKey(prompt)] = bp
-                return bp
-            }
-        }
-        return memoryByPromptOnly[promptKey(prompt)]
+        val exact = prefs.getString(key(prompt, domain), null)?.let { UIBlueprint.parse(it, prompt) }
+        if (exact != null) return exact
+        // Fallback if the SPA URL/host shifted slightly between Pass 2 and Pass 3 (Review)
+        return prefs.getString(lastPromptKey(prompt), null)?.let { UIBlueprint.parse(it, prompt) }
     }
 
     fun put(prompt: String, blueprint: UIBlueprint, domain: String = "*", remember: Boolean = true) {
-        val k = key(prompt, domain)
-        memoryByDomainAndPrompt[k] = blueprint
-        memoryByPromptOnly[promptKey(prompt)] = blueprint
-        prefs.edit().putString(k, blueprint.toJson()).apply()
+        val json = blueprint.toJson()
+        prefs.edit()
+            .putString(key(prompt, domain), json)
+            .putString(lastPromptKey(prompt), json)
+            .apply()
         if (remember) pushConcept(blueprint)
     }
 
@@ -1260,19 +1274,25 @@ class ThemeStore(context: Context) {
 class GeminiStylerService {
 
     companion object {
-        /**
-         * Fast, free-tier friendly, high-adherence model used across all passes
-         * so generation completes in 5-10 seconds instead of stalling for 5 minutes.
-         */
+        /** Fast model for Pass 1 (Art Director creative concept brief) */
         const val CONCEPT_MODEL = "gemini-3.5-flash-lite"
-        const val SYNTHESIS_MODEL = "gemini-3.5-flash-lite"
+
+        /** High-capability coding model for Pass 2 (Main CSS3/SVG/JS synthesis) */
+        const val SYNTHESIS_MODEL = "gemini-3.8-flash"
+
+        /** Fast, quota-friendly model for Pass 3 (Visual QA & CSS review fix patch) */
         const val REVIEW_MODEL = "gemini-3.5-flash-lite"
     }
 
     private val moshi = Moshi.Builder().add(KotlinJsonAdapterFactory()).build()
 
+    /**
+     * Zero-Dependency DNS-over-HTTPS Fallback (compatible with standard okhttp3 in your build.gradle.kts):
+     * Uses system DNS first. If the ISP resolver fails with UnknownHostException, queries Google Public DNS
+     * (8.8.8.8) or Cloudflare (1.1.1.1) over HTTPS by direct IP so no hostname lookup is needed for the DNS server.
+     */
     private val resilientDns = object : Dns {
-        private val dohClient = OkHttpClient.Builder()
+        private val dohHttpClient = OkHttpClient.Builder()
             .connectTimeout(8, TimeUnit.SECONDS)
             .readTimeout(8, TimeUnit.SECONDS)
             .build()
@@ -1281,7 +1301,9 @@ class GeminiStylerService {
             try {
                 val sys = Dns.SYSTEM.lookup(hostname)
                 if (sys.isNotEmpty()) return sys
-            } catch (_: UnknownHostException) {}
+            } catch (_: UnknownHostException) {
+                // Fall through to DoH JSON resolution over raw IP
+            }
 
             val endpoints = listOf(
                 "https://8.8.8.8/resolve?name=$hostname&type=A",
@@ -1293,27 +1315,25 @@ class GeminiStylerService {
                         .url(url)
                         .header("Accept", "application/dns-json")
                         .build()
-                    dohClient.newCall(req).execute().use { resp ->
-                        val body = resp.body?.string()
-                        if (resp.isSuccessful && !body.isNullOrBlank()) {
-                            val json = JSONObject(body)
-                            val answers = json.optJSONArray("Answer")
-                            if (answers != null && answers.length() > 0) {
-                                val resolved = mutableListOf<InetAddress>()
-                                for (i in 0 until answers.length()) {
-                                    val ans = answers.getJSONObject(i)
-                                    if (ans.optInt("type") == 1) {
-                                        val ipStr = ans.optString("data", "").trim()
-                                        if (ipStr.isNotEmpty()) {
-                                            resolved.add(InetAddress.getByName(ipStr))
-                                        }
-                                    }
+                    dohHttpClient.newCall(req).execute().use { resp ->
+                        val body = resp.body?.string() ?: return@use
+                        val json = JSONObject(body)
+                        val answers = json.optJSONArray("Answer") ?: return@use
+                        val resolved = mutableListOf<InetAddress>()
+                        for (i in 0 until answers.length()) {
+                            val ans = answers.getJSONObject(i)
+                            if (ans.optInt("type") == 1) { // A record (IPv4)
+                                val ip = ans.optString("data", "").trim()
+                                if (ip.isNotEmpty()) {
+                                    resolved.add(InetAddress.getByName(ip))
                                 }
-                                if (resolved.isNotEmpty()) return resolved
                             }
                         }
+                        if (resolved.isNotEmpty()) return resolved
                     }
-                } catch (_: Exception) {}
+                } catch (_: Exception) {
+                    // Try next DoH endpoint
+                }
             }
             return Dns.SYSTEM.lookup(hostname)
         }
@@ -1321,9 +1341,9 @@ class GeminiStylerService {
 
     private val okHttpClient = OkHttpClient.Builder()
         .dns(resilientDns)
-        .connectTimeout(25, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .writeTimeout(25, TimeUnit.SECONDS)
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
         .pingInterval(15, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
@@ -1338,14 +1358,14 @@ class GeminiStylerService {
     private var themeStore: ThemeStore? = null
     private fun storeFor(context: Context): ThemeStore = themeStore ?: ThemeStore(context).also { themeStore = it }
 
-    private fun normalizeDomain(websiteUrl: String, fallbackName: String): String {
+    private fun extractSafeDomain(websiteUrl: String, fallbackName: String): String {
         if (websiteUrl.isNotBlank()) {
             try {
-                val host = Uri.parse(websiteUrl).host?.lowercase(Locale.US)?.removePrefix("www.")
-                if (!host.isNullOrBlank()) return host
+                val host = Uri.parse(websiteUrl).host?.lowercase(Locale.US) ?: ""
+                if (host.isNotBlank()) return host.removePrefix("www.")
             } catch (_: Exception) {}
         }
-        return fallbackName.trim().lowercase(Locale.US).removePrefix("www.").ifBlank { "*" }
+        return fallbackName.trim().lowercase(Locale.US).ifBlank { "*" }
     }
 
     // ───── Public Entry Points ─────
@@ -1365,7 +1385,7 @@ class GeminiStylerService {
         pageOutlineJson = outlineJson?.takeIf { it.isNotBlank() && it != "null" },
         screenshotBase64 = null,
         forceFresh = forceFresh,
-        isExplicitReview = false
+        isReviewPass = false
     ).map { MydesRuntime.script(it) }
 
     suspend fun generateUserScriptWithFeedback(
@@ -1386,8 +1406,9 @@ class GeminiStylerService {
         pageOutlineJson = outlineJson?.takeIf { it.isNotBlank() && it != "null" }
             ?: "{\"viewport\":{\"w\":$screenWidth,\"h\":$screenHeight}}",
         screenshotBase64 = screenshotBase64,
+        forceFresh = false,
         auditJson = auditJson,
-        isExplicitReview = true
+        isReviewPass = true // Explicitly locks this call to REVIEW_MODEL (gemini-3.5-flash-lite)
     ).map { MydesRuntime.script(it) }
 
     suspend fun adaptUserScriptForWebpage(
@@ -1404,7 +1425,7 @@ class GeminiStylerService {
         websiteUrl = pageUrl,
         pageOutlineJson = null,
         screenshotBase64 = null,
-        isExplicitReview = false
+        isReviewPass = false
     ).map { MydesRuntime.script(it) }
 
     suspend fun themeSpec(
@@ -1422,10 +1443,10 @@ class GeminiStylerService {
         pageOutlineJson = pageOutlineJson,
         screenshotBase64 = screenshotBase64,
         forceFresh = forceFresh,
-        isExplicitReview = !screenshotBase64.isNullOrBlank()
+        isReviewPass = screenshotBase64 != null && !forceFresh
     )
 
-    // ───── Pass 1: Concept Pass (Art Director) ─────
+    // ───── Pass 1: Concept Pass (Art Director using gemini-3.5-flash-lite) ─────
 
     private val LOG_SYSTEM_PROMPT = false
 
@@ -1433,7 +1454,7 @@ class GeminiStylerService {
         val raw: String,
         val idea: String,
         val fingerprint: String,
-        val architecture: String
+        val architecture: String // "restyle" | "app_shell"
     )
 
     private fun extractJsonObject(raw: String): String? {
@@ -1447,25 +1468,22 @@ class GeminiStylerService {
         apiKey: String,
         system: String,
         parts: List<Part>,
+        temperature: Float,
+        topP: Float,
         maxTokens: Int
     ): String {
-        fun makeReq(jsonMode: Boolean) = GeminiRequest(
+        val req = GeminiRequest(
             contents = listOf(Content(parts = parts)),
             systemInstruction = Content(listOf(Part(text = system))),
             generationConfig = GenerationConfig(
+                temperature = temperature,
+                topP = topP,
                 maxOutputTokens = maxTokens,
-                responseMimeType = if (jsonMode) "application/json" else null
+                responseMimeType = "application/json",
+                thinkingConfig = ThinkingConfig(thinkingBudget = 0)
             )
         )
-        return try {
-            callGeminiStream(model, makeReq(true), apiKey)
-        } catch (e: HttpException) {
-            if (e.code() == 400) {
-                callGeminiStream(model, makeReq(false), apiKey)
-            } else {
-                throw e
-            }
-        }
+        return callGeminiStream(model, req, apiKey)
     }
 
     private suspend fun designBrief(
@@ -1494,7 +1512,7 @@ class GeminiStylerService {
         }.take(if (LOG_SYSTEM_PROMPT) 30_000 else 12_000)
 
         return try {
-            val raw = callForText(CONCEPT_MODEL, apiKey, UI_CONCEPT_SYSTEM_PROMPT, listOf(Part(text = input)), 1024)
+            val raw = callForText(CONCEPT_MODEL, apiKey, UI_CONCEPT_SYSTEM_PROMPT, listOf(Part(text = input)), 1.05f, 0.95f, 1024)
             val json = JSONObject(extractJsonObject(raw) ?: throw IllegalStateException("No JSON in brief: ${raw.take(200)}"))
             val idea = json.optString("idea", "").trim()
             if (idea.isBlank()) throw IllegalStateException("Brief has no idea: ${raw.take(200)}")
@@ -1526,7 +1544,7 @@ class GeminiStylerService {
         }
     }
 
-    // ───── Pass 2 (Build) & Pass 3 (Review) ─────
+    // ───── Pass 2 (Synthesis via gemini-3.8-flash) & Pass 3 (Review via gemini-3.5-flash-lite) ─────
 
     private suspend fun synthesizeBlueprint(
         context: Context,
@@ -1537,15 +1555,14 @@ class GeminiStylerService {
         screenshotBase64: String?,
         forceFresh: Boolean = false,
         auditJson: String? = null,
-        isExplicitReview: Boolean = false
+        isReviewPass: Boolean = false
     ): Result<UIBlueprint> = withContext(Dispatchers.IO) {
         val cleanPrompt = prompt.trim()
         if (cleanPrompt.isEmpty()) return@withContext Result.failure(IllegalArgumentException("Empty prompt"))
 
-        val domain = normalizeDomain(websiteUrl, websiteName)
-        val hasReviewPayload = isExplicitReview || !screenshotBase64.isNullOrBlank() || !auditJson.isNullOrBlank()
+        val domain = extractSafeDomain(websiteUrl, websiteName)
 
-        if (!hasReviewPayload && !forceFresh) {
+        if (!isReviewPass && screenshotBase64 == null && auditJson == null && !forceFresh) {
             storeFor(context).get(cleanPrompt, domain)?.let { return@withContext Result.success(it) }
         }
 
@@ -1554,15 +1571,17 @@ class GeminiStylerService {
             return@withContext Result.failure(IllegalStateException("GEMINI_API_KEY is not set. Please set your API key in Settings."))
         }
 
-        val previous = if (hasReviewPayload) storeFor(context).get(cleanPrompt, domain) else null
+        val previous = if (isReviewPass || !screenshotBase64.isNullOrBlank() || !auditJson.isNullOrBlank()) {
+            storeFor(context).get(cleanPrompt, domain)
+        } else null
 
-        if (hasReviewPayload && previous == null) {
-            return@withContext Result.failure(IllegalStateException("Skipped review pass: no base blueprint found in cache for '$cleanPrompt'."))
+        // If generateUserScriptWithFeedback called this (isReviewPass = true), NEVER fall back to SYNTHESIS_MODEL.
+        if (isReviewPass && previous == null) {
+            return@withContext Result.failure(IllegalStateException("Review pass skipped: no base blueprint cached for $domain"))
         }
 
-        val isReview = hasReviewPayload && previous != null
+        val isReview = isReviewPass || (previous != null && !forceFresh && (!screenshotBase64.isNullOrBlank() || !auditJson.isNullOrBlank()))
         val activeModel = if (isReview) REVIEW_MODEL else SYNTHESIS_MODEL
-        val logType = if (isReview) "reviewBlueprint ($REVIEW_MODEL)" else "buildBlueprint ($SYNTHESIS_MODEL)"
 
         val brief: ConceptBrief? = if (isReview) null
             else designBrief(context, cleanPrompt, websiteName, websiteUrl, pageOutlineJson, apiKey)
@@ -1573,16 +1592,16 @@ class GeminiStylerService {
             appendLine("TARGET WEBSITE: $websiteName ($websiteUrl)")
             appendLine("PALETTE: bg ${previous!!.bg}, surface ${previous.surface}, surface2 ${previous.surface2}, text ${previous.fg}, ink ${previous.ink}, accent ${previous.accent}")
             if (!pageOutlineJson.isNullOrBlank()) appendLine("LIVE DOM TOPOLOGY OUTLINE: ${pageOutlineJson.take(2_500)}")
-            appendLine("MEASURED AUDIT (check occludingBlocks, overflowX, and clippedOutOfBounds!): ${auditJson?.takeIf { it.isNotBlank() && it != "null" }?.take(3_000) ?: "not available"}")
+            appendLine("MEASURED AUDIT (check overflowX and clippedElements!): ${auditJson?.takeIf { it.isNotBlank() && it != "null" }?.take(3_000) ?: "not available"}")
             appendLine("CURRENT CSS:")
             appendLine(previous.customCss)
-            appendLine(if (!screenshotBase64.isNullOrBlank()) "A screenshot of the current render on the user's device is attached." else "No screenshot is available; rely on the audit.")
+            appendLine(if (!screenshotBase64.isNullOrBlank()) "A screenshot of the current render is attached." else "No screenshot is available; rely on the audit.")
             appendLine("Return the review JSON now.")
         } else buildString {
             appendLine("USER REQUEST: \"$cleanPrompt\"")
             appendLine("TARGET WEBSITE: $websiteName ($websiteUrl)")
             if (!pageOutlineJson.isNullOrBlank()) {
-                appendLine("LIVE DOM TOPOLOGY OUTLINE (repeatedStructures lists parent container selectors `parentSel`, composite item selectors `sel`, and `widthPct`):")
+                appendLine("LIVE DOM TOPOLOGY OUTLINE (repeatedStructures lists parent container selectors `parentSel` and composite item selectors `sel`):")
                 appendLine(pageOutlineJson.take(6_000))
             }
             appendLine()
@@ -1604,14 +1623,18 @@ class GeminiStylerService {
             contents = listOf(Content(parts = parts)),
             systemInstruction = Content(listOf(Part(text = if (isReview) UI_REVIEW_SYSTEM_PROMPT else UI_SYNTHESIS_SYSTEM_PROMPT))),
             generationConfig = GenerationConfig(
+                temperature = if (isReview) 0.2f else 0.75f,
+                topP = 0.95f,
                 maxOutputTokens = if (isReview) 1536 else 8192,
-                responseMimeType = if (jsonMode) "application/json" else null
+                responseMimeType = if (jsonMode) "application/json" else null,
+                thinkingConfig = ThinkingConfig(thinkingBudget = 0)
             )
         )
 
+        val logType = if (isReview) "reviewBlueprint ($activeModel)" else "buildBlueprint ($activeModel)"
         val requestJson = buildString {
             appendLine("MODEL: $activeModel")
-            appendLine(if (isReview) "MODE: review pass ($REVIEW_MODEL)" else if (brief != null) "MODE: build pass (${brief.architecture})" else "MODE: build pass (default restyle)")
+            appendLine(if (isReview) "MODE: review pass" else if (brief != null) "MODE: build pass (${brief.architecture})" else "MODE: build pass (default restyle)")
             append(userContextText)
             if (!screenshotBase64.isNullOrBlank()) appendLine("[screenshot attached, ${screenshotBase64.length / 1024} KB base64]")
             if (LOG_SYSTEM_PROMPT) {
@@ -1622,16 +1645,7 @@ class GeminiStylerService {
         }.take(if (LOG_SYSTEM_PROMPT) 30_000 else 12_000)
 
         try {
-            val raw = try {
-                callGeminiStream(activeModel, buildReq(true), apiKey)
-            } catch (e: HttpException) {
-                if (e.code() == 400) {
-                    callGeminiStream(activeModel, buildReq(false), apiKey)
-                } else {
-                    throw e
-                }
-            }
-
+            val raw = callGeminiStream(activeModel, buildReq(true), apiKey)
             val blueprint: UIBlueprint? = if (isReview) {
                 applyReviewPatch(previous!!, raw, cleanPrompt)
             } else {
@@ -1640,7 +1654,7 @@ class GeminiStylerService {
             }
 
             if (blueprint == null) {
-                val err = "Model returned invalid JSON on $activeModel. Raw start: ${raw.take(300)}"
+                val err = "Model returned invalid UIBlueprint JSON. Raw start: ${raw.take(300)}"
                 ApiRequestLogger.logRequest(context, logType, websiteName, websiteUrl, cleanPrompt, requestJson, err, false)
                 Result.failure(IllegalStateException(err))
             } else {
@@ -1665,22 +1679,19 @@ class GeminiStylerService {
             ?: previous
     }
 
-    // ───── High-Craft System Prompts ─────
+    // ───── System Prompts ─────
 
     private val UI_REVIEW_SYSTEM_PROMPT = """
-You are the visual QA engineer for an Android web browser. You receive the user's prompt, palette, CURRENT CSS, a MEASURED AUDIT, and a screenshot of the live rendered page.
+You are the visual QA engineer for a commercial Android web browser running across all device sizes (compact phones, foldables, tablets). The design concept is final. You receive the user's prompt, palette, CURRENT CSS, a MEASURED AUDIT from the live DOM, and a screenshot.
 
-You may ONLY append override CSS in `fixCss`.
-Inspect the screenshot and audit carefully for these critical UX defects:
-1. GIANT BLACK / BLANK RECTANGLE COVERING THE SCREEN (or `occludingBlocks` non-empty):
-   - If a header, topbar, search dropdown, or empty container is covering a large part of the screen, cap it immediately:
-     `header, [data-mydes="header"], [role="banner"] { max-height: 56px !important; overflow: hidden !important; }`
-     and hide any expanded empty overlay blocking the view.
-2. CRUSHED / TINY CARDS OR THUMBNAILS:
-   - If main feed cards or thumbnails look squished into narrow strips or a nested grid is crushing items (`widthPct < 38`), restore the main feed container (`lazy-list` or primary `parentSel`) to a clean 1-column full-width feed (`grid-template-columns: 1fr !important;`) so video/article cards have full width and large thumbnails, while keeping 2-column grids only on actual grid shelves!
-3. Out-of-bounds elements (`overflowX > 2` or `clippedOutOfBounds` non-empty):
-   - Constrain with `max-width: 100% !important; min-width: 0 !important; box-sizing: border-box !important;`.
-4. Unreadable or low-contrast text: fix `color` and `background-color` to >= 4.5:1 contrast.
+You may ONLY append override CSS in `fixCss`. Never strip out the theme's transforms, animations, borders, or palette.
+Inspect both the screenshot and the audit to fix real rendering defects:
+1. Out-of-bounds elements or horizontal clipping (`overflowX > 2` or `clippedElements` non-empty, or elements cut off at the screen edges):
+   - Use percentage and fluid sizing (`width: 100% !important; max-width: 100% !important; min-width: 0 !important; box-sizing: border-box !important; margin-left: 0 !important; margin-right: 0 !important;`).
+   - For multi-column grids, use `grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)) !important;` so columns adapt fluidly to any screen width without overflowing.
+2. Unreadable or low-contrast text: set explicit `color` (and surface `background-color` if needed) with >= 4.5:1 contrast.
+3. Truncated or clipped text: force `-webkit-line-clamp: unset !important; max-height: none !important; height: auto !important; overflow: visible !important; white-space: normal !important;`.
+4. Text occluding images/media: override the text container to `position: static !important; width: 100% !important;` and its parent wrapper to `display: flex !important; flex-direction: column !important;`.
 
 Keep `fixCss` under 1500 characters. If nothing is broken, return `""`.
 OUTPUT: ONLY one JSON object:
@@ -1688,18 +1699,17 @@ OUTPUT: ONLY one JSON object:
 """.trimIndent()
 
     private val UI_CONCEPT_SYSTEM_PROMPT = """
-You are the executive Art Director of a commercial Android web browser that redesigns any website into an unforgettable, high-craft interface.
+You are the executive Art Director of a commercial generative web browser capable of redesigning ANY website into any world or interface paradigm across all Android device sizes (small phones, foldables, tablets).
 
 1. CHOOSE THE ARCHITECTURE:
-- "restyle" (DEFAULT - 95% of requests): Transforms the live DOM in-place using CSS layout, rich surfaces, Google Fonts, keyframe animations, and SVG backdrops. Zero invented floating docks or fake buttons.
-- "app_shell" (OPT-IN ONLY): Select ONLY when the user explicitly requests a brand-new interactive app layout (e.g., "dual-lane split comparator", "swipeable card deck", "comic book reader").
+- "restyle" (DEFAULT - 95% of requests): Transforms the live DOM in-place using responsive CSS layout reflows (CSS Grid, Flexbox, 3D perspective, clip-path, keyframe animations), custom SVG/Canvas backdrops, and touch choreography. Zero invented floating docks or fake buttons.
+- "app_shell" (OPT-IN ONLY): Select ONLY when the user or concept explicitly demands replacing the page with a brand-new interactive application layout (e.g., "dual-lane split comparator", "swipeable card deck", "full-screen comic book reader", "interactive terminal OS", or explicit assistive toolbars).
 
-2. UX & PROPORTION RULES (NO CRUSHED THUMBNAILS OR BROKEN FONTS):
-- RESPECT CARD SCALE: Inspect `repeatedStructures` in the outline:
-  - Full-width items (`widthPct >= 75`, such as main video/article cards) should stay **1-column full-width** (`100%` width) or spacious asymmetric cards with large, dramatic 16:9 media thumbnails! Do NOT crush full-width feed items into tiny 2-column grids unless the user explicitly asked for a multi-column grid.
-  - Items that are already side-by-side shelves (`widthPct` between `35` and `55`, like Shorts/product shelves) stay in a 2-column grid (`grid-template-columns: repeat(2, minmax(0, 1fr))`).
-- TYPOGRAPHY: Never use raw Android `monospace` or `Courier New` for body/card titles (it looks ugly and wraps poorly on mobile). Specify expressive Google Fonts via `@import` (e.g. `'Bebas Neue'`, `'Cinzel'`, `'Orbitron'`, `'Oswald'`, `'Rajdhani'`, `'Playfair Display'`, `'Space Grotesk'`) paired with clean system sans-serif (`system-ui, sans-serif`) for readable metadata.
-- HEADERS: Keep headers compact (`max-height: 56px`) so they never block the viewport.
+2. TRANSLATE VISION INTO DEVICE-AGNOSTIC TECHNICAL MECHANICS:
+Do not assume a fixed screen width. Every layout rule must be fluid and responsive:
+- In `signature`: Specify the exact `@keyframes` animation, SVG filter/pattern, 3D scroll tilt, or interactive effect.
+- In `layout`: Inspect `repeatedStructures` in the outline. Specify how parent containers (`parentSel`) and repeating units (`sel`) must be arranged using fluid CSS mechanics (e.g., `grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr))` or `repeat(2, minmax(0, 1fr))` with `width: 100%; box-sizing: border-box;` so elements never overflow on any screen size).
+- In `rules`: Detail how headers, navigation, search inputs, content units, typography, and media behave on touch screens.
 
 OUTPUT: ONLY one valid JSON object:
 {
@@ -1707,38 +1717,42 @@ OUTPUT: ONLY one valid JSON object:
   "idea": "one sentence defining the world or interface",
   "signature": "concrete visual signature + exact @keyframes or SVG/JS mechanic",
   "palette": "5 hex colors with exact roles (bg, surface, surface2, fg, accent)",
-  "type": "Google Font @import name for headings + clean sans-serif for body/metadata",
+  "type": "font stack + weight, casing, letter-spacing, and fluid clamp() scale hierarchy",
   "surface": "exact border styles, corner radii, clip-paths, shadows, and backdrop textures",
-  "layout": "how main full-width cards vs 2-up shelf cards are arranged with spacious thumbnails",
-  "rules": "concrete styling rules for compact header, search bar, spacious content cards, headings, media filters, and touch states",
+  "layout": "fluid, device-agnostic CSS layout rules for parent containers and child units",
+  "rules": "concrete styling rules for header, search/inputs, content units, headings, media, and touch states",
   "fingerprint": "max 6 words summarizing type, palette, shape, layout"
 }
 """.trimIndent()
 
     private val UI_SYNTHESIS_SYSTEM_PROMPT = """
-You are the Principal Front-End Synthesis Engine inside a commercial Android browser. You receive the Art Director's DESIGN DIRECTIONS and the target webpage's LIVE DOM TOPOLOGY OUTLINE. You author high-craft, visually striking, and UX-friendly CSS3, SVG backdrops, and JS.
+You are the Principal Front-End Synthesis Engine inside a commercial Android browser running on all device form factors. You receive the Art Director's DESIGN DIRECTIONS and the target webpage's LIVE DOM TOPOLOGY OUTLINE. You author responsive, production-grade CSS3, SVG/Canvas backdrops, and JS.
 
 1. ARCHITECTURAL EXECUTION
 - When ARCHITECTURE is "restyle":
-  - `needsHud` MUST be `false`, `hudHtml` MUST be `""`.
+  - `needsHud` MUST be `false`, `hudHtml` MUST be `""`. Never invent fake toolbars, docks, or decorative buttons.
   - Transform the real DOM using `customCss`, `backdropHtml`, and optional `customJs` (e.g. `MydesBridge.enable3DTilt(1.0)`).
 - When ARCHITECTURE is "app_shell":
-  - `needsHud` is `true`. Build the custom interface inside `hudHtml` (`#__mydes_hud`) using `MydesBridge.extractNodes()` and `MydesBridge.triggerNode(uid)`.
+  - `needsHud` is `true`. Build the custom interface inside `hudHtml` (`#__mydes_hud`).
+  - In `customJs`, call `MydesBridge.extractNodes()` to harvest live page content (`{uid, title, body, meta, img, hasVideo, href}`), render your custom interactive view, bind clicks to `MydesBridge.triggerNode(uid)` so the real site's router/state handles navigation, and call `MydesBridge.loadMore(cb)` for pagination.
 
-2. HIGH-CRAFT UX & PROPORTION RULES (CRITICAL)
-- NO GIANT BLACK HEADERS:
-  - Keep `<header>`, `[data-mydes="header"]`, and topbars compact: `max-height: 56px !important; padding: 4px 10px !important;`. Never set `position: sticky` on inner wrappers or autocomplete containers.
-- DO NOT CRUSH FULL-WIDTH VIDEO/ARTICLE CARDS:
-  - Look at `repeatedStructures`:
-  - For main full-width feed containers (where child `widthPct >= 75`, e.g. `lazy-list` > `ytm-video-with-context-renderer` or `article`): keep them as a spacious **1-column layout** (`display: flex !important; flex-direction: column !important; gap: 16px !important; padding: 12px !important;`) so thumbnails stay large (100% card width) and titles have plenty of room to breathe!
-  - Only apply 2-column CSS Grid (`display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 10px !important;`) to containers whose items are already half-width (`widthPct` 35..55, like Shorts shelves `div.ytGridShelfViewModelGridShelfRow`), OR if the user prompt explicitly asked for a multi-column grid.
-  - NEVER put a 2-column grid inside another 2-column grid.
-- EXPRESSIVE TYPOGRAPHY (NO UGLY MONOSPACE):
-  - At the very top of `customCss`, you may `@import url('https://fonts.googleapis.com/css2?family=...');` for the theme's display/heading font (e.g. `Bebas Neue`, `Cinzel`, `Oswald`, `Orbitron`, `Syne`, `Chakra Petch`).
-  - Use the display font for `h1, h2, h3, [data-mydes="heading"]` with `letter-spacing: 0.5px` and normal word wrapping (`word-break: normal !important; overflow-wrap: break-word !important;`). Use `system-ui, -apple-system, sans-serif` for small metadata/subheads so it stays crisp.
-- SPACIOUS THUMBNAILS & MEDIA:
-  - Give card images/thumbnails `width: 100% !important; height: auto !important; display: block !important; object-fit: cover !important;`.
-  - Never cover thumbnails with text overlays (`position: static !important` on text wrappers).
+2. MULTI-DEVICE RESPONSIVE CONTAINMENT (ZERO OUT-OF-BOUNDS ELEMENTS)
+- Never assume fixed pixel widths. Your CSS must fit everything from compact 320px screens to wide foldables and tablets:
+  - Always use `width: 100% !important; max-width: 100% !important; box-sizing: border-box !important;` (avoid `100vw` which causes horizontal overflow when combined with margins or borders).
+  - For multi-column grids on `[data-mydes="grid"]` or `parentSel`, ALWAYS use `minmax(0, 1fr)` or `repeat(auto-fit, minmax(min(100%, 150px), 1fr))` so grid tracks shrink gracefully on narrow screens and expand on wider screens.
+  - On all grid/flex children (`sel` and `[data-mydes="card"]`), ALWAYS set `min-width: 0 !important; width: 100% !important; max-width: 100% !important; box-sizing: border-box !important; margin-left: 0 !important; margin-right: 0 !important;`.
+  - Use `clamp()` for typography (e.g. `font-size: clamp(0.85rem, 2.5vw, 1.15rem) !important;`) so text scales proportionally to the device width.
+- PRESERVE INFINITE SCROLL:
+  - Never set `overflow: hidden` or fixed `height` on `html`, `body`, `main`, or feed containers (`parentSel`).
+  - Keep non-card continuation/sentinel elements at the bottom of feeds visible (`grid-column: 1 / -1 !important;`).
+
+3. DOM TOPOLOGY & CONTENT INTEGRITY
+- TARGET WHOLE UNITS, NOT SUB-COLUMNS: Always apply card borders, backgrounds, and padding to the full composite unit selector (`sel` and `[data-mydes="card"]`), NEVER to an inner text-only wrapper.
+- STACKING ROW ITEMS: When turning horizontal row items (`itemDisplay: flex (row)`) into vertical cards or grid cells, force the unit and its internal link/row wrappers to stack vertically:
+  `display: flex !important; flex-direction: column !important; align-items: stretch !important; width: 100% !important;` and set immediate children to `width: 100% !important; max-width: 100% !important;`.
+- NEVER OCCLUDE MEDIA: Text, titles, and badges must never cover images or video previews (`position: static !important`).
+- NEVER TRUNCATE HEADINGS: Allow styled headings and titles to wrap naturally (`-webkit-line-clamp: unset !important; max-height: none !important; height: auto !important; overflow: visible !important; white-space: normal !important;`).
+- REAL ANIMATIONS & TOUCH STATES: Write actual `@keyframes` rules for requested motion/pulses, and use `:active` for mobile touch feedback.
 
 OUTPUT: ONLY one valid JSON object, no markdown fences:
 {
@@ -1746,8 +1760,8 @@ OUTPUT: ONLY one valid JSON object, no markdown fences:
   "dark": true or false,
   "bg": "#rrggbb", "surface": "#rrggbb", "surface2": "#rrggbb", "fg": "#rrggbb", "ink": "#rrggbb", "accent": "#rrggbb",
   "remapSurfaces": false,
-  "customCss": "complete CSS starting with optional @import, @keyframes, and clean layout/surface rules",
-  "backdropHtml": "inline SVG/Canvas/HTML stage (z-index:-1) or empty string",
+  "customCss": "complete responsive CSS implementing all layout, surface, containment, and @keyframes rules",
+  "backdropHtml": "inline SVG/Canvas/HTML stage or empty string",
   "needsHud": false,
   "hudReason": "",
   "hudHtml": "",
@@ -1775,7 +1789,7 @@ OUTPUT: ONLY one valid JSON object, no markdown fences:
     ): String = withContext(Dispatchers.IO) {
         var lastException: Exception? = null
 
-        for (wait in longArrayOf(0, 1_500, 3_500)) {
+        for (wait in longArrayOf(0, 2_000, 5_000)) {
             if (wait > 0) delay(wait)
             try {
                 val responseBody = api.streamGenerateContent(model, apiKey, request)
@@ -1801,7 +1815,9 @@ OUTPUT: ONLY one valid JSON object, no markdown fences:
                                             }
                                         }
                                     }
-                                } catch (_: Exception) {}
+                                } catch (_: Exception) {
+                                    // Skip individual chunk JSON parse errors
+                                }
                             }
                         }
                         line = reader.readLine()
