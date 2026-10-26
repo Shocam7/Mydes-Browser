@@ -53,6 +53,44 @@ class ExampleRobolectricTest {
   }
 
   @Test
+  fun `test UIBlueprint parse with implemented checklist and reordered fields`() {
+    val json = """
+      {
+        "implemented": {
+          "signature": "svg neon backdrop with pulsing glow",
+          "surface": "glassmorphism borders on cards",
+          "newElements": "MydesBridge.decorateUnits for cyber badges",
+          "rules": "golden headings, pill buttons"
+        },
+        "name": "Cyberpunk 2077",
+        "dark": true,
+        "bg": "#050508",
+        "surface": "#12121a",
+        "surface2": "#1a1a24",
+        "fg": "#e0e6ed",
+        "ink": "#f0f6ff",
+        "accent": "#fcee0a",
+        "remapSurfaces": true,
+        "backdropHtml": "<svg class='neon-glow'></svg>",
+        "customJs": "MydesBridge.decorateUnits('[data-mydes=\"card\"]', '<span class=\"cyber-badge\">CP</span>');",
+        "customCss": "body { background: var(--m-bg); } [data-mydes='card'] { border: 1px solid var(--m-accent); }",
+        "concept": "Night City cyber aesthetic",
+        "fingerprint": "cyber neon glass"
+      }
+    """.trimIndent()
+
+    val bp = com.example.data.api.UIBlueprint.parse(json, "Cyberpunk")
+    org.junit.Assert.assertNotNull(bp)
+    assertEquals("Cyberpunk 2077", bp?.name)
+    assertEquals("#050508", bp?.bg)
+    assertEquals("<svg class='neon-glow'></svg>", bp?.backdropHtml)
+    org.junit.Assert.assertTrue(bp?.customJs?.contains("cyber-badge") == true)
+    org.junit.Assert.assertTrue(bp?.customCss?.contains("Night City") != true)
+    org.junit.Assert.assertTrue(bp?.customCss?.contains("border: 1px solid") == true)
+    assertEquals("Night City cyber aesthetic", bp?.concept)
+  }
+
+  @Test
   fun `test UIBlueprint parse with markdown fences and aliases`() {
     val json = """
       ```json
