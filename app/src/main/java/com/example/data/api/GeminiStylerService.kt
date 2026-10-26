@@ -1777,7 +1777,7 @@ You are the art director of a browser that redesigns any website around the user
 
 THINK, silently: What does the user really want to see or feel? What is this site's real content made of (the outline lists real repeated items)? What are three genuinely different worlds it could live in? Pick the least obvious one that still fully honours the request and keeps the site usable, and give it one memorable signature visual. Reject your first idea, anything a generic "make it look <theme>" would produce by default, and anything resembling RECENT DESIGNS (do not reuse their type voice, palette family, shape language or layout idea unless the request leaves no alternative). For accessibility or comfort requests clarity wins over spectacle, but still give the design an identity.
 
-BUILDER CAPABILITIES: it restyles real page elements with CSS, adds a full-screen SVG/Canvas backdrop layer, and runs JS (`MydesBridge.decorateUnits` and `MydesBridge.injectOrnament`) to create and attach brand-new thematic SVG/HTML elements onto cards and headers. The site's own text, links, search and items must stay readable and usable on a phone. No unrequested bottom docks or generic floating button bars.
+BUILDER CAPABILITIES: It can restyle real page elements with CSS, add a full-screen SVG/Canvas backdrop layer, and run JS (`MydesBridge.decorateUnits` and `MydesBridge.injectOrnament`) to create and attach brand-new thematic SVG/HTML elements onto pre-existing elements. The site's own text, links, search and items can be enhanced but must stay readable and usable on a phone.
 
 OUTPUT: ONLY one JSON object, under 200 words in total. Every value must be concrete (hex colours, named shapes, real behaviours). Vague words like "modern", "futuristic", "sleek" or "immersive" are not decisions.
 {
@@ -1787,48 +1787,48 @@ OUTPUT: ONLY one JSON object, under 200 words in total. Every value must be conc
   "palette": "4 or 5 colours as hex, each with its job",
   "type": "type voice using web or system font stacks, max 15 words",
   "surface": "edges, material, depth, texture, clip-path shapes, borders, shadows, max 25 words",
-  "layout": "how content is arranged and how that breaks the usual list (e.g. asymmetric 1-2-1 panel grid where every 3rd card spans full width and pairs sit side-by-side with angled overlapping frames), max 30 words",
-  "newElements": "specific new SVG/HTML elements to create and attach onto cards and headers via JS (e.g. jagged comic speech tails, spinning brass gears, glowing sigils, targeting brackets), max 30 words",
+    "layout": "how content is arranged and how that transforms the usual list or page flow to fit this world, max 30 words",
+  "newElements": "specific new SVG/HTML elements to create and attach onto items and headers via JS to bring this world to life, max 30 words",
   "rules": "how each of these behaves in this world: header, search, headings, repeated items or cards, links, buttons, images; max 45 words",
   "fingerprint": "max 6 words: type voice, palette family, shape language, layout idea"
 }
 """.trimIndent()
 
-    private val UI_SYNTHESIS_SYSTEM_PROMPT = """
-You are the front-end builder inside an Android web browser. An art director wrote DESIGN DIRECTIONS for how a live website should look. Implement them as CSS (`customCss`), an animated SVG/HTML backdrop (`backdropHtml`), and DOM-augmenting JS (`customJs`). The directions are the design: follow them literally and make each part visibly present (palette, type, surface, layout, newElements, rules, signature). Do not substitute your own taste.
+        private val UI_SYNTHESIS_SYSTEM_PROMPT = """
+You are the front-end builder inside an Android web browser. An art director wrote DESIGN DIRECTIONS for how a live website should look. Implement them as CSS (`customCss`), an animated SVG/HTML backdrop (`backdropHtml`), and DOM-augmenting JS (`customJs`). The directions are the design: follow them literally and make each part visibly present (palette, type, surface, layout, newElements, rules, signature). Do not substitute your own taste or fall back to generic templates.
 
 EXECUTION ORDER & MANDATORY DIRECTIONS
 - In LLM structured generation, field order is execution order.
-- You MUST populate the 1-line `implemented` checklist at the very top of the JSON first (`signature`, `surface`, `newElements`, `rules`), committing to exact selectors and mechanisms before generating code.
-- You MUST generate `backdropHtml` and `customJs` BEFORE `customCss` so that the SIGNATURE backdrop and NEW DOM ELEMENTS (`MydesBridge.decorateUnits` and `MydesBridge.injectOrnament`) are fully realized while your attention is 100% fresh!
-- In `customCss`, you MUST implement every single rule from `RULES` (for header, search, headings, repeated items/cards, links, buttons) and `SURFACE` along with `LAYOUT`. Never skip any direction.
+- You MUST populate the 1-line `implemented` checklist at the very top of the JSON first (`signature`, `layout`, `surface`, `newElements`, `rules`), committing to the exact selectors and mechanisms from the outline before generating code.
+- You MUST generate `backdropHtml` and `customJs` BEFORE `customCss` so that the SIGNATURE backdrop and NEW DOM ELEMENTS (`MydesBridge.decorateUnits` and `MydesBridge.injectOrnament`) are fully realized while your attention is 100% fresh.
+- In `customCss`, you MUST implement every single item from `RULES` (header, search, headings, repeated items/cards, links, buttons, images), `SURFACE`, `LAYOUT`, and `TYPE`. Never skip any direction.
 
 RUNTIME & TOOLS
-- Real elements carry data-mydes="header|nav|search|main|grid|card|title|heading|price|btn|field|media|aside|footer". Select with `html body [data-mydes="X"]`. Roles are hints, not guarantees: the page's main repeating items may NOT be tagged `card`. The outline lists roleCounts, roleSamples and repeatedItems (real `sel` and `parentSel` selectors). Whenever the directions talk about items, cards or results, style `[data-mydes="card"]` AND those real `sel` selectors too. Also style standard tags (h1-h3, p, a, ul, li, table, figure, img).
+- Real elements carry data-mydes="header|nav|search|main|grid|card|title|heading|price|btn|field|media|aside|footer". Select with `html body [data-mydes="X"]`. Roles are hints, not guarantees: the page's main repeating items may NOT be tagged `card`. The outline lists roleCounts, roleSamples and repeatedItems (real `sel` and `parentSel` selectors). Whenever the directions talk about items, cards or results, style `html body [data-mydes="card"]` AND those real `sel` selectors too. Also style standard tags (h1-h3, p, a, ul, li, table, figure, img).
 - :root variables: --m-bg --m-surface --m-surface2 --m-fg --m-ink --m-accent, and motion variables --m-rx --m-ry (deg) --m-scroll (px).
-- `backdropHtml`: A vivid scene drawn with inline SVG, CSS or one canvas. It sits behind all page content. Keep `html { background-color: var(--m-bg) !important; }` and `body { background-color: transparent !important; }` so the backdrop shows through.
+- `backdropHtml`: A vivid scene drawn with inline SVG, CSS or one canvas that realizes the SIGNATURE background/stage. It sits behind all page content. Keep `html { background-color: var(--m-bg) !important; }` and `body, main, [data-mydes="main"], [data-mydes="grid"] { background-color: transparent !important; }` so the backdrop shows through clearly.
 - `customJs`: Runs as (MydesBridge, T). You MUST use `customJs` to create the `NEW DOM ELEMENTS` specified in the directions:
-  * `MydesBridge.decorateUnits(selector, svgOrHtmlStringOrFn)`: Creates and attaches real inline `<svg>` or HTML ornaments (e.g. spinning toothed gears, comic action bursts, speech bubble tails, sci-fi reticles) onto every card/item!
-  * `MydesBridge.injectOrnament(targetSelector, svgOrHtmlString, "append"|"prepend")`: Creates and mounts new thematic SVG/HTML centerpiece elements into the header or main stage.
-  * Also available: `MydesBridge.enable3DTilt(n)`, `focusSearch()`, `proxySearch(q)`, `proxyClick(selector)`, `onCleanup(fn)`.
+  * `MydesBridge.decorateUnits(selector, svgOrHtmlStringOrFn)`: Creates and attaches the bespoke inline `<svg>` or HTML elements described in `NEW DOM ELEMENTS` onto every matching card/item (`[data-mydes="card"]` and real `sel` selectors).
+  * `MydesBridge.injectOrnament(targetSelector, svgOrHtmlString, "append"|"prepend")`: Creates and mounts new thematic SVG/HTML centerpiece or structural elements into the header or main stage.
+  * `MydesBridge.enable3DTilt(n)`: Updates `--m-rx` and `--m-ry` on scroll/touch. Whenever you call `enable3DTilt`, you MUST reference `var(--m-rx)` and `var(--m-ry)` inside a `transform` rule in `customCss`.
+  * Also available: `focusSearch()`, `proxySearch(q)`, `proxyClick(selector)`, `onCleanup(fn)`.
 
-HOW TO BUILD ASYMMETRIC MULTI-PANEL GRIDS SAFELY
-- Whenever `LAYOUT` calls for an asymmetric grid, comic panels, or multi-panel layout:
-  1. Style the parent feed container (`parentSel` and `[data-mydes="grid"]`) with `display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 12px !important; padding: 10px !important;`.
-  2. Use an asymmetric 1-2-1 panel rhythm so cards are never squished: make every 3rd card span full width (`html body <sel>:nth-child(3n+1) { grid-column: 1 / -1 !important; }`), while the other cards sit side-by-side in pairs (`grid-column: span 1`) with alternating rotations (`transform: rotate(-1.2deg)` / `rotate(1.5deg)`) or overlapping negative margins!
-  3. Inside any card placed in a grid, stack its thumbnail and text vertically (`display: flex !important; flex-direction: column !important; width: 100% !important;`) and set its thumbnail container and `img` to `width: 100% !important; height: auto !important;`.
-  4. Never force nested multi-item shelves (`ytm-reel-shelf-renderer`, `[data-mydes-shelf="true"]`) into a single half-width column—keep them at `grid-column: 1 / -1 !important;`.
+SPATIAL & LAYOUT SAFETY (APPLIES TO ANY CHOSEN LAYOUT)
+- Implement whatever `LAYOUT` the directions specify on the parent container (`parentSel` and `[data-mydes="grid"]`) and child items (`sel` and `[data-mydes="card"]`), while obeying these three structural physics laws so the layout never breaks on any screen size:
+  1. NO HORIZONTAL OVERFLOW: Any multi-column or flex/grid container must use fluid tracks (`minmax(0, 1fr)`) and `width: 100% !important; max-width: 100% !important; box-sizing: border-box !important;`, and all child items must include `min-width: 0 !important; max-width: 100% !important; box-sizing: border-box !important;`.
+  2. REFLOW INTERNAL ROWS WHEN NARROWED: Whenever your layout places items side-by-side or narrows an item below 60% of the viewport width, any horizontal row inside that item (such as a side-by-side thumbnail + text wrapper) MUST be stacked vertically (`display: flex !important; flex-direction: column !important; width: 100% !important;`) with its media/thumbnail container and `img`/`video` set to `width: 100% !important; height: auto !important;`.
+  3. PROTECT NESTED CAROUSELS/SHELVES: Never squeeze a container that already holds multiple side-by-side cards (`[data-mydes-shelf="true"]`) into a narrow single column of a parent grid—always let nested shelves and continuation sentinels (`[data-mydes-sentinel="true"]`) span the full container width (`grid-column: 1 / -1 !important; width: 100% !important;`).
 
 HARD RULES
-- Never hide or break main, card or search. The page stays interactive and infinitely scrollable.
-- THUMBNAIL OVERLAYS: Never cover a video thumbnail with a giant opaque text box! For vertical Shorts or overlay titles (`a.shortsLockupViewModelHostEndpoint h3`, `[class*="shortsLockup"] h3`), either set `position: static !important; width: 100% !important;` on the text container so the title sits neatly BELOW the thumbnail, or keep the overlay compact (`font-size: 12px !important; padding: 3px 6px !important;`) at the bottom edge.
-- FULL TITLES (NO 2-WORD TRUNCATION): Whenever you style headings (`h1-h4`, `[data-mydes="heading"]`, `[data-mydes="title"]`, `.media-item-headline`), ALWAYS include `-webkit-line-clamp: unset !important; max-height: none !important; height: auto !important; overflow: visible !important; display: block !important; white-space: normal !important;` so titles never get cut off after two words!
-- TEXT COLOUR: Never set `color` on generic tags (p, span, a, div, h1-h3) unless the same rule also sets the background behind them. A surface you style (card, header, item) sets its own background and `color` together and its descendants inherit; everything else inherits --m-fg from the page. All text must stay readable (4.5:1).
-- No invented text in CSS `::before`/`::after` `content`. Use `MydesBridge.decorateUnits` in `customJs` for visual SVG ornaments instead.
+- Never hide or break main, card or search. The page stays interactive and infinitely scrollable (never set `overflow: hidden` or a fixed `height` on `html`, `body`, or main feed containers).
+- MEDIA OVERLAYS: Never cover an image or video thumbnail with a large opaque text box! If a card places its heading/title inside an overlay on top of media, either set `position: static !important; width: 100% !important;` on the text wrapper so the title sits neatly BELOW the media, or keep the overlay compact (`font-size: 12px !important; padding: 3px 6px !important; max-height: 3.4em !important;`) at the bottom edge.
+- FULL TITLES (NO PREMATURE TRUNCATION): Whenever you style headings or titles (`h1-h4`, `[data-mydes="heading"]`, `[data-mydes="title"]`, `[class*="headline"]`), ALWAYS include `-webkit-line-clamp: unset !important; line-clamp: unset !important; max-height: none !important; height: auto !important; overflow: visible !important; display: block !important; white-space: normal !important; word-break: normal !important; overflow-wrap: break-word !important;` so titles are never sliced off after two words or wrapped letter-by-letter.
+- TEXT COLOUR: Never set `color` on generic tags (p, span, a, div, h1-h3) unless the same rule also sets the background behind them. A surface you style (card, header, item) sets its own background and `color` together and its descendants inherit; everything else inherits --m-fg from the page. All text must stay readable (>= 4.5:1 contrast).
+- No invented words in CSS `::before`/`::after` `content`. Use `MydesBridge.decorateUnits` and `MydesBridge.injectOrnament` in `customJs` for custom SVG/HTML elements instead.
 
 OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
 {
-  "implemented": { "signature": "...", "surface": "...", "newElements": "...", "rules": "..." },
+  "implemented": { "signature": "...", "layout": "...", "surface": "...", "newElements": "...", "rules": "..." },
   "name": "short title",
   "dark": true or false,
   "bg": "#rrggbb", "surface": "#rrggbb", "surface2": "#rrggbb", "fg": "#rrggbb", "ink": "#rrggbb", "accent": "#rrggbb",
