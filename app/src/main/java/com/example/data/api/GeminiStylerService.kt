@@ -225,8 +225,61 @@ data class UIBlueprint(
     companion object {
         const val RUNTIME_VERSION = 11
 
+        /**
+         * Rebuilds a JSON object that was cut off mid-stream (token limit / dropped connection):
+         * closes an open string, drops a dangling comma, fills a dangling `"key":` with null and
+         * appends the missing `}` / `]`. Works from the first `{` to the END of the text, because
+         * the last `}` in a truncated response usually sits inside a CSS/JS string.
+         */
+        fun repairTruncatedJson(raw: String): String {
+            var s = raw
+            if (s.contains("</think>")) s = s.substringAfterLast("</think>")
+            val a = s.indexOf('{')
+            if (a < 0) return s
+            s = s.substring(a)
+            val sb = StringBuilder()
+            val stack = ArrayList<Char>()
+            var inStr = false
+            var esc = false
+            for (ch in s) {
+                sb.append(ch)
+                if (inStr) {
+                    if (esc) esc = false
+                    else if (ch == '\\') esc = true
+                    else if (ch == '"') inStr = false
+                } else {
+                    when (ch) {
+                        '"' -> inStr = true
+                        '{' -> stack.add('}')
+                        '[' -> stack.add(']')
+                        '}', ']' -> if (stack.isNotEmpty()) stack.removeAt(stack.size - 1)
+                    }
+                }
+            }
+            if (inStr) {
+                if (esc) sb.setLength(sb.length - 1)
+                sb.append('"')
+            }
+            var done = false
+            while (!done) {
+                var end = sb.length
+                while (end > 0 && sb[end - 1].isWhitespace()) end--
+                sb.setLength(end)
+                if (end == 0) break
+                when (sb[end - 1]) {
+                    ',' -> sb.setLength(end - 1)
+                    ':' -> { sb.append("null"); done = true }
+                    else -> done = true
+                }
+            }
+            for (i in stack.indices.reversed()) sb.append(stack[i])
+            return sb.toString()
+        }
+
         private fun jsonSlice(raw: String): String {
             var s = raw.trim()
+            // Reasoning models may leak their chain of thought into `content`; its braces would corrupt the slice.
+            if (s.contains("</think>")) s = s.substringAfterLast("</think>").trim()
             Regex("```(?:json)?\\s*([\\s\\S]*?)\\s*```", RegexOption.IGNORE_CASE).find(s)?.let {
                 s = it.groupValues[1].trim()
             }
@@ -240,7 +293,9 @@ data class UIBlueprint(
         }
 
         fun parse(raw: String, prompt: String = "Imported Redesign"): UIBlueprint? {
-            val j = try { JSONObject(jsonSlice(raw)) } catch (_: Exception) { return null }
+            val j = try { JSONObject(jsonSlice(raw)) } catch (_: Exception) {
+                try { JSONObject(repairTruncatedJson(raw)) } catch (_: Exception) { return null }
+            }
             val dark = j.optBoolean("dark", true)
             val white = "#ffffff"
             val black = "#000000"
@@ -1376,7 +1431,7 @@ class GeminiStylerService {
         .connectTimeout(60, TimeUnit.SECONDS)
         .readTimeout(240, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
-        .callTimeout(300, TimeUnit.SECONDS)
+        .callTimeout(600, TimeUnit.SECONDS)
         .pingInterval(10, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
@@ -1737,7 +1792,7 @@ class GeminiStylerService {
             appendLine("""{
   "temperature": ${if (isReview) 0.3f else 0.8f},
   "topP": 0.95,
-  "maxOutputTokens": ${if (isReview) 1536 else 8192},
+  "maxOutputTokens": ${if (isReview) 1536 else if (isNemotronSynthesis) NIM_MAX_TOKENS else 8192},
   "provider": "${if (isNemotronSynthesis) "NVIDIA NIM" else "Google AI Studio"}"
 }""")
             appendLine()
@@ -1759,7 +1814,7 @@ class GeminiStylerService {
                     userContent = userContextText,
                     temperature = 0.7f,
                     topP = 0.95f,
-                    maxTokens = 8192,
+                    maxTokens = NIM_MAX_TOKENS,
                     onThoughtChunk = { chunk ->
                         onThinkingUpdate?.invoke("Pass 2: Nemotron 3 Ultra Reasoning", chunk, false)
                     },
@@ -1796,13 +1851,17 @@ class GeminiStylerService {
             }
 
             if (blueprint == null) {
-                val err = "Model returned invalid UIBlueprint JSON. Raw start: ${raw.take(300)}"
-                ApiRequestLogger.logRequest(context, logType, websiteName, websiteUrl, cleanPrompt, requestJson, err, false)
+                val err = "Model returned invalid UIBlueprint JSON (finish_reason=${lastNimFinishReason ?: "n/a"}, " +
+                    "contentChars=${raw.length}, reasoningChars=${rawThoughts.length}). Raw start: ${raw.take(200)} ... Raw end: ${raw.takeLast(200)}"
+                val errLog = err + "\n\n=== FULL RAW OUTPUT ===\n" + raw +
+                    (if (rawThoughts.isNotBlank()) "\n\n=== REASONING ===\n" + rawThoughts else "")
+                ApiRequestLogger.logRequest(context, logType, websiteName, websiteUrl, cleanPrompt, requestJson, errLog, false)
                 Result.failure(IllegalStateException(err))
             } else {
                 storeFor(context).put(cleanPrompt, blueprint, domain, remember = !isReview)
+                val truncNote = if (isNemotronSynthesis && !isReview && lastNimFinishReason == "length") "!!! OUTPUT WAS TRUNCATED (finish_reason=length); blueprint was repaired and may be missing the end of customCss !!!\n\n" else ""
                 val logResponse = if (rawThoughts.isNotBlank()) {
-                    "=== REASONING & THINKING PROCESS ===\n$rawThoughts\n\n=== RESPONSE RESULT ===\n" + (if (isReview) raw else blueprint.toJson())
+                    truncNote + "=== REASONING & THINKING PROCESS ===\n$rawThoughts\n\n=== RESPONSE RESULT ===\n" + (if (isReview) raw else blueprint.toJson())
                 } else {
                     if (isReview) raw else blueprint.toJson()
                 }
@@ -1883,7 +1942,8 @@ You are the front-end builder inside an Android web browser. An art director wro
 
 EXECUTION ORDER & MANDATORY DIRECTIONS
 - In LLM structured generation, field order is execution order.
-- You MUST populate the 1-line `implemented` checklist at the very top of the JSON first (`signature`, `layout`, `surface`, `newElements`, `rules`), committing to the exact selectors and mechanisms from the outline before generating code.
+- You MUST populate the 1-line `implemented` checklist at the very top of the JSON first (`signature`, `layout`, `surface`, `newElements`, `rules`), committing to the exact selectors and mechanisms from the outline before generating code. Each `implemented` value is ONE short sentence (max 20 words), with no code and no lists.
+- OUTPUT SIZE BUDGET: the whole JSON must stay under ~9,000 tokens. Be compact: `backdropHtml` <= ~2,500 tokens, `customJs` <= ~2,000, `customCss` <= ~4,000. Reuse CSS variables and shared selectors instead of repeating declarations, and do not over-think: begin writing the JSON as soon as the plan is clear.
 - You MUST generate `backdropHtml` and `customJs` BEFORE `customCss` so that the SIGNATURE backdrop and NEW DOM ELEMENTS (`MydesBridge.decorateUnits` and `MydesBridge.injectOrnament`) are fully realized while your attention is 100% fresh.
 - In `customCss`, you MUST implement every single item from `RULES` (header, search, headings, repeated items/cards, links, buttons, images), `SURFACE`, `LAYOUT`, and `TYPE`. Never skip any direction.
 
@@ -2031,6 +2091,17 @@ OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
         throw lastException ?: IllegalStateException("Streaming failed on model $model")
     }
 
+    /** Reasoning tokens count against max_tokens on NIM reasoning models, so this must cover thinking + the full JSON. */
+    private val NIM_MAX_TOKENS = 16384
+    /**
+     * Medium reasoning effort, per the NIM docs: extra_body={"chat_template_kwargs": {"enable_thinking": True, "medium_effort": True}}.
+     * The Python SDK merges extra_body into the top level of the HTTP body, so over raw HTTP it sits beside "messages".
+     */
+    private fun nimReasoningKwargs(): JSONObject = JSONObject()
+        .put("enable_thinking", true)
+        .put("medium_effort", true)
+    @Volatile private var lastNimFinishReason: String? = null
+
     private suspend fun callNvidiaNimStream(
         model: String,
         apiKey: String,
@@ -2038,10 +2109,11 @@ OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
         userContent: String,
         temperature: Float = 0.7f,
         topP: Float = 0.95f,
-        maxTokens: Int = 8192,
+        maxTokens: Int = NIM_MAX_TOKENS,
         onThoughtChunk: ((String) -> Unit)? = null,
         onOutputChunk: ((String) -> Unit)? = null
     ): Pair<String, String> = withContext(Dispatchers.IO) {
+        lastNimFinishReason = null
         val fullText = StringBuilder()
         val rawThoughts = StringBuilder()
 
@@ -2054,6 +2126,7 @@ OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
             .put("temperature", temperature)
             .put("top_p", topP)
             .put("max_tokens", maxTokens)
+            .put("chat_template_kwargs", nimReasoningKwargs())
             .put("stream", true)
 
         val mediaType = "application/json; charset=utf-8".toMediaType()
@@ -2091,6 +2164,7 @@ OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
                                 val choices = chunk.optJSONArray("choices")
                                 if (choices != null && choices.length() > 0) {
                                     val choice = choices.getJSONObject(0)
+                                    if (!choice.isNull("finish_reason")) lastNimFinishReason = choice.optString("finish_reason")
                                     val delta = choice.optJSONObject("delta")
                                     if (delta != null) {
                                         val reasoning = delta.optString("reasoning_content", "")
@@ -2133,6 +2207,7 @@ OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
             .put("temperature", temperature)
             .put("top_p", topP)
             .put("max_tokens", maxTokens)
+            .put("chat_template_kwargs", nimReasoningKwargs())
             .put("stream", false)
 
         val nonStreamReq = Request.Builder()
@@ -2152,6 +2227,7 @@ OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
         val nonStreamJson = JSONObject(nonStreamResp.body?.string() ?: throw java.io.IOException("Empty response from NVIDIA NIM"))
         val choice = nonStreamJson.optJSONArray("choices")?.optJSONObject(0)
         val msg = choice?.optJSONObject("message")
+        if (choice != null && !choice.isNull("finish_reason")) lastNimFinishReason = choice.optString("finish_reason")
         val content = msg?.optString("content", "") ?: ""
         val reasoning = msg?.optString("reasoning_content", "")
             ?: msg?.optString("reasoning", "") ?: ""
