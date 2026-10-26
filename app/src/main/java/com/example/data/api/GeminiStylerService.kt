@@ -1311,7 +1311,7 @@ class GeminiStylerService {
         const val CONCEPT_MODEL = "gemini-3.5-flash-lite"
 
         /** Synthesis model for Pass 2 (Main CSS3/SVG/JS synthesis) */
-        const val SYNTHESIS_MODEL = "gemini-3.8-flash"
+        const val SYNTHESIS_MODEL = "gemini-3.5-flash-lite"
 
         /** Fast, quota-friendly model for Pass 3 (Visual QA & CSS review fix patch) */
         const val REVIEW_MODEL = "gemini-3.5-flash-lite"
