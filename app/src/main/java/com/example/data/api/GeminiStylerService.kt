@@ -1785,12 +1785,12 @@ OUTPUT: ONLY one JSON object, under 200 words in total. Every value must be conc
   "idea": "one sentence: what this page IS",
   "signature": "the one memorable visual or interaction, max 25 words",
   "palette": "4 or 5 colours as hex, each with its job",
-  "type": "type voice using web or system font stacks, max 15 words",
+  "type": "typographic styling and formatting using web or system font stacks, max 15 words",
   "surface": "edges, material, depth, texture, clip-path shapes, borders, shadows, max 25 words",
     "layout": "how content is arranged and how that transforms the usual list or page flow to fit this world, max 30 words",
   "newElements": "specific new SVG/HTML elements to create and attach onto items and headers via JS to bring this world to life, max 30 words",
   "rules": "how each of these behaves in this world: header, search, headings, repeated items or cards, links, buttons, images; max 45 words",
-  "fingerprint": "max 6 words: type voice, palette family, shape language, layout idea"
+  "fingerprint": "max 6 words: typographic styling and formatting, palette family, shape language, layout idea"
 }
 """.trimIndent()
 
