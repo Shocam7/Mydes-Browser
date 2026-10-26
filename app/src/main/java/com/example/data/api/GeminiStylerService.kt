@@ -586,13 +586,13 @@ window.MydesBridge = {
         el.setAttribute('data-m-deco', cfg.id);
         var cs = getComputedStyle(el);
         if(cs.position === 'static') el.style.setProperty('position', 'relative', 'important');
-        var html = typeof rule.fn === 'function' ? rule.fn(el, i) : String(rule.fn || '');
-        if(html) {
+        var res = typeof rule.fn === 'function' ? rule.fn(el, i) : String(rule.fn || '');
+        if(typeof res === 'string' && res.trim()) {
           var deco = document.createElement('div');
           deco.className = '__mydes_deco';
           deco.setAttribute('aria-hidden', 'true');
-          deco.style.cssText = 'pointer-events:none !important; position:absolute; inset:0; overflow:visible; z-index:2;';
-          deco.innerHTML = html;
+          deco.style.cssText = 'pointer-events:none !important; position:absolute; inset:0; overflow:visible; z-index:4;';
+          deco.innerHTML = res;
           el.appendChild(deco);
         }
       }
@@ -801,13 +801,15 @@ window.MydesBridge = {
 /* ---------- 2. Constructable / Injected Stylesheets (V4 Clean Ordering) ---------- */
 var eStyle = null;
 function applySheets() {
+  var surfaceVal = cfg.backdropHtml ? 'color-mix(in srgb, '+cfg.surface+' 82%, transparent)' : cfg.surface;
   var baseVars = ':root{' +
     '--m-bg:'+cfg.bg+';--bg:'+cfg.bg+';' +
-    '--m-surface:'+cfg.surface+';--surface:'+cfg.surface+';' +
+    '--m-surface:'+surfaceVal+';--surface:'+surfaceVal+';' +
     '--m-surface2:'+cfg.surface2+';--surface2:'+cfg.surface2+';' +
     '--m-fg:'+cfg.fg+';--fg:'+cfg.fg+';' +
     '--m-ink:'+cfg.ink+';--ink:'+cfg.ink+';' +
     '--m-accent:'+cfg.accent+';--accent:'+cfg.accent+';' +
+    '--m-border:color-mix(in srgb, '+cfg.accent+' 45%, '+cfg.surface+');--border:var(--m-border);' +
     '--m-rx:0deg;--m-ry:0deg;--m-scroll:0px;}\n' +
     'html{background-color:var(--m-bg)!important;color:var(--m-fg)!important;overflow-x:hidden!important;}\n' +
     'html body{background-color:transparent!important;color:var(--m-fg)!important;position:relative;z-index:1;overflow-x:hidden!important;}\n' +
@@ -820,10 +822,15 @@ function applySheets() {
     '/* Multi-item shelves/carousels & continuation sentinels always span full width inside any grid */\n' +
     '[data-mydes-shelf="true"], [data-mydes-sentinel="true"], ytm-reel-shelf-renderer, ytm-rich-section-renderer, ytm-continuation-item-renderer { grid-column: 1 / -1 !important; width: 100% !important; }\n' +
     '/* Containment: nothing inside a grid/card may exceed the viewport width (native fixed-px widths) */\n' +
-    'html body [data-mydes="grid"], html body [data-mydes="card"], html body [data-mydes="card"] * { max-width: 100% !important; box-sizing: border-box !important; }\n';
+    'html body [data-mydes="grid"], html body [data-mydes="card"], html body [data-mydes="card"] * { max-width: 100% !important; box-sizing: border-box !important; }\n' +
+    '/* Ensure intermediate thumbnail/media wrappers inside cards expand to full width of the card */\n' +
+    'html body [data-mydes="card"] > *, html body [data-mydes="card"] a:has(img,video,picture), html body [data-mydes="card"] div:has(> img, > video, > picture) { width: 100% !important; max-width: 100% !important; box-sizing: border-box !important; }\n' +
+    'html body [data-mydes="card"] img:not([width^="1"]):not([width^="2"]):not([width^="3"]), html body [data-mydes="card"] video { width: 100% !important; height: auto !important; object-fit: cover !important; display: block !important; }\n';
 
   var fullCss = baseVars + '\n' + (cfg.customCss || '') + '\nhtml{background-color:var(--m-bg)!important;}\n';
   var root = document.head || document.documentElement;
+  
+
   if(!root) return;
   if(!eStyle || !eStyle.isConnected) {
     eStyle = document.createElement('style');
@@ -866,7 +873,12 @@ function mountLayers() {
   if(cfg.customJs && document.body.getAttribute('data-m-js') !== cfg.id) {
     document.body.setAttribute('data-m-js', cfg.id);
     try {
-      var fn = new Function('MydesBridge', 'T', cfg.customJs);
+      var jsCode = cfg.customJs.trim();
+      var openP = (jsCode.match(/\(/g)||[]).length - (jsCode.match(/\)/g)||[]).length;
+      var openB = (jsCode.match(/\{/g)||[]).length - (jsCode.match(/\}/g)||[]).length;
+      while(openB-- > 0) jsCode += '}';
+      while(openP-- > 0) jsCode += ')';
+      var fn = new Function('MydesBridge', 'T', jsCode);
       fn(window.MydesBridge, cfg);
     } catch(e) { console.warn('[Mydes CustomJS Error]', e); }
   }
@@ -1091,7 +1103,7 @@ function handle(el){
     var wb=rgba(cs.backgroundColor);
     if(wb&&wb.a>=0.5){
       var wr=el.getBoundingClientRect();
-      if(wr.width>=innerWidth*0.9&&wr.height>=innerHeight*0.7){setProp(el,'background-color','transparent');EB.delete(el);}
+      if(wr.width>=innerWidth*0.85&&wr.height>=innerHeight*0.18){setProp(el,'background-color','transparent');EB.delete(el);}
     }
   }
   if(cfg.remapSurfaces && tag!=='BODY' && tag!=='HTML' && !hasBgImage(cs)){
@@ -1234,7 +1246,20 @@ start();
             var g=groups[k]||(groups[k]={sel:k,parentSel:parentSel,n:0,sample:t.slice(0,40)});
             g.n++;
           }
-          var rep=Object.keys(groups).map(function(k){return groups[k];}).filter(function(g){return g.n>=3;}).sort(function(x,y){return y.n-x.n;}).slice(0,5);
+          var rawRep=Object.keys(groups).map(function(k){return groups[k];}).filter(function(g){return g.n>=3;}).sort(function(x,y){return y.n-x.n;});
+          var rep=[];
+          for(var rIdx=0;rIdx<rawRep.length&&rep.length<5;rIdx++){
+            var candG=rawRep[rIdx], isInner=false;
+            try{
+              var sampleEl=document.querySelector(candG.sel);
+              for(var pIdx=0;pIdx<rep.length;pIdx++){
+                if(sampleEl && sampleEl.parentElement && sampleEl.parentElement.closest(rep[pIdx].sel)){
+                  isInner=true; break;
+                }
+              }
+            }catch(e){}
+            if(!isInner) rep.push(candG);
+          }
           var heads=[].slice.call(document.querySelectorAll('h1,h2,h3')).slice(0,6).map(function(h){return (h.textContent||'').trim().slice(0,40);});
           var o;
           if(window.__mydes && window.__mydes.outline){o=JSON.parse(window.__mydes.outline());}
@@ -1928,7 +1953,7 @@ OUTPUT: ONLY one JSON object, under 200 words in total. Every value must be conc
   "idea": "one sentence: what this page IS",
   "signature": "the one memorable visual or interaction, max 25 words",
   "palette": "4 or 5 colours as hex, each with its job",
-  "type": "typographic styling and formatting using web or system font stacks, max 15 words",
+  "type": "typographic styling and formatting using fonts from Google Fonts, max 15 words",
   "surface": "edges, material, depth, texture, clip-path shapes, borders, shadows, max 25 words",
     "layout": "how content is arranged and how that transforms the usual list or page flow to fit this world, max 30 words",
   "newElements": "specific new SVG/HTML elements to create and attach onto items and headers via JS to bring this world to life, max 30 words",
@@ -1945,24 +1970,28 @@ EXECUTION ORDER & MANDATORY DIRECTIONS
 - You MUST populate the 1-line `implemented` checklist at the very top of the JSON first (`signature`, `layout`, `surface`, `newElements`, `rules`), committing to the exact selectors and mechanisms from the outline before generating code. Each `implemented` value is ONE short sentence (max 20 words), with no code and no lists.
 - You MUST generate `backdropHtml` and `customJs` BEFORE `customCss` so that the SIGNATURE backdrop and NEW DOM ELEMENTS (`MydesBridge.decorateUnits` and `MydesBridge.injectOrnament`) are fully realized while your attention is 100% fresh.
 - In `customCss`, you MUST implement every single item from `RULES` (header, search, headings, repeated items/cards, links, buttons, images), `SURFACE`, `LAYOUT`, and `TYPE`. Never skip any direction.
+- Import the needed fonts in customCss through Google Fonts. Link structure for importing a font- 'https://fonts.googleapis.com/css2?family=' + fontName + ':wght@400;600;700;800&display=swap'.
 
 RUNTIME & TOOLS
 - Real elements carry data-mydes="header|nav|search|main|grid|card|title|heading|price|btn|field|media|aside|footer". Select with `html body [data-mydes="X"]`. Roles are hints, not guarantees: the page's main repeating items may NOT be tagged `card`. The outline lists roleCounts, roleSamples and repeatedItems (real `sel` and `parentSel` selectors). Whenever the directions talk about items, cards or results, style `html body [data-mydes="card"]` AND those real `sel` selectors too. Also style standard tags (h1-h3, p, a, ul, li, table, figure, img).
 - :root variables: --m-bg --m-surface --m-surface2 --m-fg --m-ink --m-accent, and motion variables --m-rx --m-ry (deg) --m-scroll (px).
 - `backdropHtml`: A vivid scene drawn with inline SVG, CSS or one canvas that realizes the SIGNATURE background/stage. It sits behind all page content. Keep `html { background-color: var(--m-bg) !important; }` and `body, main, [data-mydes="main"], [data-mydes="grid"] { background-color: transparent !important; }` so the backdrop shows through clearly. When animating SVG `<g>` or `<circle>` elements inside backdropHtml, use pure `rotate(0deg)` -> `rotate(360deg)` with `transform-origin: center; transform-box: fill-box;` (never put `translate(-50%, -50%)` inside @keyframes on inner SVG shapes).
 - `customJs`: Runs as (MydesBridge, T). You MUST use `customJs` to create the `NEW DOM ELEMENTS` specified in the directions:
-  * `MydesBridge.decorateUnits(selector, svgOrHtmlStringOrFn)`: Creates and attaches the bespoke inline `<svg>` or HTML elements described in `NEW DOM ELEMENTS` onto every matching card/item (`[data-mydes="card"]` and real `sel` selectors).
+  * `MydesBridge.decorateUnits(selector, htmlString)`: In `MydesBridge.decorateUnits(sel, htmlString)`, pass an HTML/SVG string as the second argument (do NOT write complex DOM-creation callbacks). Only target the outermost card selector in repeatedItems, never inner details wrappers.
   * `MydesBridge.injectOrnament(targetSelector, svgOrHtmlString, "append"|"prepend")`: Creates and mounts new thematic SVG/HTML centerpiece or structural elements into the header or main stage.
   * `MydesBridge.enable3DTilt(n)`: Updates `--m-rx` and `--m-ry` on scroll/touch. Whenever you call `enable3DTilt`, you MUST reference `var(--m-rx)` and `var(--m-ry)` inside a `transform` rule in `customCss`.
   * Also available: `focusSearch()`, `proxySearch(q)`, `proxyClick(selector)`, `onCleanup(fn)`.
 
 SPATIAL & LAYOUT SAFETY (APPLIES TO ANY CHOSEN LAYOUT)
-- Implement whatever `LAYOUT` the directions specify on the parent container (`parentSel` and `[data-mydes="grid"]`) and child items (`sel` and `[data-mydes="card"]`), while obeying these three structural physics laws so the layout never breaks on any screen size:
+- Implement whatever `LAYOUT` the directions specify on the parent container (`parentSel` and `[data-mydes="grid"]`) and child items (`sel` and `[data-mydes="card"]`), while obeying these structural physics laws so the layout never breaks on any screen size:
   1. NO HORIZONTAL OVERFLOW: Any multi-column or flex/grid container must use fluid tracks (`minmax(0, 1fr)`) and `width: 100% !important; max-width: 100% !important; box-sizing: border-box !important;`, and all child items must include `min-width: 0 !important; max-width: 100% !important; box-sizing: border-box !important;`.
   2. REFLOW INTERNAL ROWS WHEN NARROWED: Whenever your layout places items side-by-side or narrows an item below 60% of the viewport width, any horizontal row inside that item (such as a side-by-side thumbnail + text wrapper) MUST be stacked vertically (`display: flex !important; flex-direction: column !important; width: 100% !important;`) with its media/thumbnail container and `img`/`video` set to `width: 100% !important; height: auto !important;`.
   3. PROTECT NESTED CAROUSELS/SHELVES: Never squeeze a container that already holds multiple side-by-side cards (`[data-mydes-shelf="true"]`) into a narrow single column of a parent grid—always let nested shelves and continuation sentinels (`[data-mydes-sentinel="true"]`) span the full container width (`grid-column: 1 / -1 !important; width: 100% !important;`).
+  4. BAN @MEDIA (MAX-WIDTH: 600PX) RESETS: The target viewport is ALREADY a mobile phone (~400px wide). NEVER write @media (max-width: 600px) or @media (max-width: 768px) rules that collapse your layout back to 1fr—design your primary layout directly for the ~400px mobile viewport.
 
 HARD RULES
+- BAN @MEDIA (MAX-WIDTH: 600PX) RESETS: The target viewport is ALREADY a mobile phone (~400px wide). NEVER write @media (max-width: 600px) or @media (max-width: 768px) rules that collapse your layout back to 1fr—design your primary layout directly for the ~400px mobile viewport.
+- STYLE ONLY OUTERMOST CARD SELECTORS & RETURN HTML STRINGS IN DECORATEUNITS: In `MydesBridge.decorateUnits(sel, htmlString)`, pass an HTML/SVG string as the second argument (do NOT write complex DOM-creation callbacks). Only target the outermost card selector in repeatedItems, never inner details wrappers.
 - Never hide or break main, card or search. The page stays interactive and infinitely scrollable (never set `overflow: hidden` or a fixed `height` on `html`, `body`, or main feed containers).
 - MEDIA OVERLAYS: Never cover an image or video thumbnail with opaque elements! If a card places its heading/title inside an overlay on top of media, either set `position: static !important; width: 100% !important;` on the text wrapper so the title sits neatly BELOW the media, or keep the overlay compact (`font-size: 12px !important; padding: 3px 6px !important; max-height: 3.4em !important;`) at the bottom edge.
 - FULL TITLES (NO PREMATURE TRUNCATION): Whenever you style headings or titles (`h1-h4`, `[data-mydes="heading"]`, `[data-mydes="title"]`, `[class*="headline"]`), ALWAYS include `-webkit-line-clamp: unset !important; line-clamp: unset !important; max-height: none !important; height: auto !important; overflow: visible !important; display: block !important; white-space: normal !important; word-break: normal !important; overflow-wrap: break-word !important;` so titles are never sliced off after two words or wrapped letter-by-letter.
