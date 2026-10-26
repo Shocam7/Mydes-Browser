@@ -19,7 +19,6 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.Dns
 import okhttp3.OkHttpClient
-import okhttp3.Request
 import okhttp3.ResponseBody
 import org.json.JSONArray
 import org.json.JSONObject
@@ -48,21 +47,21 @@ import kotlin.coroutines.resume
 import kotlin.math.roundToInt
 
 /*
- * v10 - "Unified Generative UI & DOM Choreography Engine"
+ * v11 - "Generative UI Synthesis Engine: V4 Visual Core + Asymmetric Panels + Live DOM Elements"
  *
- * Core Philosophy:
- * 1. Single Unified Mode (No "restyle" vs "app_shell" split, No HUD boilerplate):
- *    - Eliminates artificial mode divisions and removes HUD fields so the model never invents generic floating docks.
- *    - Every redesign has full creative authority to combine deep CSS3 spatial layouts, high-visibility animated
- *      SVG/Canvas backdrops, and live DOM augmentation via `customJs` (injecting bespoke SVG mechanisms, 3D layers,
- *      custom card frames, or interactive viewports directly into the page).
- * 2. True Choreographic Execution:
- *    - Art Director (`gemini-3.5-flash-lite`) focuses 100% on concrete visual anatomy, geometry, bespoke SVG
- *      structures, and spatial motion rather than writing cheap CSS snippets.
- *    - Synthesis Engine (`gemini-3.8-flash`) implements the full choreography: real inline SVG ornaments injected
- *      via `MydesBridge.decorateUnits()`, live 3D scroll/touch perspective bound to `var(--m-rx)` / `var(--m-ry)`,
- *      and structural DOM layout transformations.
- *    - Review Pass (`gemini-3.5-flash-lite`) audits legibility, overflow, and visual fidelity.
+ * How it works:
+ * 1. Restores the exact high-contrast, high-creativity runtime core of v4 (`remapSurfaces = true`,
+ *    clean stylesheet ordering without destructive post-CSS inline overrides).
+ * 2. Preserves all production infrastructure: SSE Streaming (`streamGenerateContent`), `onThinkingUpdate`
+ *    progress callbacks, fail-fast Concept Pass, and `ResilientGoogleDns` (4-tier raw socket + cache).
+ * 3. Solves the 3 V4 Limitations:
+ *    - Asymmetric Panel Grids (1-2-1 Span Pattern): Teach the builder to alternate full-width hero panels
+ *      (`:nth-child(3n+1) { grid-column: 1 / -1 }`) with angled side-by-side split panels while keeping
+ *      multi-item shelves (`[data-mydes-shelf="true"]`) spanned full-width so nothing ever gets crushed.
+ *    - New DOM Elements (`newElements` + `MydesBridge.decorateUnits` / `injectOrnament`): Explicitly directs
+ *      `customJs` to create and mount bespoke SVG/HTML elements onto cards and headers.
+ *    - Thumbnail & Title Integrity: Prevents opaque text boxes from covering vertical thumbnails and
+ *      unclamps headings (`-webkit-line-clamp: unset`) so titles are never cut off after two words.
  */
 
 // ───────────────────────── Gemini wire models ─────────────────────────
@@ -170,8 +169,8 @@ object Hex {
 // ───────────────────── Generative UI Blueprint ─────────────────────
 
 /**
- * Strips ::before/::after rules that inject generic fake text labels (e.g. content:"> SYS.RECORD").
- * Icons, symbols, and SVG/data-URIs are preserved.
+ * Removes ::before/::after rules that inject generic fake text labels (e.g. content:"> SYS.RECORD").
+ * Icons, symbols, bullets, and SVG/data-URIs are kept.
  */
 internal fun stripInventedLabels(css: String): String =
     css.replace(
@@ -192,13 +191,18 @@ data class UIBlueprint(
     val remapSurfaces: Boolean,
     val customCss: String,
     val backdropHtml: String,
+    val hudHtml: String = "",
     val customJs: String,
     val concept: String = "",
+    val needsHud: Boolean = false,
+    val hudReason: String = "",
     val fingerprint: String = ""
 ) {
     fun toJson(): String = JSONObject()
         .put("concept", concept)
         .put("fingerprint", fingerprint)
+        .put("needsHud", needsHud)
+        .put("hudReason", hudReason)
         .put("id", id)
         .put("name", name)
         .put("dark", dark)
@@ -211,18 +215,18 @@ data class UIBlueprint(
         .put("remapSurfaces", remapSurfaces)
         .put("customCss", customCss)
         .put("backdropHtml", backdropHtml)
+        .put("hudHtml", hudHtml)
         .put("customJs", customJs)
         .toString()
 
     companion object {
-        const val RUNTIME_VERSION = 10
+        const val RUNTIME_VERSION = 11
 
         private fun jsonSlice(raw: String): String {
             var s = raw.trim()
             Regex("```(?:json)?\\s*([\\s\\S]*?)\\s*```", RegexOption.IGNORE_CASE).find(s)?.let {
                 s = it.groupValues[1].trim()
             }
-            // Check if it's wrapped in Mydes runtime script: (function(BP){...})({"name": ...})
             val scriptCall = Regex("""\}\)\s*\(\s*(\{[\s\S]*\})\s*\)\s*;?\s*$""").find(s)
             if (scriptCall != null) {
                 s = scriptCall.groupValues[1].trim()
@@ -249,7 +253,6 @@ data class UIBlueprint(
             val ink = Hex.norm(j.optString("ink"), "#111215")
             val accent = Hex.norm(j.optString("accent"), if (dark) "#00e5ff" else "#0055ff")
 
-            // Support key aliases from frontier models or review passes
             val rawCss = when {
                 j.has("customCss") -> j.optString("customCss", "")
                 j.has("custom_css") -> j.optString("custom_css", "")
@@ -282,6 +285,9 @@ data class UIBlueprint(
             }.take(50)
 
             val concept = (j.optString("concept", "").ifBlank { j.optString("idea", "") }).take(300)
+            val needsHud = j.optBoolean("needsHud", false) &&
+                j.optString("hudReason").isNotBlank() &&
+                j.optString("hudHtml").isNotBlank()
 
             return UIBlueprint(
                 id = sha1Hex("v$RUNTIME_VERSION|${prompt.trim().lowercase(Locale.US)}|$rawCss|$rawBackdrop|$rawJs").take(12),
@@ -293,11 +299,15 @@ data class UIBlueprint(
                 fg = fg,
                 ink = ink,
                 accent = accent,
-                remapSurfaces = j.optBoolean("remapSurfaces", false),
+                // Default to true (just like v4) so unstyled surfaces & text contrast stay harmonious
+                remapSurfaces = j.optBoolean("remapSurfaces", true),
                 customCss = stripInventedLabels(rawCss),
                 backdropHtml = rawBackdrop,
+                hudHtml = if (needsHud) j.optString("hudHtml", "") else "",
                 customJs = rawJs,
                 concept = concept,
+                needsHud = needsHud,
+                hudReason = j.optString("hudReason", "").take(200),
                 fingerprint = j.optString("fingerprint", "").take(120)
             )
         }
@@ -466,7 +476,7 @@ object ResilientGoogleDns : Dns {
     }
 }
 
-// ───────────────────── Universal Generative Runtime + MydesBridge ─────────────────────
+// ───────────────────── Generative Runtime + MydesBridge ─────────────────────
 
 object MydesRuntime {
 
@@ -478,7 +488,7 @@ if(BP.skip && BP.skip.indexOf(location.hostname)>=0) return;
 var cfg = BP;
 var changes=[], EB=new WeakMap(), done=new WeakSet(), jobs=[], draining=false;
 var tagDirty=true, lastTag=0, tagDelay=120, BG, FG, INK;
-var cleanupFns=[], unitDecorators=[], mo=null;
+var cleanupFns=[], unitDecorators=[], ornamentRules=[], mo=null;
 var nodeUidCounter=0;
 
 function hex(h){return {r:parseInt(h.substr(1,2),16),g:parseInt(h.substr(3,2),16),b:parseInt(h.substr(5,2),16),a:1};}
@@ -486,32 +496,26 @@ function rgbStr(c){return 'rgb('+Math.round(c.r)+','+Math.round(c.g)+','+Math.ro
 function configure(){BG=hex(cfg.bg);FG=hex(cfg.fg);INK=hex(cfg.ink);}
 configure();
 
-/* ---------- 1. MydesBridge: DOM Augmentation, SVG Ornamentation, 3D & State-Safe Proxy API ---------- */
+/* ---------- 1. MydesBridge: Safe API for LLM-generated UIs & Live DOM Elements ---------- */
 window.MydesBridge = {
   /*
-   * Injects custom thematic HTML/SVG structures (e.g., spinning clockwork gears, comic speech tails,
-   * cybernetic HUD brackets, wax seals, 3D frames) into matching elements on the live page,
-   * and automatically applies them to new elements as the user infinite-scrolls!
-   * Everything injected is marked with class `__mydes_deco` and automatically removed on theme reset.
+   * Attaches bespoke SVG/HTML ornaments (e.g., comic action bursts, rotating gears, targeting reticles,
+   * speech bubble tails) onto matching cards/units and automatically applies them to infinite-scrolled items.
    */
   decorateUnits: function(selector, htmlOrBuilderFn) {
-    var sel = selector || '[data-mydes="card"], [data-mydes="item"]';
-    var rule = { sel: sel, fn: htmlOrBuilderFn };
-    unitDecorators.push(rule);
+    var sel = selector || '[data-mydes="card"]';
+    unitDecorators.push({ sel: sel, fn: htmlOrBuilderFn });
     window.MydesBridge._applyDecorators();
   },
 
-  /* Injects a thematic SVG/HTML centerpiece or ornament into a specific container (like header or main) */
+  /*
+   * Injects a new thematic SVG/HTML centerpiece or banner into a target container (like header or main)
+   * and keeps it alive across SPA DOM re-renders.
+   */
   injectOrnament: function(targetSelector, htmlString, position) {
-    var target = document.querySelector(targetSelector || '[data-mydes="header"], header');
-    if(!target) return null;
-    var wrap = document.createElement('div');
-    wrap.className = '__mydes_deco';
-    wrap.style.cssText = 'pointer-events:none;position:relative;z-index:2;';
-    wrap.innerHTML = htmlString;
-    if(position === 'prepend') target.prepend(wrap);
-    else target.appendChild(wrap);
-    return wrap;
+    var sel = targetSelector || '[data-mydes="header"], header';
+    ornamentRules.push({ sel: sel, html: htmlString, pos: position || 'append' });
+    window.MydesBridge._applyDecorators();
   },
 
   _applyDecorators: function() {
@@ -520,7 +524,7 @@ window.MydesBridge = {
       var nodes = document.querySelectorAll(rule.sel);
       for(var i=0; i<nodes.length && i<120; i++) {
         var el = nodes[i];
-        if(el.closest('#__mydes_backdrop') || el.getAttribute('data-m-deco') === cfg.id) continue;
+        if(el.closest('#__mydes_hud,#__mydes_backdrop') || el.getAttribute('data-m-deco') === cfg.id) continue;
         el.setAttribute('data-m-deco', cfg.id);
         var cs = getComputedStyle(el);
         if(cs.position === 'static') el.style.setProperty('position', 'relative', 'important');
@@ -535,16 +539,27 @@ window.MydesBridge = {
         }
       }
     }
+    for(var o=0; o<ornamentRules.length; o++) {
+      var orn = ornamentRules[o];
+      var target = document.querySelector(orn.sel);
+      if(target && !target.querySelector('.__mydes_orn_' + o)) {
+        var wrap = document.createElement('div');
+        wrap.className = '__mydes_deco __mydes_orn_' + o;
+        wrap.style.cssText = 'pointer-events:none;position:relative;z-index:2;';
+        wrap.innerHTML = orn.html;
+        if(orn.pos === 'prepend') target.prepend(wrap);
+        else target.appendChild(wrap);
+      }
+    }
   },
 
-  /* Extracts structured items from the live DOM for custom interactive layouts */
   extractNodes: function(customSelector) {
-    var sel = customSelector || '[data-mydes="card"], [data-mydes="item"], article, section > div, li, tr';
+    var sel = customSelector || '[data-mydes="card"], article, section > div, li, tr';
     var nodes = document.querySelectorAll(sel);
     var list = [];
     for(var i=0; i<nodes.length && list.length<60; i++) {
       var n = nodes[i];
-      if(n.closest('#__mydes_backdrop,nav,header,footer')) continue;
+      if(n.closest('#__mydes_hud,#__mydes_backdrop,nav,header,footer')) continue;
       var r = n.getBoundingClientRect();
       if(r.width < 60 || r.height < 24) continue;
       var txt = (n.textContent || '').replace(/\s+/g, ' ').trim();
@@ -559,7 +574,7 @@ window.MydesBridge = {
       var imgEl = n.querySelector('img,picture img');
       var vidEl = n.querySelector('video');
       var linkEl = n.tagName === 'A' ? n : n.querySelector('a[href]');
-      var metaEl = n.querySelector('[data-mydes="meta"],[data-mydes="price"],time,small,sub,sup');
+      var metaEl = n.querySelector('[data-mydes="price"],time,small');
 
       var titleText = (headingEl ? headingEl.textContent : txt.slice(0, 80)).replace(/\s+/g, ' ').trim();
       var bodyText = txt.replace(titleText, '').trim().slice(0, 180);
@@ -616,7 +631,7 @@ window.MydesBridge = {
     var l = document.querySelectorAll(sel);
     for(var i=0; i<l.length; i++) {
       var e = l[i];
-      if(e.closest('#__mydes_backdrop')) continue;
+      if(e.closest('#__mydes_hud,#__mydes_backdrop')) continue;
       var r = e.getBoundingClientRect();
       if(r.width > 0 && r.height > 0) {
         e.scrollIntoView({behavior:'smooth', block:'center'});
@@ -629,7 +644,8 @@ window.MydesBridge = {
   },
 
   proxySearch: function(query) {
-    var inp = document.querySelector('input[type="search"],[role="search"] input,form input[type="text"],[data-mydes="search"] input,input[type="text"]');
+    var inp = document.querySelector('input[type="search"],input[name="k"],input[name="q"],input[name="s"],input[name="query"],[data-mydes="search"] input');
+    if(!inp) inp = document.querySelector('input[type="text"]');
     if(!inp) return false;
     inp.focus();
     var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
@@ -647,7 +663,7 @@ window.MydesBridge = {
   },
 
   focusSearch: function() {
-    var inp = document.querySelector('input[type="search"],[role="search"] input,[data-mydes="search"] input,input[type="text"]');
+    var inp = document.querySelector('input[type="search"],input[name="k"],input[name="q"],[data-mydes="search"] input,input[type="text"]');
     if(inp) {
       inp.scrollIntoView({behavior:'smooth', block:'center'});
       inp.focus();
@@ -657,7 +673,33 @@ window.MydesBridge = {
     return false;
   },
 
-  /* Drives live 3D scroll & touch tilt variables (--m-rx, --m-ry, --m-scroll) */
+  zoom: function(delta) {
+    var cur = parseFloat(document.documentElement.getAttribute('data-m-zoom') || '1');
+    var next = Math.min(1.8, Math.max(0.8, cur + delta));
+    document.documentElement.setAttribute('data-m-zoom', String(next));
+    document.documentElement.style.setProperty('font-size', Math.round(next * 100) + '%', 'important');
+  },
+
+  speakPage: function(customText) {
+    try {
+      if(!window.speechSynthesis) return;
+      window.speechSynthesis.cancel();
+      var txt = customText;
+      if(!txt) {
+        var nodes = document.querySelectorAll('[data-mydes="title"],[data-mydes="heading"],[data-mydes="price"]');
+        var arr = [];
+        for(var i=0; i<nodes.length && arr.length<12; i++) {
+          var t = (nodes[i].textContent||'').trim();
+          if(t.length > 3) arr.push(t);
+        }
+        txt = arr.join('. ') || document.title;
+      }
+      var u = new SpeechSynthesisUtterance(txt.slice(0, 600));
+      u.rate = 0.92;
+      window.speechSynthesis.speak(u);
+    } catch(e){}
+  },
+
   enable3DTilt: function(intensity) {
     var mult = typeof intensity === 'number' ? intensity : 1.0;
     var raf = 0, lastY = window.scrollY;
@@ -665,7 +707,7 @@ window.MydesBridge = {
       if(raf) return;
       raf = requestAnimationFrame(function() {
         var sy = window.scrollY;
-        var dy = Math.max(-14, Math.min(14, (sy - lastY) * 0.35 * mult));
+        var dy = Math.max(-18, Math.min(18, (sy - lastY) * 0.4 * mult));
         lastY = sy;
         document.documentElement.style.setProperty('--m-rx', dy.toFixed(2) + 'deg');
         document.documentElement.style.setProperty('--m-scroll', sy + 'px');
@@ -679,8 +721,8 @@ window.MydesBridge = {
       var cy = e.touches[0].clientY;
       if(touchRaf) return;
       touchRaf = requestAnimationFrame(function() {
-        var ry = ((cx / Math.max(1, innerWidth)) - 0.5) * 16 * mult;
-        var rx = (0.5 - (cy / Math.max(1, innerHeight))) * 12 * mult;
+        var ry = ((cx / Math.max(1, innerWidth)) - 0.5) * 22 * mult;
+        var rx = (0.5 - (cy / Math.max(1, innerHeight))) * 16 * mult;
         document.documentElement.style.setProperty('--m-rx', rx.toFixed(2) + 'deg');
         document.documentElement.style.setProperty('--m-ry', ry.toFixed(2) + 'deg');
         touchRaf = 0;
@@ -698,17 +740,9 @@ window.MydesBridge = {
   onCleanup: function(fn) { if(typeof fn === 'function') cleanupFns.push(fn); }
 };
 
-/* ---------- 2. Device-Agnostic Responsive Variables & Containment Stylesheets ---------- */
+/* ---------- 2. Constructable / Injected Stylesheets (V4 Clean Ordering) ---------- */
 var eStyle = null;
-function updateViewportVars() {
-  var vw = document.documentElement.clientWidth || window.innerWidth || 360;
-  var vh = document.documentElement.clientHeight || window.innerHeight || 640;
-  document.documentElement.style.setProperty('--m-vw', vw + 'px');
-  document.documentElement.style.setProperty('--m-vh', vh + 'px');
-}
-
 function applySheets() {
-  updateViewportVars();
   var baseVars = ':root{' +
     '--m-bg:'+cfg.bg+';--bg:'+cfg.bg+';' +
     '--m-surface:'+cfg.surface+';--surface:'+cfg.surface+';' +
@@ -716,37 +750,16 @@ function applySheets() {
     '--m-fg:'+cfg.fg+';--fg:'+cfg.fg+';' +
     '--m-ink:'+cfg.ink+';--ink:'+cfg.ink+';' +
     '--m-accent:'+cfg.accent+';--accent:'+cfg.accent+';' +
-    '--m-rx:0deg;--m-ry:0deg;--m-scroll:0px;}\n';
+    '--m-rx:0deg;--m-ry:0deg;--m-scroll:0px;}\n' +
+    'html{background-color:var(--m-bg)!important;color:var(--m-fg)!important;overflow-x:hidden!important;}\n' +
+    'html body{background-color:transparent!important;color:var(--m-fg)!important;position:relative;z-index:1;overflow-x:hidden!important;}\n' +
+    '#__mydes_backdrop{position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none!important;z-index:-1;overflow:hidden;transform:translateZ(0);will-change:transform;}\n' +
+    '#__mydes_hud{position:fixed;z-index:2147483640;pointer-events:none;inset:0;transform:translateZ(0);}\n' +
+    '#__mydes_hud *{pointer-events:auto;}\n' +
+    '/* Multi-item shelves/carousels & continuation sentinels always span full width inside any grid */\n' +
+    '[data-mydes-shelf="true"], [data-mydes-sentinel="true"], ytm-reel-shelf-renderer, ytm-rich-section-renderer, ytm-continuation-item-renderer { grid-column: 1 / -1 !important; width: 100% !important; }\n';
 
-  var universalSafetyCss =
-    '*, *::before, *::after { box-sizing: border-box; }\n' +
-    'html {\n' +
-    '  background-color: var(--m-bg) !important; color: var(--m-fg) !important;\n' +
-    '  width: 100% !important; max-width: 100% !important; overflow-x: hidden !important;\n' +
-    '}\n' +
-    'html body {\n' +
-    '  background: transparent !important; background-color: transparent !important;\n' +
-    '  color: var(--m-fg) !important; width: 100% !important; max-width: 100% !important;\n' +
-    '  overflow-x: hidden !important; overflow-y: visible !important;\n' +
-    '  margin: 0 !important; position: relative !important; z-index: 1 !important;\n' +
-    '}\n' +
-    '#__mydes_backdrop {\n' +
-    '  position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important;\n' +
-    '  pointer-events: none !important; z-index: -1 !important; overflow: hidden !important;\n' +
-    '}\n' +
-    '/* Multi-item shelves / carousels inside a CSS Grid must span all columns so they never get crushed into a 47px column! */\n' +
-    'html body [data-mydes="grid"] > [data-mydes-shelf="true"],\n' +
-    'html body [data-mydes="grid"] > :not([data-mydes="card"]):not([data-mydes="item"]),\n' +
-    'html body [data-mydes-sentinel="true"] {\n' +
-    '  grid-column: 1 / -1 !important; width: 100% !important; max-width: 100% !important;\n' +
-    '}\n' +
-    '/* Prevent 2-letter vertical noodle text wrapping */\n' +
-    'html body [data-mydes="heading"], html body [data-mydes="title"], html body h1, html body h2, html body h3, html body h4 {\n' +
-    '  white-space: normal !important; word-break: normal !important; overflow-wrap: break-word !important;\n' +
-    '}\n';
-
-  // Put universalSafetyCss AFTER cfg.customCss so the model can never accidentally make `html` transparent!
-  var fullCss = baseVars + '\n' + (cfg.customCss || '') + '\n' + universalSafetyCss;
+  var fullCss = baseVars + '\n' + (cfg.customCss || '') + '\nhtml{background-color:var(--m-bg)!important;}\n';
   var root = document.head || document.documentElement;
   if(!root) return;
   if(!eStyle || !eStyle.isConnected) {
@@ -757,7 +770,7 @@ function applySheets() {
   if(eStyle.textContent !== fullCss) eStyle.textContent = fullCss;
 }
 
-/* ---------- 3. Custom Stage Layers (Backdrop + Sandbox JS + Live Decorations) ---------- */
+/* ---------- 3. Custom Stage Layers (3D Backdrop + Optional HUD + Sandbox JS) ---------- */
 function mountLayers() {
   if(!document.body) return;
   var bd = document.getElementById('__mydes_backdrop');
@@ -774,6 +787,19 @@ function mountLayers() {
     }
   } else if(bd) { bd.remove(); }
 
+  var hud = document.getElementById('__mydes_hud');
+  if(cfg.hudHtml) {
+    if(!hud) {
+      hud = document.createElement('div');
+      hud.id = '__mydes_hud';
+      document.body.appendChild(hud);
+    }
+    if(hud.getAttribute('data-m-id') !== cfg.id) {
+      hud.innerHTML = cfg.hudHtml;
+      hud.setAttribute('data-m-id', cfg.id);
+    }
+  } else if(hud) { hud.remove(); }
+
   if(cfg.customJs && document.body.getAttribute('data-m-js') !== cfg.id) {
     document.body.setAttribute('data-m-js', cfg.id);
     try {
@@ -784,233 +810,110 @@ function mountLayers() {
   window.MydesBridge._applyDecorators();
 }
 
-/* ---------- 4. Geometry-Driven Universal DOM Tagger & Live Bounds Clamper ---------- */
+/* ---------- 4. Semantic DOM Role Tagger ---------- */
 function each(sel,fn){var l=document.querySelectorAll(sel);for(var i=0;i<l.length;i++)fn(l[i]);}
 function put(e,r){if(e.getAttribute('data-mydes')!==r)e.setAttribute('data-mydes',r);}
 function putNew(e,r){if(!e.hasAttribute('data-mydes'))e.setAttribute('data-mydes',r);}
 var PRICE=/^\s*(?:(?:[\u0024\u20AC\u00A3\u00A5\u20B9]|USD|EUR|GBP|INR|Rs\.?)\s?\d[\d,.]*|\d[\d,.]*\s?(?:[\u0024\u20AC\u00A3\u00A5\u20B9]|USD|EUR|GBP|INR))\s*$/;
 function inContent(e){return !!e.closest('main,article,section,[role="main"]');}
-function sig(e){return e.tagName.toLowerCase()+'.'+(e.classList[0]||'')+'.'+(e.classList[1]||'');}
-
-function isUnitLike(e){
-  if(!e || e.nodeType!==1) return false;
+function sig(e){return e.tagName+'.'+(e.classList[0]||'')+'.'+(e.classList[1]||'');}
+function cardLike(e){
+  if(e.closest('nav,footer,#__mydes_hud,#__mydes_backdrop,.__mydes_deco,[data-mydes="nav"],[data-mydes="footer"]'))return false;
   var tag = e.tagName.toLowerCase();
-  if(/continuation|spinner|skeleton|loader|placeholder|sentinel/.test(tag + ' ' + (e.className||''))) {
+  if(/continuation|spinner|skeleton|loader|sentinel/.test(tag + ' ' + (e.className||''))) {
     e.setAttribute('data-mydes-sentinel', 'true');
     return false;
   }
-  if(e.closest('nav,footer,header,#__mydes_backdrop,[data-mydes="nav"],[data-mydes="footer"],[data-mydes="header"],.__mydes_deco')) return false;
-  var t = (e.textContent||'').trim().length;
-  if(t < 6 || t > 1800) return false;
-  var r = e.getBoundingClientRect();
-  if(r.width < 60 || r.height < 24) return false;
-  if(!e.querySelector('img,video,picture,canvas,svg') && e.parentElement) {
-    var pr = e.parentElement.getBoundingClientRect();
-    if(r.width < pr.width * 0.72 && e.parentElement.querySelector('img,video,picture')) return false;
-  }
-  return !!e.querySelector('a[href],img,picture,video,button') || t >= 35;
+  var link=e.tagName==='A'||!!e.querySelector('a[href]');
+  if(!link)return false;
+  var t=(e.textContent||'').trim().length;
+  if(t<6||t>800)return false;
+  return !!e.querySelector('img,picture,video')||t>=35;
 }
-
-function normalizeUnitInternals(unit){
-  var hasHeading = !!unit.querySelector('h1,h2,h3,h4,h5,h6,[data-mydes="heading"]');
-  var mediaEl = unit.querySelector('img,video,picture');
-  var mediaRect = mediaEl ? mediaEl.getBoundingClientRect() : null;
-
-  var sub = unit.querySelectorAll('*:not(.__mydes_deco):not(.__mydes_deco *)');
-  for(var i=0; i<sub.length && i<80; i++){
-    var x = sub[i];
-    var cs = getComputedStyle(x);
-
-    if((cs.webkitLineClamp && cs.webkitLineClamp !== 'none') || cs.textOverflow === 'ellipsis') {
-      x.setAttribute('data-mydes-clamped', 'true');
-      if(x.parentElement && x.parentElement !== unit) x.parentElement.setAttribute('data-mydes-clamped', 'true');
-    }
-
-    if(mediaRect && mediaRect.width > 40 && mediaRect.height > 40 && (cs.position === 'absolute' || cs.position === 'fixed')) {
-      var xr = x.getBoundingClientRect();
-      var txtLen = (x.textContent || '').trim().length;
-      var overlapsMedia = xr.left < mediaRect.right && xr.right > mediaRect.left && xr.top < mediaRect.bottom && xr.bottom > mediaRect.top;
-      if(overlapsMedia && txtLen >= 8 && !x.contains(mediaEl)) {
-        x.setAttribute('data-mydes-overlay', 'true');
-        if(x.parentElement) x.parentElement.setAttribute('data-mydes-overlay-parent', 'true');
-      }
-    }
-
-    if(!hasHeading && x.children.length === 0) {
-      var t = (x.textContent||'').trim();
-      if(t.length >= 8 && t.length <= 160 && !PRICE.test(t)) {
-        x.setAttribute('data-mydes', 'heading');
-        hasHeading = true;
-      }
+function decorate(c){
+  if(c.querySelector('h1,h2,h3,h4,h5,h6,[data-mydes="heading"]'))return;
+  var l=c.querySelectorAll('a,span,div,p,strong,b');
+  for(var i=0;i<l.length;i++){
+    var x=l[i];
+    if(x.children.length===0){
+      var t=(x.textContent||'').trim();
+      if(t.length>=8&&t.length<=140&&!PRICE.test(t)){x.setAttribute('data-mydes','heading');return;}
     }
   }
 }
-
-function findCollections(){
-  var ps = document.body.querySelectorAll('*:not(#__mydes_backdrop *):not(.__mydes_deco):not(.__mydes_deco *)'), n = 0;
-  for(var i = ps.length - 1; i >= 0 && n < 3000; i--){
-    var p = ps[i], k = p.children.length;
-    if(k < 2 || k > 150) continue;
+function findGrids(){
+  var ps=document.body.querySelectorAll('*:not(#__mydes_hud *):not(#__mydes_backdrop *):not(.__mydes_deco):not(.__mydes_deco *)'),n=0;
+  for(var i=ps.length-1;i>=0&&n<2500;i--){
+    var p=ps[i],k=p.children.length;
+    if(k<2||k>80)continue;
     n++;
-    if(p.getAttribute('data-mydes') === 'collection' || p.getAttribute('data-mydes') === 'grid'){
-      for(var q=0; q<k; q++){
-        var c0 = p.children[q];
-        if(!c0.hasAttribute('data-mydes') && isUnitLike(c0)){
-          c0.setAttribute('data-mydes', 'card');
-          normalizeUnitInternals(c0);
-        }
-      }
+    if(p.getAttribute('data-mydes')==='grid'){
+      for(var q=0;q<k;q++){var c0=p.children[q];if(!c0.hasAttribute('data-mydes')&&cardLike(c0)){c0.setAttribute('data-mydes','card');decorate(c0);}}
       continue;
     }
-    if(p.closest('nav,footer,header,#__mydes_backdrop,[data-mydes="nav"],[data-mydes="footer"],[data-mydes="header"]')) continue;
-    if(p.querySelector('[data-mydes="item"],[data-mydes="card"]')) continue;
-
-    var groups = {}, best = null;
-    for(var j=0; j<k; j++){
-      var s = sig(p.children[j]);
-      (groups[s] = groups[s] || []).push(p.children[j]);
-    }
-    for(var g in groups){
-      if(!best || groups[g].length > best.length) best = groups[g];
-    }
-    if(!best || best.length < 2 || best.length < k * 0.45) continue;
-    var units = best.filter(isUnitLike);
-    if(units.length < 2 || units.length < best.length * 0.55) continue;
-
-    p.setAttribute('data-mydes', 'grid');
-    p.setAttribute('data-m-size', units.length <= 8 ? 's' : 'l');
-    units.forEach(function(u){
-      u.setAttribute('data-mydes', 'card');
-      normalizeUnitInternals(u);
-    });
+    if(p.closest('nav,footer,header,#__mydes_hud,#__mydes_backdrop,[data-mydes="nav"],[data-mydes="footer"],[data-mydes="header"]'))continue;
+    if(p.querySelector('[data-mydes="card"]'))continue;
+    var groups={},best=null,j;
+    for(j=0;j<k;j++){var s=sig(p.children[j]);(groups[s]=groups[s]||[]).push(p.children[j]);}
+    for(var g in groups){if(!best||groups[g].length>best.length)best=groups[g];}
+    if(!best||best.length<2||best.length<k*0.55)continue;
+    var cards=best.filter(cardLike);
+    if(cards.length<2||cards.length<best.length*0.65)continue;
+    p.setAttribute('data-mydes','grid');
+    p.setAttribute('data-m-size',cards.length<=8?'s':'l');
+    cards.forEach(function(c){c.setAttribute('data-mydes','card');decorate(c);});
   }
 }
-
-function markPricesAndMeta(){
-  var l = document.querySelectorAll('span,div,p,strong,b,em,ins,bdi,time'), n = 0;
-  for(var i=0; i<l.length && n<400; i++){
-    var e = l[i];
-    if(e.closest('#__mydes_backdrop,.__mydes_deco')) continue;
-    if(e.children.length > 2 || e.hasAttribute('data-mydes')) continue;
-    var t = (e.textContent||'').trim();
-    if(t.length > 24 || t.length < 2) continue;
-    if(PRICE.test(t)){ e.setAttribute('data-mydes','price'); n++; }
-  }
-}
-
-function clampOutOfBoundsElements() {
-  var vw = document.documentElement.clientWidth || window.innerWidth;
-  if(vw <= 0 || !document.body) return;
-
-  // 1. Any grid child that contains multiple side-by-side items (or whose inner items are crushed < 110px wide)
-  // must span the full width of the parent grid (grid-column: 1 / -1)
-  var gridChildren = document.querySelectorAll('[data-mydes="grid"] > *, lazy-list > *');
-  for(var c=0; c<gridChildren.length && c<120; c++) {
-    var child = gridChildren[c];
-    var subCards = child.querySelectorAll('[data-mydes="card"], [data-mydes="item"], a[href] img');
-    if(subCards.length >= 2) {
-      setProp(child, 'grid-column', '1 / -1');
-      setProp(child, 'width', '100%');
-      setProp(child, 'max-width', '100%');
-    }
-  }
-
-  // 2. If any text heading is crushed narrower than 90px (causing 2-letter vertical wrapping),
-  // force its ancestor grid container back to 1 column or span the item full-width
-  var headings = document.querySelectorAll('h1, h2, h3, [data-mydes="heading"], [data-mydes="title"]');
-  for(var h=0; h<headings.length && h<80; h++) {
-    var hr = headings[h].getBoundingClientRect();
-    if(hr.width > 0 && hr.width < 95 && hr.height > hr.width * 1.8) {
-      var cardAnc = headings[h].closest('[data-mydes="card"], [data-mydes="item"]') || headings[h].parentElement;
-      if(cardAnc) {
-        setProp(cardAnc, 'grid-column', '1 / -1');
-        setProp(cardAnc, 'width', '100%');
-      }
-    }
-  }
-
-  var grids = document.querySelectorAll('[data-mydes="grid"]');
-  for(var g=0; g<grids.length; g++) {
-    var grid = grids[g];
-    var gr = grid.getBoundingClientRect();
-    var gcs = getComputedStyle(grid);
-    if(gr.right > vw + 2 || gr.left < -2 || grid.scrollWidth > vw + 2) {
-      setProp(grid, 'width', '100%');
-      setProp(grid, 'max-width', '100%');
-      setProp(grid, 'margin-left', '0px');
-      setProp(grid, 'margin-right', '0px');
-      setProp(grid, 'padding-left', '6px');
-      setProp(grid, 'padding-right', '6px');
-      setProp(grid, 'box-sizing', 'border-box');
-      if(gcs.display.indexOf('grid') >= 0) {
-        var cols = (gcs.gridTemplateColumns || '').split(/\s+/).filter(Boolean).length;
-        if(cols >= 2) {
-          var safeCols = vw < 340 ? 1 : cols;
-          setProp(grid, 'grid-template-columns', 'repeat(' + safeCols + ', minmax(0, 1fr))');
-          setProp(grid, 'gap', '8px');
-        }
-      }
-    }
-  }
-
-  var items = document.querySelectorAll('[data-mydes="card"], [data-mydes="item"], [data-mydes="header"], [data-mydes="search"]');
-  for(var i=0; i<items.length && i<200; i++) {
-    var el = items[i];
-    var r = el.getBoundingClientRect();
-    if(r.width <= 0) continue;
-    if(r.right > vw + 2 || r.left < -2) {
-      setProp(el, 'max-width', '100%');
-      setProp(el, 'min-width', '0px');
-      setProp(el, 'margin-left', '0px');
-      setProp(el, 'margin-right', '0px');
-      setProp(el, 'box-sizing', 'border-box');
-      var p = el.parentElement;
-      if(p && p !== document.body) {
-        var pcs = getComputedStyle(p);
-        if(pcs.display.indexOf('grid') >= 0) {
-          var pCols = (pcs.gridTemplateColumns || '').split(/\s+/).filter(Boolean).length;
-          if(pCols >= 2) {
-            setProp(p, 'grid-template-columns', 'repeat(' + (vw < 340 ? 1 : 2) + ', minmax(0, 1fr))');
-            setProp(p, 'width', '100%');
-            setProp(p, 'max-width', '100%');
-            setProp(p, 'box-sizing', 'border-box');
-          }
-        }
-      }
-    }
+function markPrices(){
+  var l=document.querySelectorAll('span,div,p,strong,b,em,ins,bdi,.a-price,.a-offscreen'),n=0;
+  for(var i=0;i<l.length&&n<400;i++){
+    var e=l[i];
+    if(e.closest('#__mydes_hud,#__mydes_backdrop,.__mydes_deco'))continue;
+    if(e.children.length>2||e.hasAttribute('data-mydes'))continue;
+    var t=(e.textContent||'').trim();
+    if(t.length>24)continue;
+    if(PRICE.test(t)){e.setAttribute('data-mydes','price');n++;}
   }
 }
 
 function retag(){
-  if(!document.body) return;
-  var t0 = performance.now();
-  each('header,[role="banner"]', function(e){ if(!inContent(e)) put(e,'header'); });
-  each('nav,[role="navigation"]', function(e){ put(e,'nav'); });
-  each('footer,[role="contentinfo"]', function(e){ if(!inContent(e)) put(e,'footer'); });
-  each('main,[role="main"],article', function(e){ putNew(e,'main'); });
-  each('aside,[role="complementary"]', function(e){ putNew(e,'aside'); });
-  each('form[role="search"],input[type="search"]', function(e){
-    var f = e.tagName==='FORM' ? e : (e.closest('form,[role="search"]') || e.parentElement);
-    if(f) putNew(f,'search');
+  if(!document.body)return;
+  var t0=performance.now();
+  each('header,[role="banner"],#navbar,#nav-main',function(e){if(!inContent(e))put(e,'header');});
+  each('nav,[role="navigation"],#nav-xshop',function(e){put(e,'nav');});
+  each('footer,[role="contentinfo"],#navFooter',function(e){if(!inContent(e))put(e,'footer');});
+  each('main,[role="main"],#pageContent,#search',function(e){put(e,'main');});
+  each('aside,[role="complementary"]',function(e){putNew(e,'aside');});
+  each('form[role="search"],form[name="site-search"],input[type="search"],input[name="q"],input[name="k"]',function(e){
+    var f=e.tagName==='FORM'?e:e.closest('form');
+    if(f)putNew(f,'search');
   });
-
-  if(performance.now() - t0 < 45) findCollections();
-
-  each('h1', function(e){ if(!e.closest('.__mydes_deco')){ putNew(e,'title'); e.setAttribute('data-mydes-clamped','true'); } });
-  each('h2,h3,h4', function(e){ if(!e.closest('.__mydes_deco')){ putNew(e,'heading'); e.setAttribute('data-mydes-clamped','true'); } });
-  each('button,input[type="submit"],input[type="button"],[role="button"]', function(e){
-    if(!e.closest('.__mydes_deco')) putNew(e,'btn');
+  if(performance.now()-t0<35)findGrids();
+  each('[data-component-type="s-search-result"],[data-asin]:not([data-asin=""]),article,ytm-media-item,ytm-video-with-context-renderer',function(e){
+    if(!e.closest('#__mydes_hud,#__mydes_backdrop,nav,header,footer') && cardLike(e)){
+      putNew(e,'card');
+      if(e.parentElement && !e.parentElement.hasAttribute('data-mydes')) putNew(e.parentElement,'grid');
+      decorate(e);
+    }
   });
-  each('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]),textarea,select', function(e){
-    if(!e.closest('.__mydes_deco')) putNew(e,'field');
+  // Mark multi-item shelves/carousels so they span full width if their parent becomes a CSS grid
+  each('[data-mydes="grid"] > *, lazy-list > *, main > *', function(e){
+    if(e.querySelectorAll('img, video').length >= 3) e.setAttribute('data-mydes-shelf', 'true');
   });
-  each('img,video,picture', function(e){ if(!e.closest('#__mydes_backdrop,.__mydes_deco')) putNew(e,'media'); });
-  markPricesAndMeta();
-  clampOutOfBoundsElements();
+  each('h1',function(e){if(!e.closest('#__mydes_hud,.__mydes_deco'))putNew(e,'title');});
+  each('h2,h3,h4',function(e){if(!e.closest('#__mydes_hud,.__mydes_deco'))putNew(e,'heading');});
+  each('button,input[type="submit"],input[type="button"],[role="button"],a[class*="btn"],a[class*="button"],.a-button',function(e){
+    if(!e.closest('#__mydes_hud,.__mydes_deco'))putNew(e,'btn');
+  });
+  each('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]),textarea,select',function(e){
+    if(!e.closest('#__mydes_hud,.__mydes_deco'))putNew(e,'field');
+  });
+  each('img',function(e){if(!e.closest('#__mydes_hud,#__mydes_backdrop,.__mydes_deco'))putNew(e,'media');});
+  markPrices();
 }
 
-/* ---------- 5. Infinite Scroll & Resize Keeper ---------- */
-function setupLifecycleKeepers() {
+/* ---------- 5. Infinite Scroll Keeper ---------- */
+function setupInfiniteScrollKeeper() {
   var lastKick = 0;
   function checkBottom() {
     var now = Date.now();
@@ -1019,25 +922,13 @@ function setupLifecycleKeepers() {
     var docHeight = Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0);
     if(docHeight - scrollPos < 450) {
       lastKick = now;
-      var sentinels = document.querySelectorAll('[data-mydes-sentinel="true"], [class*="continuation"], [class*="spinner"], [class*="load-more"]');
-      for(var i=0; i<sentinels.length; i++) {
-        var s = sentinels[i];
-        s.style.setProperty('display', 'block', 'important');
-        s.style.setProperty('min-height', '28px', 'important');
-      }
       window.dispatchEvent(new Event('scroll', {bubbles: true}));
       window.dispatchEvent(new Event('resize', {bubbles: true}));
     }
   }
-  function onResize() {
-    updateViewportVars();
-    clampOutOfBoundsElements();
-  }
   window.addEventListener('scroll', checkBottom, {passive: true});
-  window.addEventListener('resize', onResize, {passive: true});
   cleanupFns.push(function() {
     window.removeEventListener('scroll', checkBottom);
-    window.removeEventListener('resize', onResize);
   });
 }
 
@@ -1054,21 +945,19 @@ function summary(){
       samples[r]=cls+(txt?' ("'+txt+'")':'');
     }
   });
-  var vw = document.documentElement.clientWidth || innerWidth;
-  var vh = document.documentElement.clientHeight || innerHeight;
   return JSON.stringify({
     url:location.href,
     host:location.hostname,
     title:(document.title||'').slice(0,80),
-    viewport:{w:vw,h:vh},
+    viewport:{w:innerWidth,h:innerHeight},
     roleCounts:counts,
     roleSamples:samples
   });
 }
 
-/* ---------- 7. Surface Remapper & Contrast Guard ---------- */
+/* ---------- 7. Surface Remapper & Contrast Guard (V4 Proven Engine) ---------- */
 var SKIPTAG=/^(SCRIPT|STYLE|NOSCRIPT|IMG|SVG|PATH|VIDEO|CANVAS|IFRAME|PICTURE|INPUT|TEXTAREA|SELECT|OPTION|BR|HR|META|LINK|TITLE|HEAD|SOURCE|TEMPLATE|BUTTON)$/;
-var SURFACE_ROLE=/^(card|item|header|nav|footer|hero|aside)$/;
+var SURFACE_ROLE=/^(card|header|nav|footer|hero|aside)$/;
 function rgba(s){
   var m=/rgba?\(([^)]+)\)/.exec(s||'');
   if(!m)return null;
@@ -1090,7 +979,7 @@ function undoAll(){
     var c=changes[i];
     try{if(c.v)c.el.style.setProperty(c.p,c.v,c.pr);else c.el.style.removeProperty(c.p);}catch(e){}
   }
-  changes=[];EB=new WeakMap();done=new WeakSet();unitDecorators=[];
+  changes=[];EB=new WeakMap();done=new WeakSet();unitDecorators=[];ornamentRules=[];
   var decos = document.querySelectorAll('.__mydes_deco');
   for(var d=0; d<decos.length; d++){ try{decos[d].remove();}catch(e){} }
   var marked = document.querySelectorAll('[data-m-deco]');
@@ -1121,20 +1010,10 @@ function pickInk(bg){
 function handle(el){
   if(done.has(el))return;
   done.add(el);
-  if(el.closest && el.closest('#__mydes_backdrop,.__mydes_deco'))return;
+  if(el.closest && el.closest('#__mydes_hud,#__mydes_backdrop,.__mydes_deco'))return;
   var tag=el.tagName.toUpperCase();
   if(SKIPTAG.test(tag))return;
   var cs=getComputedStyle(el);
-
-  if(tag!=='BODY' && tag!=='HTML' && (cs.overflowY==='hidden' || cs.overflowY==='auto' || cs.overflowY==='scroll')) {
-    var rr=el.getBoundingClientRect();
-    if(rr.width>=innerWidth*0.9 && rr.height>=innerHeight*0.8 && cs.position!=='fixed') {
-      setProp(el,'overflow-y','visible');
-      setProp(el,'height','auto');
-      setProp(el,'max-height','none');
-    }
-  }
-
   if(cfg.backdropHtml && tag!=='BODY' && tag!=='HTML' && !el.hasAttribute('data-mydes') && cs.position!=='fixed' && !hasBgImage(cs)){
     var wb=rgba(cs.backgroundColor);
     if(wb&&wb.a>=0.5){
@@ -1174,7 +1053,7 @@ function drain(){
     tagDirty=false;
     try{retag();mountLayers();}catch(e){}
     lastTag=performance.now();
-    tagDelay=Math.min(800,Math.max(100,(lastTag-t0)*4));
+    tagDelay=Math.min(1200,Math.max(120,(lastTag-t0)*6));
   }
   while(jobs.length&&performance.now()-t0<12){
     var j=jobs[0];
@@ -1182,7 +1061,7 @@ function drain(){
     while(j.i<j.list.length&&performance.now()-t0<12){try{handle(j.list[j.i]);}catch(e){}j.i++;}
     if(j.i>=j.list.length)jobs.shift();
   }
-  if(jobs.length||tagDirty)setTimeout(drain,20);else{draining=false;try{clampOutOfBoundsElements();}catch(e){}}
+  if(jobs.length||tagDirty)setTimeout(drain,20);else draining=false;
 }
 
 function observe(){
@@ -1194,7 +1073,7 @@ function observe(){
       for(var i=0;i<muts.length&&n<120;i++){
         var a=muts[i].addedNodes;
         for(var j=0;j<a.length;j++){
-          if(a[j].nodeType===1 && a[j].id!=='__mydes_backdrop' && !a[j].classList.contains('__mydes_deco')){
+          if(a[j].nodeType===1 && a[j].id!=='__mydes_backdrop' && a[j].id!=='__mydes_hud' && !a[j].classList.contains('__mydes_deco')){
             enqueue(a[j]);n++;
           }
         }
@@ -1211,7 +1090,7 @@ function start(){
     if(!document.body)return;
     retag();
     mountLayers();
-    setupLifecycleKeepers();
+    setupInfiniteScrollKeeper();
     enqueue(document.body);
     observe();
   };
@@ -1233,6 +1112,7 @@ window.__mydes={
     if(mo)mo.disconnect();
     var s=document.getElementById('__mydes_style');if(s)s.remove();
     var b=document.getElementById('__mydes_backdrop');if(b)b.remove();
+    var h=document.getElementById('__mydes_hud');if(h)h.remove();
   }
 };
 start();
@@ -1247,6 +1127,10 @@ start();
         return "(function(BP){$CORE\n})($bpJson);"
     }
 
+    /**
+     * Lightweight tagger + outline extractor script that discovers both standard elements and custom web
+     * components (e.g. ytm-media-item, article) along with their parent feed container selector.
+     */
     const val OUTLINE_PROBE_JS = """
         (function(){
           function getSel(e){
@@ -1258,108 +1142,39 @@ start();
             return s;
           }
 
-          var vw = document.documentElement.clientWidth || innerWidth;
-          var vh = document.documentElement.clientHeight || innerHeight;
-
-          // 1. Detect full-screen opaque wrappers that would block backdrop visibility
-          var opaqueWrappers = [];
-          var bodyEls = document.body ? document.body.querySelectorAll('*:not(script):not(style):not(noscript):not(svg):not(path)') : [];
-          for (var w = 0; w < bodyEls.length && opaqueWrappers.length < 8; w++) {
-            var el = bodyEls[w];
-            var r = el.getBoundingClientRect();
-            if (r.width >= vw * 0.85 && r.height >= vh * 0.75) {
-              var bg = getComputedStyle(el).backgroundColor;
-              var m = /rgba?\(([^)]+)\)/.exec(bg || '');
-              if (m) {
-                var p = m[1].split(/[ ,\/]+/).filter(Boolean).map(parseFloat);
-                if (p.length >= 3 && (p.length === 3 || p[3] >= 0.7)) {
-                  var selStr = getSel(el);
-                  if (selStr && opaqueWrappers.indexOf(selStr) === -1) opaqueWrappers.push(selStr);
-                }
-              }
-            }
+          var counts={};
+          ['header','nav','main','aside','footer','form','button','input','img','article','h1','h2','h3'].forEach(function(t){
+            counts[t]=document.querySelectorAll(t).length;
+          });
+          var groups={};
+          var cand=document.querySelectorAll('ytm-media-item,ytm-video-with-context-renderer,article,a,li,section,div');
+          for(var i=0;i<cand.length&&i<4000;i++){
+            var e=cand[i];
+            if(e.closest('#__mydes_hud,#__mydes_backdrop,.__mydes_deco'))continue;
+            if(e.children.length<1||e.children.length>16||!e.querySelector('img,video'))continue;
+            var t=(e.textContent||'').replace(/\s+/g,' ').trim();
+            if(t.length<8||t.length>300)continue;
+            var k=getSel(e);
+            if(!k)continue;
+            var p=e.parentElement;
+            var parentSel=p?getSel(p):'';
+            var g=groups[k]||(groups[k]={sel:k,parentSel:parentSel,n:0,sample:t.slice(0,40)});
+            g.n++;
           }
-
-          // 2. Discover repeating structures and inspect internal child box-models
-          var groups = {};
-          for (var i = 0; i < bodyEls.length && i < 3500; i++) {
-            var e = bodyEls[i];
-            if (e.closest('#__mydes_backdrop,nav,header,footer,.__mydes_deco')) continue;
-            if (e.children.length < 1 || e.children.length > 25) continue;
-
-            var r = e.getBoundingClientRect();
-            if (r.width < 60 || r.height < 24) continue;
-
-            var t = (e.textContent || '').replace(/\s+/g,' ').trim();
-            if (t.length < 10 || t.length > 1000) continue;
-
-            var hasMedia = !!e.querySelector('img,video,picture,canvas');
-            if (!hasMedia && e.parentElement) {
-              var pr = e.parentElement.getBoundingClientRect();
-              if (r.width < pr.width * 0.72 && e.parentElement.querySelector('img,video,picture')) continue;
-            }
-
-            var p = e.parentElement;
-            if (!p || p === document.body) continue;
-            var k = getSel(e);
-            if (!k) continue;
-
-            var parentSel = getSel(p);
-            var cs = getComputedStyle(e);
-            var pcs = getComputedStyle(p);
-            var key = parentSel + ' > ' + k;
-
-            if (!groups[key]) {
-              var childrenInfo = [];
-              for (var c = 0; c < e.children.length && c < 5; c++) {
-                var ch = e.children[c];
-                var cr = ch.getBoundingClientRect();
-                var ccs = getComputedStyle(ch);
-                childrenInfo.push({
-                  sel: getSel(ch),
-                  w: Math.round(cr.width),
-                  h: Math.round(cr.height),
-                  display: ccs.display,
-                  isMedia: !!ch.matches('img,video,picture') || !!ch.querySelector('img,video,picture')
-                });
-              }
-
-              groups[key] = {
-                sel: k,
-                parentSel: parentSel,
-                n: 0,
-                hasMedia: hasMedia,
-                itemDisplay: cs.display + (cs.flexDirection && cs.display.indexOf('flex')>=0 ? ' ('+cs.flexDirection+')' : ''),
-                parentDisplay: pcs.display,
-                widthPct: Math.round((r.width / Math.max(1, vw)) * 100),
-                sample: t.slice(0, 45),
-                childBoxModels: childrenInfo
-              };
-            }
-            groups[key].n++;
-          }
-
-          var rep = Object.keys(groups).map(function(k){ return groups[k]; })
-            .filter(function(g){ return g.n >= 3; })
-            .sort(function(x,y){ return (y.hasMedia - x.hasMedia) || (y.n - x.n); })
-            .slice(0, 5);
-
-          var heads = [].slice.call(document.querySelectorAll('h1,h2,h3,[role="heading"]')).slice(0, 6)
-            .map(function(h){ return (h.textContent || '').replace(/\s+/g,' ').trim().slice(0, 45); });
-
-          var o = {
-            url: location.href,
-            host: location.hostname,
-            title: (document.title||'').slice(0, 80),
-            viewport: { w: vw, h: vh },
-            opaqueWrappers: opaqueWrappers,
-            repeatedStructures: rep,
-            headings: heads
-          };
+          var rep=Object.keys(groups).map(function(k){return groups[k];}).filter(function(g){return g.n>=3;}).sort(function(x,y){return y.n-x.n;}).slice(0,5);
+          var heads=[].slice.call(document.querySelectorAll('h1,h2,h3')).slice(0,6).map(function(h){return (h.textContent||'').trim().slice(0,40);});
+          var o;
+          if(window.__mydes && window.__mydes.outline){o=JSON.parse(window.__mydes.outline());}
+          else{o={url:location.href,host:location.hostname,title:(document.title||'').slice(0,80),viewport:{w:innerWidth,h:innerHeight},counts:counts};}
+          o.repeatedItems=rep;
+          o.headings=heads;
           return o;
         })();
     """
 
+    /**
+     * Audits contrast, horizontal overflow, squished text columns, and unfilled media containers on the live page.
+     */
     const val VISUAL_AND_DOM_AUDIT_JS = """
         (function(){
           try{
@@ -1370,60 +1185,24 @@ start();
             function R(a,b){var x=L(a),y=L(b);if(x<y){var t=x;x=y;y=t;}return (x+0.05)/(y+0.05);}
             function mix(t,b){var a=t.a;return {r:t.r*a+b.r*(1-a),g:t.g*a+b.g*(1-a),b:t.b*a+b.b*(1-a),a:1};}
             function hx(c){function h(v){v=Math.max(0,Math.min(255,Math.round(v)));return (v<16?'0':'')+v.toString(16);}return '#'+h(c.r)+h(c.g)+h(c.b);}
-            function sel(e){
-              if(!e || e===document.body || e===document.documentElement) return '';
-              var s = e.tagName.toLowerCase();
-              var d = e.getAttribute('data-mydes');
-              if(d) s += '[data-mydes="'+d+'"]';
-              var cl = (e.className && typeof e.className === 'string') ? e.className.trim().split(/\s+/).filter(Boolean) : [];
-              if(cl.length) s += '.' + cl.slice(0,2).map(function(c){ return window.CSS&&CSS.escape?CSS.escape(c):c; }).join('.');
-              return s;
-            }
-
-            // 1. Audit whether backdrop is occluded by opaque elements in front of it
-            var occludingWrappers = [];
-            var stack = document.elementsFromPoint(vw / 2, vh / 2);
-            for(var s=0; s<stack.length; s++){
-              var elStack = stack[s];
-              if(elStack.id === '__mydes_backdrop' || elStack.tagName === 'HTML' || elStack.tagName === 'BODY') continue;
-              var bg = P(getComputedStyle(elStack).backgroundColor);
-              if(bg && bg.a >= 0.75) {
-                var rStack = elStack.getBoundingClientRect();
-                if(rStack.width >= vw * 0.8 && rStack.height >= vh * 0.6) {
-                  occludingWrappers.push(sel(elStack));
-                }
+            function sel(e){var s=e.tagName.toLowerCase();var d=e.getAttribute('data-mydes');if(d)s+='[data-mydes="'+d+'"]';var cl=e.classList;for(var i=0;i<cl.length&&i<2;i++){if(cl[i]!=='__mydes_deco')s+='.'+(window.CSS&&CSS.escape?CSS.escape(cl[i]):cl[i]);}return s;}
+            var hasBackdrop=!!document.getElementById('__mydes_backdrop');
+            var rootBg=P(getComputedStyle(document.documentElement).backgroundColor)||{r:255,g:255,b:255,a:1};
+            if(rootBg.a<1)rootBg=mix(rootBg,{r:255,g:255,b:255,a:1});
+            function bgOf(el){
+              var layers=[],opaque=false;
+              for(var n=el;n&&n.nodeType===1;n=n.parentElement){
+                var cs=getComputedStyle(n);
+                if(cs.backgroundImage&&cs.backgroundImage!=='none')return null;
+                var c=P(cs.backgroundColor);
+                if(c&&c.a>0){layers.push(c);if(c.a>=0.99){opaque=true;break;}}
               }
+              if(!opaque&&hasBackdrop)return null;
+              var base=rootBg;
+              for(var i=layers.length-1;i>=0;i--)base=mix(layers[i],base);
+              return base;
             }
-
-            // 2. Audit injected ornaments: check if crushed, zero-size, or missing
-            var brokenOrnaments = [];
-            var decos = document.querySelectorAll('.__mydes_deco, [data-m-deco]');
-            for(var d=0; d<decos.length && d<10; d++){
-              var decoEl = decos[d];
-              var dr = decoEl.getBoundingClientRect();
-              var dcs = getComputedStyle(decoEl);
-              if(dr.width < 4 || dr.height < 4 || dcs.display === 'none' || dcs.visibility === 'hidden') {
-                brokenOrnaments.push({ parent: sel(decoEl.parentElement), issue: 'zero_size_or_hidden', w: Math.round(dr.width), h: Math.round(dr.height) });
-              }
-            }
-
-            // 3. Audit unfilled media containers inside cards (e.g. 160px image inside 350px column card)
-            var unfilledMedia = [];
-            var cards = document.querySelectorAll('[data-mydes="card"], [data-mydes="item"]');
-            for(var c=0; c<cards.length && c<8; c++){
-              var card = cards[c];
-              var cardW = card.getBoundingClientRect().width;
-              var media = card.querySelector('img, video, ytm-thumbnail-cover, .media-item-thumbnail-container');
-              if(media && cardW > 140) {
-                var mediaW = media.getBoundingClientRect().width;
-                if(mediaW < cardW * 0.75) {
-                  unfilledMedia.push({ card: sel(card), media: sel(media), cardWidth: Math.round(cardW), mediaWidth: Math.round(mediaW) });
-                }
-              }
-            }
-
-            // 4. Contrast and Right-Edge Overflow Checks
-            var found={}, clipped=[], checked=0, unknown=0, guard=0, node;
+            var found={},squished=[],checked=0,unknown=0,guard=0,node;
             var seen=new WeakSet();
             var tw=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null);
             var limitY=vh*2.5;
@@ -1432,36 +1211,30 @@ start();
               var el=node.parentElement;
               if(!el||seen.has(el))continue;
               seen.add(el);
-              if(el.closest('#__mydes_backdrop,.__mydes_deco,script,style,noscript'))continue;
+              if(el.closest('#__mydes_hud,#__mydes_backdrop,.__mydes_deco,script,style,noscript'))continue;
               var r=el.getBoundingClientRect();
               if(r.width<4||r.height<4||r.bottom<0||r.top>limitY)continue;
-              if((r.right > vw + 2 || r.left < -2) && clipped.length < 6) {
-                clipped.push({sel: sel(el), overflowPx: Math.round(Math.max(r.right - vw, -r.left))});
+              if(r.width < 85 && r.height > r.width * 1.8 && (node.nodeValue||'').trim().length > 12 && squished.length < 6) {
+                squished.push({sel: sel(el), w: Math.round(r.width), h: Math.round(r.height)});
               }
               var cs2=getComputedStyle(el);
               if(cs2.visibility==='hidden'||cs2.display==='none'||parseFloat(cs2.opacity)===0)continue;
               var fg=P(cs2.color);
               if(!fg||fg.a===0)continue;
-              var bg2=P(cs2.backgroundColor);
-              if(!bg2 || bg2.a < 0.5) continue;
+              var bg=bgOf(el);
+              if(!bg){unknown++;continue;}
+              var fgc=fg.a<1?mix(fg,bg):fg;
               checked++;
-              var ratio=R(fg,bg2);
+              var ratio=R(fgc,bg);
               if(ratio<3){
-                var key=sel(el)+'|'+hx(fg)+'|'+hx(bg2);
-                var f=found[key]||(found[key]={sel:sel(el),text:(node.nodeValue||'').trim().slice(0,28),fg:hx(fg),bg:hx(bg2),ratio:Math.round(ratio*100)/100,count:0});
+                var key=sel(el)+'|'+hx(fgc)+'|'+hx(bg);
+                var f=found[key]||(found[key]={sel:sel(el),text:(node.nodeValue||'').trim().slice(0,28),fg:hx(fgc),bg:hx(bg),ratio:Math.round(ratio*100)/100,count:0});
                 f.count++;
               }
             }
-
-            return {
-              viewport: { w: vw, h: vh },
-              backdropOccludedBy: occludingWrappers,
-              brokenOrnaments: brokenOrnaments,
-              unfilledMediaContainers: unfilledMedia,
-              clippedElements: clipped,
-              overflowX: document.documentElement.scrollWidth - vw,
-              contrastIssues: Object.keys(found).map(function(k){return found[k];}).slice(0, 8)
-            };
+            var worst=Object.keys(found).map(function(k){return found[k];}).sort(function(a,b){return a.ratio-b.ratio;});
+            var failing=0;worst.forEach(function(w){failing+=w.count;});
+            return {checked:checked,unknownBg:unknown,failing:failing,overflowX:document.documentElement.scrollWidth-vw,squishedColumns:squished,worst:worst.slice(0,10)};
           }catch(e){return {error:String(e)};}
         })();
     """
@@ -1495,11 +1268,11 @@ suspend fun WebView.evaluateJsSuspend(script: String): String? = withContext(Dis
 // ───────────────────── Blueprint Cache ─────────────────────
 
 class ThemeStore(context: Context) {
-    private val prefs = context.applicationContext.getSharedPreferences("mydes_blueprints_v10", Context.MODE_PRIVATE)
+    private val prefs = context.applicationContext.getSharedPreferences("mydes_blueprints_v11", Context.MODE_PRIVATE)
     private fun key(prompt: String, domain: String) =
-        "bp10|" + sha1Hex("${domain.trim().lowercase(Locale.US)}|${prompt.trim().lowercase(Locale.US)}")
+        "bp11|" + sha1Hex("${domain.trim().lowercase(Locale.US)}|${prompt.trim().lowercase(Locale.US)}")
     private fun lastPromptKey(prompt: String) =
-        "bp10_last|" + sha1Hex(prompt.trim().lowercase(Locale.US))
+        "bp11_last|" + sha1Hex(prompt.trim().lowercase(Locale.US))
 
     fun get(prompt: String, domain: String = "*"): UIBlueprint? {
         val exact = prefs.getString(key(prompt, domain), null)?.let { UIBlueprint.parse(it, prompt) }
@@ -1537,7 +1310,7 @@ class GeminiStylerService {
         /** Fast model for Pass 1 (Art Director creative concept brief) */
         const val CONCEPT_MODEL = "gemini-3.5-flash-lite"
 
-        /** High-capability coding model for Pass 2 (Main CSS3/SVG/JS synthesis) */
+        /** Synthesis model for Pass 2 (Main CSS3/SVG/JS synthesis) */
         const val SYNTHESIS_MODEL = "gemini-3.8-flash"
 
         /** Fast, quota-friendly model for Pass 3 (Visual QA & CSS review fix patch) */
@@ -1663,9 +1436,7 @@ class GeminiStylerService {
         onThinkingUpdate = onThinkingUpdate
     )
 
-    // ───── Pass 1: Concept Pass (Art Director using gemini-3.5-flash-lite) ─────
-
-    private val LOG_SYSTEM_PROMPT = false
+    // ───── Pass 1: Concept Pass (Art Director) ─────
 
     private class ConceptBrief(
         val raw: String,
@@ -1715,13 +1486,13 @@ class GeminiStylerService {
         val input = buildString {
             appendLine("USER REQUEST: \"$prompt\"")
             appendLine("TARGET WEBSITE: $websiteName ($websiteUrl)")
-            if (!pageOutlineJson.isNullOrBlank()) appendLine("LIVE DOM TOPOLOGY OUTLINE: $pageOutlineJson")
+            if (!pageOutlineJson.isNullOrBlank()) appendLine("LIVE DOM SEMANTIC OUTLINE: ${pageOutlineJson.take(4_000)}")
             val recent = storeFor(context).recentConcepts()
             if (recent.isNotEmpty()) {
-                appendLine("RECENT DESIGNS ALREADY SHIPPED (do NOT repeat their aesthetic):")
+                appendLine("RECENT DESIGNS ALREADY SHIPPED (name: traits):")
                 recent.forEach { appendLine("- $it") }
             }
-            appendLine("Write the Art Director blueprint JSON now.")
+            appendLine("Write the design brief JSON now.")
         }
         val logInput = buildString {
             appendLine("=== TARGET MODEL ===")
@@ -1735,8 +1506,8 @@ class GeminiStylerService {
             appendLine()
             appendLine("=== GENERATION CONFIG ===")
             appendLine("""{
-  "temperature": 1.05,
-  "topP": 0.95,
+  "temperature": 1.15,
+  "topP": 0.98,
   "maxOutputTokens": 1024,
   "responseMimeType": "application/json"
 }""")
@@ -1751,25 +1522,26 @@ class GeminiStylerService {
                 apiKey,
                 UI_CONCEPT_SYSTEM_PROMPT,
                 listOf(Part(text = input)),
-                1.05f,
-                0.95f,
+                1.15f,
+                0.98f,
                 1024,
                 onThoughtChunk = { chunk ->
                     onThinkingUpdate?.invoke("Pass 1: Concept Brainstorming", chunk, false)
                 }
             )
-            val json = JSONObject(extractJsonObject(raw) ?: throw IllegalStateException("Concept pass returned invalid JSON: ${raw.take(200)}"))
+            val json = JSONObject(extractJsonObject(raw) ?: throw IllegalStateException("no JSON in brief: ${raw.take(200)}"))
             val idea = json.optString("idea", "").trim()
-            if (idea.isBlank()) throw IllegalStateException("Concept brief missing 'idea': ${raw.take(200)}")
+            if (idea.isBlank()) throw IllegalStateException("brief has no idea: ${raw.take(200)}")
 
             val directions = listOf(
-                "idea" to "CONCEPT",
-                "signature" to "SIGNATURE VISUAL & KINETIC MECHANISM",
+                "idea" to "IDEA",
+                "signature" to "SIGNATURE",
                 "palette" to "PALETTE",
-                "type" to "TYPOGRAPHY",
-                "surface" to "SURFACE & MATERIALITY",
-                "style" to "VISUAL ATMOSPHERE",
-                "choreography" to "DOM & INTERACTIVE ENHANCEMENTS"
+                "type" to "TYPE",
+                "surface" to "SURFACE",
+                "layout" to "LAYOUT",
+                "newElements" to "NEW DOM ELEMENTS TO CREATE (SVG/HTML injected via customJs)",
+                "rules" to "RULES"
             ).mapNotNull { (k, label) -> json.optString(k, "").trim().takeIf { it.isNotBlank() }?.let { "$label: $it" } }
             .joinToString("\n")
 
@@ -1787,7 +1559,7 @@ class GeminiStylerService {
         }
     }
 
-    // ───── Pass 2 (Synthesis via gemini-3.8-flash) & Pass 3 (Review via gemini-3.5-flash-lite) ─────
+    // ───── Pass 2 (Synthesis) & Pass 3 (Review) ─────
 
     private suspend fun synthesizeBlueprint(
         context: Context,
@@ -1835,9 +1607,9 @@ class GeminiStylerService {
         }
 
         if (!isReview) {
-            onThinkingUpdate?.invoke("Pass 2: Generative Synthesis ($activeModel)", "Analyzing layout and preparing CSS/backdrop...", false)
+            onThinkingUpdate?.invoke("Pass 2: Generative Synthesis ($activeModel)", "Building CSS, SVG backdrop, and DOM ornaments...", false)
         } else {
-            onThinkingUpdate?.invoke("Pass 3: Visual Review & QA ($activeModel)", "Auditing render and preparing CSS patches...", false)
+            onThinkingUpdate?.invoke("Pass 3: Visual Review & QA ($activeModel)", "Auditing live render and preparing fixes...", false)
         }
 
         val userContextText = if (isReview) buildString {
@@ -1846,10 +1618,8 @@ class GeminiStylerService {
             appendLine("TARGET WEBSITE: $websiteName ($websiteUrl)")
             appendLine("INTENDED CONCEPT: ${previous!!.concept}")
             appendLine("PALETTE: bg ${previous.bg}, surface ${previous.surface}, surface2 ${previous.surface2}, text ${previous.fg}, ink ${previous.ink}, accent ${previous.accent}")
-            if (!pageOutlineJson.isNullOrBlank()) appendLine("LIVE DOM TOPOLOGY OUTLINE: $pageOutlineJson")
-            appendLine("MEASURED AUDIT (check overflowX and clippedElements!): ${auditJson?.takeIf { it.isNotBlank() && it != "null" } ?: "not available"}")
-            appendLine("BACKDROP HTML:")
-            appendLine(previous.backdropHtml)
+            if (!pageOutlineJson.isNullOrBlank()) appendLine("LIVE DOM OUTLINE: ${pageOutlineJson.take(2_500)}")
+            appendLine("MEASURED AUDIT (live page, ground truth): ${auditJson?.takeIf { it.isNotBlank() && it != "null" }?.take(3_000) ?: "not available"}")
             appendLine("CURRENT CSS:")
             appendLine(previous.customCss)
             appendLine("CURRENT CUSTOM JS:")
@@ -1860,20 +1630,17 @@ class GeminiStylerService {
             appendLine("USER REQUEST: \"$cleanPrompt\"")
             appendLine("TARGET WEBSITE: $websiteName ($websiteUrl)")
             if (!pageOutlineJson.isNullOrBlank()) {
-                appendLine("LIVE DOM TOPOLOGY OUTLINE (repeatedStructures lists parent container selectors `parentSel` and composite item selectors `sel`):")
-                appendLine(pageOutlineJson)
-            }
-            if (!screenshotBase64.isNullOrBlank()) {
-                appendLine("LIVE SCREENSHOT ATTACHED: A real visual capture of the un-styled webpage layout is attached. Inspect it alongside the DOM outline to see exact element positions, row alignments, fixed headers, side-by-side rows, and opaque wrappers.")
+                appendLine("LIVE DOM SEMANTIC OUTLINE: ${pageOutlineJson.take(6_000)}")
             }
             appendLine()
-            appendLine("CREATIVE CONCEPT FROM THE ART DIRECTOR (you must build every single mechanism here—do NOT take shortcuts):")
+            appendLine("DESIGN DIRECTIONS from the art director (the spec; implement them literally):")
             appendLine(brief!!.raw)
             appendLine("Generate the complete UIBlueprint JSON now.")
         }
 
         val parts = mutableListOf<Part>(Part(text = userContextText))
-        if (!screenshotBase64.isNullOrBlank()) {
+        // Only attach screenshot on the Review Pass so the Synthesis Pass focuses purely on the Art Director spec + DOM outline (like v4)
+        if (isReview && !screenshotBase64.isNullOrBlank()) {
             parts.add(Part(inlineData = InlineData(mimeType = "image/jpeg", data = screenshotBase64)))
         }
 
@@ -1881,11 +1648,11 @@ class GeminiStylerService {
             contents = listOf(Content(parts = parts)),
             systemInstruction = Content(listOf(Part(text = if (isReview) UI_REVIEW_SYSTEM_PROMPT else UI_SYNTHESIS_SYSTEM_PROMPT))),
             generationConfig = GenerationConfig(
-                temperature = if (isReview) 0.2f else 0.8f,
+                temperature = if (isReview) 0.3f else 0.8f,
                 topP = 0.95f,
-                maxOutputTokens = if (isReview) 2048 else 8192,
+                maxOutputTokens = if (isReview) 1536 else 8192,
                 responseMimeType = if (jsonMode) "application/json" else null,
-                thinkingConfig = if (!isReview) ThinkingConfig(thinkingBudget = 2048) else null
+                thinkingConfig = if (!isReview) ThinkingConfig(thinkingBudget = 1024) else null
             )
         )
 
@@ -1902,19 +1669,18 @@ class GeminiStylerService {
             appendLine()
             appendLine("=== GENERATION CONFIG ===")
             appendLine("""{
-  "temperature": ${if (isReview) 0.2f else 0.8f},
+  "temperature": ${if (isReview) 0.3f else 0.8f},
   "topP": 0.95,
-  "maxOutputTokens": ${if (isReview) 2048 else 8192},
-  "responseMimeType": "application/json"${if (!isReview) ",\n  \"thinkingConfig\": { \"thinkingBudget\": 2048 }" else ""}
+  "maxOutputTokens": ${if (isReview) 1536 else 8192},
+  "responseMimeType": "application/json"${if (!isReview) ",\n  \"thinkingConfig\": { \"thinkingBudget\": 1024 }" else ""}
 }""")
             appendLine()
             appendLine("=== USER CONTENT & PROMPT ===")
             append(userContextText)
-            if (!screenshotBase64.isNullOrBlank()) {
+            if (isReview && !screenshotBase64.isNullOrBlank()) {
                 appendLine()
                 appendLine("=== SCREENSHOT ATTACHMENT ===")
                 appendLine("[Attached JPEG screenshot: ${screenshotBase64.length / 1024} KB base64]")
-                appendLine("Preview header: data:image/jpeg;base64,${screenshotBase64.take(160)}...")
             }
         }
 
@@ -1969,100 +1735,102 @@ class GeminiStylerService {
 
     private fun applyReviewPatch(previous: UIBlueprint, raw: String, prompt: String): UIBlueprint {
         val json = try { JSONObject(extractJsonObject(raw) ?: return previous) } catch (_: Exception) { return previous }
-        val fixCss = stripInventedLabels(json.optString("fixCss", "")).trim()
-        val fixJs = json.optString("fixJs", "").trim()
+        val fixCss = stripInventedLabels(json.optString("fixCss", "")).trim().take(3_000)
+        val fixJs = json.optString("fixJs", "").trim().take(2_000)
 
         if (fixCss.isBlank() && fixJs.isBlank()) return previous
 
-        val mergedCss = if (fixCss.isNotBlank()) previous.customCss + "\n/* review patch */\n" + fixCss else previous.customCss
-        val mergedJs = if (fixJs.isNotBlank()) previous.customJs + "\n/* review patch */\ntry {\n" + fixJs + "\n} catch(e){ console.warn('[Review fixJs error]', e); }" else previous.customJs
+        val mergedCss = if (fixCss.isNotBlank()) previous.customCss + "\n/* review */\n" + fixCss else previous.customCss
+        val mergedJs = if (fixJs.isNotBlank()) previous.customJs + "\n/* review */\ntry {\n" + fixJs + "\n} catch(e){}" else previous.customJs
 
-        val mergedJson = JSONObject(previous.toJson())
+        val merged = JSONObject(previous.toJson())
             .put("customCss", mergedCss)
             .put("customJs", mergedJs)
 
-        return UIBlueprint.parse(mergedJson.toString(), prompt)
+        return UIBlueprint.parse(merged.toString(), prompt)
             ?.copy(concept = previous.concept, fingerprint = previous.fingerprint)
             ?: previous
     }
 
-    // ───── System Prompts ─────
+    // ───── System Prompts (V4 Core + Asymmetric Panel Grids + New DOM Elements) ─────
 
     private val UI_REVIEW_SYSTEM_PROMPT = """
-You are the Visual QA Engineer for a generative web browser.
-You receive:
-1. A screenshot of how the redesigned page currently looks.
-2. The intended concept, current CSS, backdrop HTML, and custom JS.
-3. Ground-truth visual measurements from the live DOM.
+You are the QA reviewer of a live website redesign on an Android phone. The design is final and approved: you do NOT redesign anything. You receive the user's request, the palette, the CURRENT CSS/JS, a MEASURED AUDIT taken from the live page (ground truth), and usually a screenshot of how it renders now.
 
-Audit the render for technical defects:
-- Check that text has sufficient contrast against its background.
-- Check that important text or elements are not unintentionally clipped or cut off by container bounds.
-- If backdropHtml was intended to be visible, ensure intermediate full-page wrappers allow it to show through.
+You may ONLY append override CSS in `fixCss` (and optional DOM repair JS in `fixJs`). It is added after the current CSS, so you cannot delete anything. Never undo or tone down the design: keep every transform, shadow, texture, ornament, font, palette colour and the backdrop.
 
-OUTPUT: ONLY one valid JSON object, no markdown fences:
-{
-  "problems": ["list of technical issues found"],
-  "fixCss": "CSS overrides to append, or empty string",
-  "fixJs": "optional JS code to repair, append, or empty string"
-}
+Fix only real defects, in this order:
+1. Squished vertical text columns (`squishedColumns` non-empty or screenshot shows words wrapping every 2-3 letters inside narrow columns): force the affected container or shelf to span all columns (`grid-column: 1 / -1 !important; width: 100% !important; max-width: 100% !important;`) and set `word-break: normal !important; overflow-wrap: break-word !important;`.
+2. Text covering thumbnails: if a styled heading/title box covers more than 30% of a video/image thumbnail (such as on vertical Shorts), force its overlay wrapper to `position: static !important; width: 100% !important;` so the title sits neatly below the thumbnail, or shrink its padding and font-size.
+3. Truncated titles: if titles are cut off after 1-2 words, set `-webkit-line-clamp: unset !important; max-height: none !important; height: auto !important; overflow: visible !important; display: block !important; white-space: normal !important;`.
+4. Unreadable text: the audit lists elements whose text has under 3:1 contrast against what is behind it. Fix each by setting `color` (and `background-color` if needed) using the design's own palette so that it reaches 4.5:1.
+5. Elements clipped, overlapping unintentionally, or horizontal overflow (audit overflowX above 2): fix with width, max-width, overflow, margin or position overrides.
+
+Use selectors of the form `html body <selector>` with !important. Keep fixCss under 1500 characters. If nothing is wrong, return an empty fixCss.
+
+OUTPUT: ONLY one JSON object, no markdown fences:
+{"problems": ["short list of what you found, max 5 items"], "fixCss": "css or empty string", "fixJs": "optional js or empty string"}
 """.trimIndent()
 
     private val UI_CONCEPT_SYSTEM_PROMPT = """
-You are the Art Director for a generative web browser. You create creative artistic concepts to transform websites based on the user's prompt.
-You have complete artistic freedom to imagine any visual aesthetic, mood, or experience that reflects and visually enhances the user's request.
+You are the art director of a browser that redesigns any website around the user's imagination. You write no code. You invent one specific, original design idea; a separate builder turns your directions into CSS, a backdrop, and newly created SVG/HTML DOM ornaments on top of the live page.
 
-Provide your creative concept across these dimensions:
-1. `idea`: A concise summary of the visual concept.
-2. `signature`: The key visual, kinetic, or artistic centerpiece of this concept.
-3. `palette`: Color roles (bg, surface, surface2, fg, accent).
-4. `type`: Typography choices and styling.
-5. `surface`: Materiality, textures, borders, or styling of elements.
-6. `style`: Overall visual atmosphere.
-7. `choreography`: Interactive, motion, or DOM enhancements.
+THINK, silently: What does the user really want to see or feel? What is this site's real content made of (the outline lists real repeated items)? What are three genuinely different worlds it could live in? Pick the least obvious one that still fully honours the request and keeps the site usable, and give it one memorable signature visual. Reject your first idea, anything a generic "make it look <theme>" would produce by default, and anything resembling RECENT DESIGNS (do not reuse their type voice, palette family, shape language or layout idea unless the request leaves no alternative). For accessibility or comfort requests clarity wins over spectacle, but still give the design an identity.
 
-OUTPUT: ONLY one valid JSON object, no markdown fences:
+BUILDER CAPABILITIES: it restyles real page elements with CSS, adds a full-screen SVG/Canvas backdrop layer, and runs JS (`MydesBridge.decorateUnits` and `MydesBridge.injectOrnament`) to create and attach brand-new thematic SVG/HTML elements onto cards and headers. The site's own text, links, search and items must stay readable and usable on a phone. No unrequested bottom docks or generic floating button bars.
+
+OUTPUT: ONLY one JSON object, under 200 words in total. Every value must be concrete (hex colours, named shapes, real behaviours). Vague words like "modern", "futuristic", "sleek" or "immersive" are not decisions.
 {
-  "idea": "summary of the visual concept",
-  "signature": "central visual or artistic mechanism",
-  "palette": "color palette description with roles",
-  "type": "typography direction and styling",
-  "surface": "materiality and element styling",
-  "style": "overall visual atmosphere",
-  "choreography": "interactive, motion, or DOM enhancements",
-  "fingerprint": "short keyword summary"
+  "considered": ["3 alternative worlds, max 8 words each (for you; the builder never sees them)"],
+  "idea": "one sentence: what this page IS",
+  "signature": "the one memorable visual or interaction, max 25 words",
+  "palette": "4 or 5 colours as hex, each with its job",
+  "type": "type voice using web or system font stacks, max 15 words",
+  "surface": "edges, material, depth, texture, clip-path shapes, borders, shadows, max 25 words",
+  "layout": "how content is arranged and how that breaks the usual list (e.g. asymmetric 1-2-1 panel grid where every 3rd card spans full width and pairs sit side-by-side with angled overlapping frames), max 30 words",
+  "newElements": "specific new SVG/HTML elements to create and attach onto cards and headers via JS (e.g. jagged comic speech tails, spinning brass gears, glowing sigils, targeting brackets), max 30 words",
+  "rules": "how each of these behaves in this world: header, search, headings, repeated items or cards, links, buttons, images; max 45 words",
+  "fingerprint": "max 6 words: type voice, palette family, shape language, layout idea"
 }
 """.trimIndent()
 
     private val UI_SYNTHESIS_SYSTEM_PROMPT = """
-You are the Front-End Synthesis Engine for a generative web browser. You translate the Art Director's concept and the webpage's DOM structure into a complete UIBlueprint.
-You have complete artistic freedom to style and transform the page to realize the design.
+You are the front-end builder inside an Android web browser. An art director wrote DESIGN DIRECTIONS for how a live website should look. Implement them as CSS (`customCss`), an animated SVG/HTML backdrop (`backdropHtml`), and DOM-augmenting JS (`customJs`). The directions are the design: follow them literally and make each part visibly present (palette, type, surface, layout, newElements, rules, signature). Do not substitute your own taste.
 
-Tools available:
-1. `customCss`: CSS injected into the page. Supports web fonts via `@import`, animations via `@keyframes`, and CSS variables `--m-bg`, `--m-surface`, `--m-surface2`, `--m-fg`, `--m-ink`, `--m-accent`, `--m-rx`, `--m-ry`.
-2. `backdropHtml`: Optional HTML/SVG/Canvas fixed behind the page content.
-3. `customJs`: Optional JavaScript executed in the page context. You can use the `MydesBridge` API:
-   - `MydesBridge.decorateUnits(selector, htmlOrBuilderFn)`: Injects HTML/SVG elements into matched elements and retains them during dynamic scrolling.
-   - `MydesBridge.injectOrnament(targetSelector, htmlString, position)`: Mounts HTML/SVG into a target container.
-   - `MydesBridge.enable3DTilt(intensity)`: Binds scroll and touch motion to CSS variables `--m-rx` and `--m-ry`.
-   - `MydesBridge.extractNodes(selector)` / `MydesBridge.triggerNode(uid)`: Extracts content nodes or routes interaction events.
+RUNTIME & TOOLS
+- Real elements carry data-mydes="header|nav|search|main|grid|card|title|heading|price|btn|field|media|aside|footer". Select with `html body [data-mydes="X"]`. Roles are hints, not guarantees: the page's main repeating items may NOT be tagged `card`. The outline lists roleCounts, roleSamples and repeatedItems (real `sel` and `parentSel` selectors). Whenever the directions talk about items, cards or results, style `[data-mydes="card"]` AND those real `sel` selectors too. Also style standard tags (h1-h3, p, a, ul, li, table, figure, img).
+- :root variables: --m-bg --m-surface --m-surface2 --m-fg --m-ink --m-accent, and motion variables --m-rx --m-ry (deg) --m-scroll (px).
+- `backdropHtml`: A vivid scene drawn with inline SVG, CSS or one canvas. It sits behind all page content. Keep `html { background-color: var(--m-bg) !important; }` and `body { background-color: transparent !important; }` so the backdrop shows through.
+- `customJs`: Runs as (MydesBridge, T). You MUST use `customJs` to create the `NEW DOM ELEMENTS` specified in the directions:
+  * `MydesBridge.decorateUnits(selector, svgOrHtmlStringOrFn)`: Creates and attaches real inline `<svg>` or HTML ornaments (e.g. spinning toothed gears, comic action bursts, speech bubble tails, sci-fi reticles) onto every card/item!
+  * `MydesBridge.injectOrnament(targetSelector, svgOrHtmlString, "append"|"prepend")`: Creates and mounts new thematic SVG/HTML centerpiece elements into the header or main stage.
+  * Also available: `MydesBridge.enable3DTilt(n)`, `focusSearch()`, `proxySearch(q)`, `proxyClick(selector)`, `onCleanup(fn)`.
 
-Technical requirements:
-- Keep `html { background-color: var(--m-bg); }` and `body { background: transparent; }` so the backdrop layer remains compositable.
-- Ensure the page remains scrollable.
-- Never cover media thumbnails with text, and never truncate titles.
+HOW TO BUILD ASYMMETRIC MULTI-PANEL GRIDS SAFELY
+- Whenever `LAYOUT` calls for an asymmetric grid, comic panels, or multi-panel layout:
+  1. Style the parent feed container (`parentSel` and `[data-mydes="grid"]`) with `display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 12px !important; padding: 10px !important;`.
+  2. Use an asymmetric 1-2-1 panel rhythm so cards are never squished: make every 3rd card span full width (`html body <sel>:nth-child(3n+1) { grid-column: 1 / -1 !important; }`), while the other cards sit side-by-side in pairs (`grid-column: span 1`) with alternating rotations (`transform: rotate(-1.2deg)` / `rotate(1.5deg)`) or overlapping negative margins!
+  3. Inside any card placed in a grid, stack its thumbnail and text vertically (`display: flex !important; flex-direction: column !important; width: 100% !important;`) and set its thumbnail container and `img` to `width: 100% !important; height: auto !important;`.
+  4. Never force nested multi-item shelves (`ytm-reel-shelf-renderer`, `[data-mydes-shelf="true"]`) into a single half-width column—keep them at `grid-column: 1 / -1 !important;`.
 
-OUTPUT: ONLY one valid JSON object, no markdown fences:
+HARD RULES
+- Never hide or break main, card or search. The page stays interactive and infinitely scrollable.
+- THUMBNAIL OVERLAYS: Never cover a video thumbnail with a giant opaque text box! For vertical Shorts or overlay titles (`a.shortsLockupViewModelHostEndpoint h3`, `[class*="shortsLockup"] h3`), either set `position: static !important; width: 100% !important;` on the text container so the title sits neatly BELOW the thumbnail, or keep the overlay compact (`font-size: 12px !important; padding: 3px 6px !important;`) at the bottom edge.
+- FULL TITLES (NO 2-WORD TRUNCATION): Whenever you style headings (`h1-h4`, `[data-mydes="heading"]`, `[data-mydes="title"]`, `.media-item-headline`), ALWAYS include `-webkit-line-clamp: unset !important; max-height: none !important; height: auto !important; overflow: visible !important; display: block !important; white-space: normal !important;` so titles never get cut off after two words!
+- TEXT COLOUR: Never set `color` on generic tags (p, span, a, div, h1-h3) unless the same rule also sets the background behind them. A surface you style (card, header, item) sets its own background and `color` together and its descendants inherit; everything else inherits --m-fg from the page. All text must stay readable (4.5:1).
+- No invented text in CSS `::before`/`::after` `content`. Use `MydesBridge.decorateUnits` in `customJs` for visual SVG ornaments instead.
+
+OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
 {
   "name": "short title",
   "dark": true or false,
   "bg": "#rrggbb", "surface": "#rrggbb", "surface2": "#rrggbb", "fg": "#rrggbb", "ink": "#rrggbb", "accent": "#rrggbb",
-  "remapSurfaces": false,
-  "customCss": "complete CSS styles",
-  "backdropHtml": "optional backdrop HTML or SVG",
-  "customJs": "optional JavaScript code",
-  "concept": "concise summary",
-  "fingerprint": "short keyword summary"
+  "remapSurfaces": true,
+  "customCss": "complete CSS, using !important where needed",
+  "backdropHtml": "SVG/HTML/canvas string, or empty string",
+  "customJs": "JS creating new DOM elements via MydesBridge.decorateUnits / injectOrnament / enable3DTilt",
+  "concept": "one sentence summary",
+  "fingerprint": "max 6 words"
 }
 """.trimIndent()
 
@@ -2111,7 +1879,7 @@ OUTPUT: ONLY one valid JSON object, no markdown fences:
                                             for (i in 0 until parts.length()) {
                                                 val partObj = parts.getJSONObject(i)
                                                 val isThought = partObj.optBoolean("thought", false) ||
-                                                        (partObj.has("thought") && partObj.opt("thought") != JSONObject.NULL && partObj.opt("thought") != false)
+                                                    (partObj.has("thought") && partObj.opt("thought") != JSONObject.NULL && partObj.opt("thought") != false)
                                                 val text = partObj.optString("text", "")
                                                 val thoughtDirect = partObj.optString("thought", "")
 
