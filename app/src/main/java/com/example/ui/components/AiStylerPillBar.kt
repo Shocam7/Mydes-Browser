@@ -108,6 +108,8 @@ fun AiStylerPillBar(
     onDeleteSavedTheme: (GeneratedThemeEntity) -> Unit = {},
     onResetStyle: () -> Unit,
     onOpenImportRedesign: () -> Unit = {},
+    selectedSynthesisModel: String = com.example.data.api.GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE,
+    onToggleSynthesisModel: () -> Unit = {},
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -183,7 +185,7 @@ fun AiStylerPillBar(
                 Spacer(modifier = Modifier.height(10.dp))
             }
 
-            // 2. Suggestion chips row
+            // 2. Suggestion chips row (with 1-tap Model Switcher)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -191,6 +193,47 @@ fun AiStylerPillBar(
                     .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                // 1-Tap Quick Model Switcher: Nemotron 3 Ultra (NIM) <-> Gemini 3.5 Flash Lite
+                val isNemotron = selectedSynthesisModel == com.example.data.api.GeminiStylerService.MODEL_NVIDIA_NEMOTRON_3_ULTRA
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(if (isNemotron) Color(0xFF1B3818) else Color(0xFF182845))
+                        .border(
+                            width = 1.dp,
+                            color = if (isNemotron) Color(0xFF76B900) else Color(0xFF4285F4),
+                            shape = RoundedCornerShape(16.dp)
+                        )
+                        .clickable(onClick = onToggleSynthesisModel)
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                        .testTag("toggle_synthesis_model_chip"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(7.dp)
+                                .clip(CircleShape)
+                                .background(if (isNemotron) Color(0xFF76B900) else Color(0xFF4285F4))
+                        )
+                        Text(
+                            text = if (isNemotron) "Nemotron 3 Ultra (NIM)" else "Gemini 3.5 Flash Lite",
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "⇄ Switch",
+                            color = if (isNemotron) Color(0xFF76B900) else Color(0xFF8AB4F8),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+
                 StylerSuggestionChip(
                     text = "Import Redesign (.json)",
                     isHighlight = true,

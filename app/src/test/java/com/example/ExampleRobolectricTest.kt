@@ -151,4 +151,50 @@ class ExampleRobolectricTest {
       org.junit.Assert.assertFalse(s.startsWith("-"))
     }
   }
+
+  @Test
+  fun `test isNvidiaModel identifies Nemotron and Gemini models correctly`() {
+    org.junit.Assert.assertTrue(
+      com.example.data.api.GeminiStylerService.isNvidiaModel("nvidia/nemotron-3-ultra-550b-a55b")
+    )
+    org.junit.Assert.assertTrue(
+      com.example.data.api.GeminiStylerService.isNvidiaModel("nemotron-3-ultra-550b-a55b")
+    )
+    org.junit.Assert.assertFalse(
+      com.example.data.api.GeminiStylerService.isNvidiaModel("gemini-3.5-flash-lite")
+    )
+    org.junit.Assert.assertFalse(
+      com.example.data.api.GeminiStylerService.isNvidiaModel("gemini-3.8-flash")
+    )
+  }
+
+  @Test
+  fun `test synthesis model preferences and switching`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    com.example.data.api.GeminiStylerService.setSynthesisModel(
+      context,
+      com.example.data.api.GeminiStylerService.MODEL_NVIDIA_NEMOTRON_3_ULTRA
+    )
+    assertEquals(
+      com.example.data.api.GeminiStylerService.MODEL_NVIDIA_NEMOTRON_3_ULTRA,
+      com.example.data.api.GeminiStylerService.getSynthesisModel(context)
+    )
+
+    // Switch back to Gemini 3.5 Flash Lite
+    com.example.data.api.GeminiStylerService.setSynthesisModel(
+      context,
+      com.example.data.api.GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE
+    )
+    assertEquals(
+      com.example.data.api.GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE,
+      com.example.data.api.GeminiStylerService.getSynthesisModel(context)
+    )
+  }
+
+  @Test
+  fun `test nvidia api key preference persistence`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    com.example.data.api.GeminiStylerService.setNvidiaApiKey(context, "nvapi-test123456789")
+    assertEquals("nvapi-test123456789", com.example.data.api.GeminiStylerService.getNvidiaApiKey(context))
+  }
 }

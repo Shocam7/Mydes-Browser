@@ -130,6 +130,8 @@ fun BrowserScreen(
     val isThemeUpdatingInBackground by viewModel.isThemeUpdatingInBackground.collectAsState()
     val previousGenerations by viewModel.previousGenerationsForCurrentDomain.collectAsState()
     val websiteThemes by viewModel.websiteThemes.collectAsState()
+    val synthesisModel by viewModel.synthesisModel.collectAsState()
+    val customNvidiaApiKey by viewModel.customNvidiaApiKey.collectAsState()
 
     var activeWebView by remember { mutableStateOf<WebView?>(null) }
 
@@ -463,6 +465,8 @@ fun BrowserScreen(
             onDeleteSavedTheme = { viewModel.deleteSavedTheme(it) },
             onResetStyle = { viewModel.resetCustomStyle() },
             onOpenImportRedesign = { viewModel.openImportRedesignDialog() },
+            selectedSynthesisModel = synthesisModel,
+            onToggleSynthesisModel = { viewModel.toggleSynthesisModel() },
             onDismiss = { viewModel.closeAiStylerPill() },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -526,6 +530,10 @@ fun BrowserScreen(
                 onOpenImportRedesign = { viewModel.openImportRedesignDialog() },
                 customApiKey = customApiKey,
                 onUpdateCustomApiKey = { viewModel.updateCustomApiKey(it) },
+                selectedSynthesisModel = synthesisModel,
+                onSelectSynthesisModel = { viewModel.updateSynthesisModel(it) },
+                customNvidiaApiKey = customNvidiaApiKey,
+                onUpdateCustomNvidiaApiKey = { viewModel.updateCustomNvidiaApiKey(it) },
                 onDismiss = { viewModel.toggleSettings() }
             )
         }

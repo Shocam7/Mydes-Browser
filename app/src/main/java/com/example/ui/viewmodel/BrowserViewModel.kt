@@ -59,16 +59,53 @@ class BrowserViewModel(
     private val _customApiKey = MutableStateFlow("")
     val customApiKey: StateFlow<String> = _customApiKey.asStateFlow()
 
+    private val _customNvidiaApiKey = MutableStateFlow("")
+    val customNvidiaApiKey: StateFlow<String> = _customNvidiaApiKey.asStateFlow()
+
+    private val _synthesisModel = MutableStateFlow(com.example.data.api.GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE)
+    val synthesisModel: StateFlow<String> = _synthesisModel.asStateFlow()
+
     init {
         val prefs = application.getSharedPreferences("mydes_prefs", Context.MODE_PRIVATE)
         _customApiKey.value = prefs.getString("custom_api_key", "") ?: ""
+        _customNvidiaApiKey.value = prefs.getString("custom_nvidia_api_key", "") ?: ""
+        _synthesisModel.value = prefs.getString("synthesis_model", com.example.data.api.GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE)
+            ?: com.example.data.api.GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE
     }
 
     fun updateCustomApiKey(key: String) {
         _customApiKey.value = key
         val prefs = getApplication<Application>().getSharedPreferences("mydes_prefs", Context.MODE_PRIVATE)
         prefs.edit().putString("custom_api_key", key.trim()).apply()
-        Toast.makeText(getApplication(), "API Key saved", Toast.LENGTH_SHORT).show()
+        Toast.makeText(getApplication(), "Gemini API Key saved", Toast.LENGTH_SHORT).show()
+    }
+
+    fun updateCustomNvidiaApiKey(key: String) {
+        _customNvidiaApiKey.value = key
+        val prefs = getApplication<Application>().getSharedPreferences("mydes_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("custom_nvidia_api_key", key.trim()).apply()
+        Toast.makeText(getApplication(), "NVIDIA API Key saved", Toast.LENGTH_SHORT).show()
+    }
+
+    fun updateSynthesisModel(model: String) {
+        _synthesisModel.value = model
+        val prefs = getApplication<Application>().getSharedPreferences("mydes_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("synthesis_model", model).apply()
+        val displayName = when (model) {
+            com.example.data.api.GeminiStylerService.MODEL_NVIDIA_NEMOTRON_3_ULTRA -> "Nemotron 3 Ultra 550B (NIM)"
+            com.example.data.api.GeminiStylerService.MODEL_GEMINI_38_FLASH -> "Gemini 3.8 Flash"
+            else -> "Gemini 3.5 Flash Lite"
+        }
+        Toast.makeText(getApplication(), "Synthesis Model: $displayName", Toast.LENGTH_SHORT).show()
+    }
+
+    fun toggleSynthesisModel() {
+        val next = if (_synthesisModel.value == com.example.data.api.GeminiStylerService.MODEL_NVIDIA_NEMOTRON_3_ULTRA) {
+            com.example.data.api.GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE
+        } else {
+            com.example.data.api.GeminiStylerService.MODEL_NVIDIA_NEMOTRON_3_ULTRA
+        }
+        updateSynthesisModel(next)
     }
 
     private val _tabs = MutableStateFlow<List<TabItem>>(listOf(TabItem()))

@@ -18,7 +18,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.Dns
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.ResponseBody
 import org.json.JSONArray
 import org.json.JSONObject
@@ -753,11 +756,16 @@ function applySheets() {
     '--m-rx:0deg;--m-ry:0deg;--m-scroll:0px;}\n' +
     'html{background-color:var(--m-bg)!important;color:var(--m-fg)!important;overflow-x:hidden!important;}\n' +
     'html body{background-color:transparent!important;color:var(--m-fg)!important;position:relative;z-index:1;overflow-x:hidden!important;}\n' +
-    '#__mydes_backdrop{position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none!important;z-index:-1;overflow:hidden;transform:translateZ(0);will-change:transform;}\n' +
+    '#__mydes_backdrop{position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none!important;z-index:0!important;overflow:hidden;transform:translateZ(0);will-change:transform;}\n' +
+    '/* Page content stacks above the backdrop. :where() keeps specificity 0 so the own z-index values of the page still win; static children are lifted via data-mydes-lift (set in retag) so fixed/sticky/absolute ones are never turned into relative */\n' +
+    ':where(html body > *:not(#__mydes_backdrop):not(#__mydes_hud)){z-index:1;}\n' +
+    'html body > [data-mydes-lift]{position:relative;}\n' +
     '#__mydes_hud{position:fixed;z-index:2147483640;pointer-events:none;inset:0;transform:translateZ(0);}\n' +
     '#__mydes_hud *{pointer-events:auto;}\n' +
     '/* Multi-item shelves/carousels & continuation sentinels always span full width inside any grid */\n' +
-    '[data-mydes-shelf="true"], [data-mydes-sentinel="true"], ytm-reel-shelf-renderer, ytm-rich-section-renderer, ytm-continuation-item-renderer { grid-column: 1 / -1 !important; width: 100% !important; }\n';
+    '[data-mydes-shelf="true"], [data-mydes-sentinel="true"], ytm-reel-shelf-renderer, ytm-rich-section-renderer, ytm-continuation-item-renderer { grid-column: 1 / -1 !important; width: 100% !important; }\n' +
+    '/* Containment: nothing inside a grid/card may exceed the viewport width (native fixed-px widths) */\n' +
+    'html body [data-mydes="grid"], html body [data-mydes="card"], html body [data-mydes="card"] * { max-width: 100% !important; box-sizing: border-box !important; }\n';
 
   var fullCss = baseVars + '\n' + (cfg.customCss || '') + '\nhtml{background-color:var(--m-bg)!important;}\n';
   var root = document.head || document.documentElement;
@@ -879,6 +887,14 @@ function markPrices(){
 function retag(){
   if(!document.body)return;
   var t0=performance.now();
+  if(cfg.backdropHtml){
+    var kids=document.body.children;
+    for(var ki=0;ki<kids.length;ki++){
+      var k=kids[ki];
+      if(k.id==='__mydes_backdrop'||k.id==='__mydes_hud'||SKIPTAG.test(k.tagName.toUpperCase())||k.hasAttribute('data-mydes-lift'))continue;
+      if(getComputedStyle(k).position==='static')k.setAttribute('data-mydes-lift','1');
+    }
+  }
   each('header,[role="banner"],#navbar,#nav-main',function(e){if(!inContent(e))put(e,'header');});
   each('nav,[role="navigation"],#nav-xshop',function(e){put(e,'nav');});
   each('footer,[role="contentinfo"],#navFooter',function(e){if(!inContent(e))put(e,'footer');});
@@ -890,6 +906,7 @@ function retag(){
   });
   if(performance.now()-t0<35)findGrids();
   each('[data-component-type="s-search-result"],[data-asin]:not([data-asin=""]),article,ytm-media-item,ytm-video-with-context-renderer',function(e){
+    if(e.parentElement && e.parentElement.closest('[data-mydes="card"]')) return; // Never nest a card inside a card!
     if(!e.closest('#__mydes_hud,#__mydes_backdrop,nav,header,footer') && cardLike(e)){
       putNew(e,'card');
       if(e.parentElement && !e.parentElement.hasAttribute('data-mydes')) putNew(e.parentElement,'grid');
@@ -1014,11 +1031,12 @@ function handle(el){
   var tag=el.tagName.toUpperCase();
   if(SKIPTAG.test(tag))return;
   var cs=getComputedStyle(el);
-  if(cfg.backdropHtml && tag!=='BODY' && tag!=='HTML' && !el.hasAttribute('data-mydes') && cs.position!=='fixed' && !hasBgImage(cs)){
+  var bdRole=el.getAttribute('data-mydes')||'';
+  if(cfg.backdropHtml && tag!=='BODY' && tag!=='HTML' && bdRole!=='card' && bdRole!=='header' && bdRole!=='btn' && cs.position!=='fixed' && !hasBgImage(cs)){
     var wb=rgba(cs.backgroundColor);
     if(wb&&wb.a>=0.5){
       var wr=el.getBoundingClientRect();
-      if(wr.width>=innerWidth*0.95&&wr.height>=innerHeight*0.8){setProp(el,'background-color','transparent');EB.delete(el);}
+      if(wr.width>=innerWidth*0.9&&wr.height>=innerHeight*0.7){setProp(el,'background-color','transparent');EB.delete(el);}
     }
   }
   if(cfg.remapSurfaces && tag!=='BODY' && tag!=='HTML' && !hasBgImage(cs)){
@@ -1307,14 +1325,48 @@ class ThemeStore(context: Context) {
 class GeminiStylerService {
 
     companion object {
-        /** Fast model for Pass 1 (Art Director creative concept brief) */
-        const val CONCEPT_MODEL = "gemini-3.5-flash-lite"
+        const val MODEL_GEMINI_35_FLASH_LITE = "gemini-3.5-flash-lite"
+        const val MODEL_GEMINI_38_FLASH = "gemini-3.8-flash"
+        const val MODEL_NVIDIA_NEMOTRON_3_ULTRA = "nvidia/nemotron-3-ultra-550b-a55b"
 
-        /** Synthesis model for Pass 2 (Main CSS3/SVG/JS synthesis) */
-        const val SYNTHESIS_MODEL = "gemini-3.5-flash-lite"
+        /** Fast model for Pass 1 (Art Director creative concept brief) */
+        const val CONCEPT_MODEL = MODEL_GEMINI_35_FLASH_LITE
+
+        /** Default synthesis model for Pass 2 (Main CSS3/SVG/JS synthesis) */
+        const val SYNTHESIS_MODEL = MODEL_GEMINI_35_FLASH_LITE
 
         /** Fast, quota-friendly model for Pass 3 (Visual QA & CSS review fix patch) */
-        const val REVIEW_MODEL = "gemini-3.5-flash-lite"
+        const val REVIEW_MODEL = MODEL_GEMINI_35_FLASH_LITE
+
+        fun isNvidiaModel(model: String): Boolean =
+            model.startsWith("nvidia/", ignoreCase = true) || model.contains("nemotron", ignoreCase = true)
+
+        fun getSynthesisModel(context: Context): String {
+            val prefs = context.getSharedPreferences("mydes_prefs", Context.MODE_PRIVATE)
+            return prefs.getString("synthesis_model", MODEL_GEMINI_35_FLASH_LITE) ?: MODEL_GEMINI_35_FLASH_LITE
+        }
+
+        fun setSynthesisModel(context: Context, model: String) {
+            val prefs = context.getSharedPreferences("mydes_prefs", Context.MODE_PRIVATE)
+            prefs.edit().putString("synthesis_model", model).apply()
+        }
+
+        fun getNvidiaApiKey(context: Context): String {
+            val prefs = context.getSharedPreferences("mydes_prefs", Context.MODE_PRIVATE)
+            val customKey = prefs.getString("custom_nvidia_api_key", "") ?: ""
+            if (customKey.isNotBlank()) return customKey
+            val buildConfigKey = try {
+                val field = BuildConfig::class.java.getField("NVIDIA_API_KEY")
+                field.get(null) as? String ?: ""
+            } catch (_: Throwable) { "" }
+            if (buildConfigKey.isNotBlank() && buildConfigKey != "MY_NVIDIA_API_KEY") return buildConfigKey
+            return customKey
+        }
+
+        fun setNvidiaApiKey(context: Context, key: String) {
+            val prefs = context.getSharedPreferences("mydes_prefs", Context.MODE_PRIVATE)
+            prefs.edit().putString("custom_nvidia_api_key", key.trim()).apply()
+        }
     }
 
     private val moshi = Moshi.Builder().add(KotlinJsonAdapterFactory()).build()
@@ -1482,6 +1534,7 @@ class GeminiStylerService {
         apiKey: String,
         onThinkingUpdate: ((phase: String, chunk: String, isComplete: Boolean) -> Unit)? = null
     ): Result<ConceptBrief> {
+        // Concept Pass (Pass 1) ALWAYS runs on gemini-3.5-flash-lite only
         onThinkingUpdate?.invoke("Pass 1: Concept Direction ($CONCEPT_MODEL)", "Brainstorming creative aesthetic and visual anatomy...", false)
         val input = buildString {
             appendLine("USER REQUEST: \"$prompt\"")
@@ -1582,9 +1635,12 @@ class GeminiStylerService {
             storeFor(context).get(cleanPrompt, domain)?.let { return@withContext Result.success(it) }
         }
 
-        val apiKey = getApiKey(context)
-        if (apiKey.isBlank()) {
-            return@withContext Result.failure(IllegalStateException("GEMINI_API_KEY is not set. Please set your API key in Settings."))
+        val geminiApiKey = getApiKey(context)
+        val nvidiaApiKey = getNvidiaApiKey(context)
+
+        // Gemini API key is always required because Pass 1 (Concept) and Pass 3 (Review) strictly run on gemini-3.5-flash-lite
+        if (geminiApiKey.isBlank()) {
+            return@withContext Result.failure(IllegalStateException("GEMINI_API_KEY is not set. Please set your Gemini API key in Settings."))
         }
 
         val previous = if (isReviewPass || !screenshotBase64.isNullOrBlank() || !auditJson.isNullOrBlank()) {
@@ -1596,18 +1652,28 @@ class GeminiStylerService {
         }
 
         val isReview = isReviewPass || (previous != null && !forceFresh && (!screenshotBase64.isNullOrBlank() || !auditJson.isNullOrBlank()))
-        val activeModel = if (isReview) REVIEW_MODEL else SYNTHESIS_MODEL
 
-        // FAIL-FAST: If Concept Pass fails, immediately abort the pipeline and return the Concept Pass error
+        // Pass 3 (Review) strictly runs on REVIEW_MODEL ("gemini-3.5-flash-lite").
+        // Pass 2 (Synthesis) is the ONLY pass that uses the user's selected synthesis model (Nemotron or Gemini).
+        val synthesisModel = getSynthesisModel(context)
+        val isNemotronSynthesis = !isReview && isNvidiaModel(synthesisModel)
+        val activeModel = if (isReview) REVIEW_MODEL else synthesisModel
+
+        if (isNemotronSynthesis && nvidiaApiKey.isBlank()) {
+            return@withContext Result.failure(IllegalStateException("NVIDIA NIM API key is not set. Please enter your NVIDIA API key (nvapi-...) in Settings."))
+        }
+
+        // FAIL-FAST: Pass 1 (Concept Pass) strictly runs on CONCEPT_MODEL ("gemini-3.5-flash-lite")
         val brief: ConceptBrief? = if (isReview) {
             null
         } else {
-            designBrief(context, cleanPrompt, websiteName, websiteUrl, pageOutlineJson, apiKey, onThinkingUpdate)
+            designBrief(context, cleanPrompt, websiteName, websiteUrl, pageOutlineJson, geminiApiKey, onThinkingUpdate)
                 .getOrElse { conceptError -> return@withContext Result.failure(conceptError) }
         }
 
         if (!isReview) {
-            onThinkingUpdate?.invoke("Pass 2: Generative Synthesis ($activeModel)", "Building CSS, SVG backdrop, and DOM ornaments...", false)
+            val modelLabel = if (isNemotronSynthesis) "Nemotron 3 Ultra 550B (NVIDIA NIM)" else activeModel
+            onThinkingUpdate?.invoke("Pass 2: Generative Synthesis ($modelLabel)", "Building CSS, SVG backdrop, and DOM ornaments...", false)
         } else {
             onThinkingUpdate?.invoke("Pass 3: Visual Review & QA ($activeModel)", "Auditing live render and preparing fixes...", false)
         }
@@ -1659,10 +1725,10 @@ class GeminiStylerService {
         val logType = if (isReview) "reviewBlueprint ($activeModel)" else "buildBlueprint ($activeModel)"
         val requestJson = buildString {
             appendLine("=== TARGET MODEL ===")
-            appendLine(activeModel)
+            appendLine(if (isNemotronSynthesis) "$activeModel (NVIDIA NIM)" else activeModel)
             appendLine()
             appendLine("=== PASS TYPE ===")
-            appendLine(if (isReview) "Pass 3: Visual QA & Review Pass" else "Pass 2: Main Generative Synthesis Pass")
+            appendLine(if (isReview) "Pass 3: Visual QA & Review Pass" else if (isNemotronSynthesis) "Pass 2: NVIDIA NIM Generative Synthesis Pass" else "Pass 2: Main Generative Synthesis Pass")
             appendLine()
             appendLine("=== SYSTEM INSTRUCTION ===")
             appendLine(if (isReview) UI_REVIEW_SYSTEM_PROMPT else UI_SYNTHESIS_SYSTEM_PROMPT)
@@ -1672,7 +1738,7 @@ class GeminiStylerService {
   "temperature": ${if (isReview) 0.3f else 0.8f},
   "topP": 0.95,
   "maxOutputTokens": ${if (isReview) 1536 else 8192},
-  "responseMimeType": "application/json"${if (!isReview) ",\n  \"thinkingConfig\": { \"thinkingBudget\": 1024 }" else ""}
+  "provider": "${if (isNemotronSynthesis) "NVIDIA NIM" else "Google AI Studio"}"
 }""")
             appendLine()
             appendLine("=== USER CONTENT & PROMPT ===")
@@ -1685,25 +1751,43 @@ class GeminiStylerService {
         }
 
         try {
-            val (raw, rawThoughts) = callGeminiStream(
-                activeModel,
-                buildReq(true),
-                apiKey,
-                onThoughtChunk = { chunk ->
-                    onThinkingUpdate?.invoke(
-                        if (isReview) "Pass 3: Visual QA Audit" else "Pass 2: Reasoning & Spatial Choreography",
-                        chunk,
-                        false
-                    )
-                },
-                onOutputChunk = { _ ->
-                    onThinkingUpdate?.invoke(
-                        if (isReview) "Pass 3: Generating Fixes" else "Pass 2: Generating UI Code",
-                        "",
-                        false
-                    )
-                }
-            )
+            val (raw, rawThoughts) = if (isNemotronSynthesis) {
+                callNvidiaNimStream(
+                    model = activeModel,
+                    apiKey = nvidiaApiKey,
+                    systemInstruction = UI_SYNTHESIS_SYSTEM_PROMPT,
+                    userContent = userContextText,
+                    temperature = 0.7f,
+                    topP = 0.95f,
+                    maxTokens = 8192,
+                    onThoughtChunk = { chunk ->
+                        onThinkingUpdate?.invoke("Pass 2: Nemotron 3 Ultra Reasoning", chunk, false)
+                    },
+                    onOutputChunk = { _ ->
+                        onThinkingUpdate?.invoke("Pass 2: Generating UI Code ($activeModel)", "", false)
+                    }
+                )
+            } else {
+                callGeminiStream(
+                    activeModel,
+                    buildReq(true),
+                    geminiApiKey,
+                    onThoughtChunk = { chunk ->
+                        onThinkingUpdate?.invoke(
+                            if (isReview) "Pass 3: Visual QA Audit" else "Pass 2: Reasoning & Spatial Choreography",
+                            chunk,
+                            false
+                        )
+                    },
+                    onOutputChunk = { _ ->
+                        onThinkingUpdate?.invoke(
+                            if (isReview) "Pass 3: Generating Fixes" else "Pass 2: Generating UI Code",
+                            "",
+                            false
+                        )
+                    }
+                )
+            }
             val blueprint: UIBlueprint? = if (isReview) {
                 applyReviewPatch(previous!!, raw, cleanPrompt)
             } else {
@@ -1806,7 +1890,7 @@ EXECUTION ORDER & MANDATORY DIRECTIONS
 RUNTIME & TOOLS
 - Real elements carry data-mydes="header|nav|search|main|grid|card|title|heading|price|btn|field|media|aside|footer". Select with `html body [data-mydes="X"]`. Roles are hints, not guarantees: the page's main repeating items may NOT be tagged `card`. The outline lists roleCounts, roleSamples and repeatedItems (real `sel` and `parentSel` selectors). Whenever the directions talk about items, cards or results, style `html body [data-mydes="card"]` AND those real `sel` selectors too. Also style standard tags (h1-h3, p, a, ul, li, table, figure, img).
 - :root variables: --m-bg --m-surface --m-surface2 --m-fg --m-ink --m-accent, and motion variables --m-rx --m-ry (deg) --m-scroll (px).
-- `backdropHtml`: A vivid scene drawn with inline SVG, CSS or one canvas that realizes the SIGNATURE background/stage. It sits behind all page content. Keep `html { background-color: var(--m-bg) !important; }` and `body, main, [data-mydes="main"], [data-mydes="grid"] { background-color: transparent !important; }` so the backdrop shows through clearly.
+- `backdropHtml`: A vivid scene drawn with inline SVG, CSS or one canvas that realizes the SIGNATURE background/stage. It sits behind all page content. Keep `html { background-color: var(--m-bg) !important; }` and `body, main, [data-mydes="main"], [data-mydes="grid"] { background-color: transparent !important; }` so the backdrop shows through clearly. When animating SVG `<g>` or `<circle>` elements inside backdropHtml, use pure `rotate(0deg)` -> `rotate(360deg)` with `transform-origin: center; transform-box: fill-box;` (never put `translate(-50%, -50%)` inside @keyframes on inner SVG shapes).
 - `customJs`: Runs as (MydesBridge, T). You MUST use `customJs` to create the `NEW DOM ELEMENTS` specified in the directions:
   * `MydesBridge.decorateUnits(selector, svgOrHtmlStringOrFn)`: Creates and attaches the bespoke inline `<svg>` or HTML elements described in `NEW DOM ELEMENTS` onto every matching card/item (`[data-mydes="card"]` and real `sel` selectors).
   * `MydesBridge.injectOrnament(targetSelector, svgOrHtmlString, "append"|"prepend")`: Creates and mounts new thematic SVG/HTML centerpiece or structural elements into the header or main stage.
@@ -1945,6 +2029,138 @@ OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
             }
         }
         throw lastException ?: IllegalStateException("Streaming failed on model $model")
+    }
+
+    private suspend fun callNvidiaNimStream(
+        model: String,
+        apiKey: String,
+        systemInstruction: String,
+        userContent: String,
+        temperature: Float = 0.7f,
+        topP: Float = 0.95f,
+        maxTokens: Int = 8192,
+        onThoughtChunk: ((String) -> Unit)? = null,
+        onOutputChunk: ((String) -> Unit)? = null
+    ): Pair<String, String> = withContext(Dispatchers.IO) {
+        val fullText = StringBuilder()
+        val rawThoughts = StringBuilder()
+
+        val jsonBody = JSONObject()
+            .put("model", model)
+            .put("messages", JSONArray()
+                .put(JSONObject().put("role", "system").put("content", systemInstruction))
+                .put(JSONObject().put("role", "user").put("content", userContent))
+            )
+            .put("temperature", temperature)
+            .put("top_p", topP)
+            .put("max_tokens", maxTokens)
+            .put("stream", true)
+
+        val mediaType = "application/json; charset=utf-8".toMediaType()
+        val request = Request.Builder()
+            .url("https://integrate.api.nvidia.com/v1/chat/completions")
+            .addHeader("Authorization", "Bearer ${apiKey.trim()}")
+            .addHeader("Content-Type", "application/json")
+            .addHeader("Accept", "text/event-stream")
+            .post(jsonBody.toString().toRequestBody(mediaType))
+            .build()
+
+        var streamWorked = false
+        var lastErr: Exception? = null
+
+        try {
+            val response = okHttpClient.newCall(request).execute()
+            if (!response.isSuccessful) {
+                val errBody = response.body?.string() ?: ""
+                throw java.io.IOException("NVIDIA NIM HTTP ${response.code}: $errBody")
+            }
+
+            response.body?.byteStream()?.bufferedReader(Charsets.UTF_8)?.use { reader ->
+                var line = reader.readLine()
+                while (line != null) {
+                    val trimmed = line.trim()
+                    if (trimmed.startsWith("data:")) {
+                        val payload = trimmed.removePrefix("data:").trim()
+                        if (payload == "[DONE]") {
+                            streamWorked = true
+                            break
+                        }
+                        if (payload.isNotEmpty()) {
+                            try {
+                                val chunk = JSONObject(payload)
+                                val choices = chunk.optJSONArray("choices")
+                                if (choices != null && choices.length() > 0) {
+                                    val choice = choices.getJSONObject(0)
+                                    val delta = choice.optJSONObject("delta")
+                                    if (delta != null) {
+                                        val reasoning = delta.optString("reasoning_content", "")
+                                            .ifEmpty { delta.optString("reasoning", "") }
+                                        if (reasoning.isNotEmpty()) {
+                                            rawThoughts.append(reasoning)
+                                            onThoughtChunk?.invoke(reasoning)
+                                        }
+                                        val content = delta.optString("content", "")
+                                        if (content.isNotEmpty()) {
+                                            fullText.append(content)
+                                            onOutputChunk?.invoke(content)
+                                        }
+                                    }
+                                }
+                            } catch (_: Exception) {}
+                        }
+                    }
+                    line = reader.readLine()
+                }
+            }
+            if (fullText.isNotBlank()) {
+                streamWorked = true
+            }
+        } catch (e: Exception) {
+            lastErr = e
+        }
+
+        if (streamWorked && fullText.isNotBlank()) {
+            return@withContext Pair(fullText.toString(), rawThoughts.toString())
+        }
+
+        // Non-streaming fallback if stream failed or returned empty
+        val fallbackBody = JSONObject()
+            .put("model", model)
+            .put("messages", JSONArray()
+                .put(JSONObject().put("role", "system").put("content", systemInstruction))
+                .put(JSONObject().put("role", "user").put("content", userContent))
+            )
+            .put("temperature", temperature)
+            .put("top_p", topP)
+            .put("max_tokens", maxTokens)
+            .put("stream", false)
+
+        val nonStreamReq = Request.Builder()
+            .url("https://integrate.api.nvidia.com/v1/chat/completions")
+            .addHeader("Authorization", "Bearer ${apiKey.trim()}")
+            .addHeader("Content-Type", "application/json")
+            .addHeader("Accept", "application/json")
+            .post(fallbackBody.toString().toRequestBody(mediaType))
+            .build()
+
+        val nonStreamResp = okHttpClient.newCall(nonStreamReq).execute()
+        if (!nonStreamResp.isSuccessful) {
+            val errBody = nonStreamResp.body?.string() ?: ""
+            throw java.io.IOException(lastErr?.message ?: "NVIDIA NIM HTTP ${nonStreamResp.code}: $errBody")
+        }
+
+        val nonStreamJson = JSONObject(nonStreamResp.body?.string() ?: throw java.io.IOException("Empty response from NVIDIA NIM"))
+        val choice = nonStreamJson.optJSONArray("choices")?.optJSONObject(0)
+        val msg = choice?.optJSONObject("message")
+        val content = msg?.optString("content", "") ?: ""
+        val reasoning = msg?.optString("reasoning_content", "")
+            ?: msg?.optString("reasoning", "") ?: ""
+
+        if (content.isNotBlank()) {
+            return@withContext Pair(content, reasoning)
+        }
+
+        throw lastErr ?: java.io.IOException("No content returned from model $model")
     }
 
     private fun describe(e: Exception): String {
