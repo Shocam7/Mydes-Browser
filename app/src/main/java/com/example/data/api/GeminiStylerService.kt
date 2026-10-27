@@ -181,6 +181,26 @@ internal fun stripInventedLabels(css: String): String =
         ""
     )
 
+/**
+ * 1. Strips @import rules from CSS (we load fonts cleanly via <link> in JS without :wght@ 404 errors).
+ * 2. Strips any @media (max-width: ...) block that collapses grid-template-columns to 1fr on mobile.
+ */
+internal fun sanitizeGeneratedCss(css: String): String {
+    var out = stripInventedLabels(css)
+    out = out.replace(Regex("""@import\s+url\([^)]+\)\s*;?""", RegexOption.IGNORE_CASE), "")
+    // CRITICAL FIX: repeat(auto-fill, minmax(0, 1fr)) creates dozens of 0px columns and crushes cards into skinny vertical strips!
+    out = out.replace(
+        Regex("""repeat\(\s*auto-(?:fill|fit)\s*,\s*minmax\(\s*0(?:px)?\s*,\s*1fr\s*\)\s*\)""", RegexOption.IGNORE_CASE),
+        "repeat(auto-fill, minmax(160px, 1fr))"
+    )
+    out = out.replace(
+        Regex("""@media\s*\(\s*max-width\s*:\s*\d+px\s*\)\s*\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}""", RegexOption.IGNORE_CASE)
+    ) { match ->
+        if (match.value.contains("1fr")) "" else match.value
+    }
+    return out
+}
+
 data class UIBlueprint(
     val id: String,
     val name: String,
@@ -359,7 +379,7 @@ data class UIBlueprint(
                 accent = accent,
                 // Default to true (just like v4) so unstyled surfaces & text contrast stay harmonious
                 remapSurfaces = j.optBoolean("remapSurfaces", true),
-                customCss = stripInventedLabels(rawCss),
+                customCss = sanitizeGeneratedCss(rawCss),
                 backdropHtml = rawBackdrop,
                 hudHtml = if (needsHud) j.optString("hudHtml", "") else "",
                 customJs = rawJs,
@@ -579,9 +599,13 @@ window.MydesBridge = {
   _applyDecorators: function() {
     for(var r=0; r<unitDecorators.length; r++) {
       var rule = unitDecorators[r];
-      var nodes = document.querySelectorAll(rule.sel);
-      for(var i=0; i<nodes.length && i<120; i++) {
+      // Always include [data-mydes="card"] so newly infinite-scrolled cards get decorated too
+      var combinedSel = rule.sel ? (rule.sel + ', [data-mydes="card"]') : '[data-mydes="card"]';
+      var nodes = document.querySelectorAll(combinedSel);
+      for(var i=0; i<nodes.length && i<300; i++) {
         var el = nodes[i];
+        // Never decorate an inner element if its parent card is already decorated
+        if(el.parentElement && el.parentElement.closest('[data-m-deco="' + cfg.id + '"]')) continue;
         if(el.closest('#__mydes_hud,#__mydes_backdrop') || el.getAttribute('data-m-deco') === cfg.id) continue;
         el.setAttribute('data-m-deco', cfg.id);
         var cs = getComputedStyle(el);
@@ -591,7 +615,7 @@ window.MydesBridge = {
           var deco = document.createElement('div');
           deco.className = '__mydes_deco';
           deco.setAttribute('aria-hidden', 'true');
-          deco.style.cssText = 'pointer-events:none !important; position:absolute; inset:0; overflow:visible; z-index:4;';
+          deco.style.cssText = 'pointer-events:none !important; position:absolute; inset:4px; overflow:visible; z-index:10;';
           deco.innerHTML = res;
           el.appendChild(deco);
         }
@@ -599,14 +623,20 @@ window.MydesBridge = {
     }
     for(var o=0; o<ornamentRules.length; o++) {
       var orn = ornamentRules[o];
-      var target = document.querySelector(orn.sel);
-      if(target && !target.querySelector('.__mydes_orn_' + o)) {
+      var target = document.querySelector(orn.sel) || document.querySelector('[data-mydes="header"], header, [role="banner"]');
+      if(target && !document.querySelector('.__mydes_orn_' + o)) {
         var wrap = document.createElement('div');
         wrap.className = '__mydes_deco __mydes_orn_' + o;
-        wrap.style.cssText = 'pointer-events:none;position:relative;z-index:2;';
+        var isHdr = target.tagName === 'HEADER' || target.getAttribute('data-mydes') === 'header' || /header|topbar/i.test(orn.sel);
+        if(isHdr) {
+          var hRect = target.getBoundingClientRect();
+          wrap.style.cssText = 'pointer-events:none!important;position:fixed!important;left:0!important;right:0!important;top:' + Math.max(44, Math.round(hRect.height)) + 'px!important;z-index:2147483642!important;display:flex!important;justify-content:center!important;align-items:center!important;width:100vw!important;';
+          document.body.appendChild(wrap);
+        } else {
+          wrap.style.cssText = 'pointer-events:none!important;position:relative!important;z-index:10!important;width:100%!important;display:block!important;';
+          if(orn.pos === 'prepend') target.prepend(wrap); else target.appendChild(wrap);
+        }
         wrap.innerHTML = orn.html;
-        if(orn.pos === 'prepend') target.prepend(wrap);
-        else target.appendChild(wrap);
       }
     }
   },
@@ -801,36 +831,40 @@ window.MydesBridge = {
 /* ---------- 2. Constructable / Injected Stylesheets (V4 Clean Ordering) ---------- */
 var eStyle = null;
 function applySheets() {
-  var surfaceVal = cfg.backdropHtml ? 'color-mix(in srgb, '+cfg.surface+' 82%, transparent)' : cfg.surface;
-  var baseVars = ':root{' +
-    '--m-bg:'+cfg.bg+';--bg:'+cfg.bg+';' +
-    '--m-surface:'+surfaceVal+';--surface:'+surfaceVal+';' +
-    '--m-surface2:'+cfg.surface2+';--surface2:'+cfg.surface2+';' +
-    '--m-fg:'+cfg.fg+';--fg:'+cfg.fg+';' +
-    '--m-ink:'+cfg.ink+';--ink:'+cfg.ink+';' +
-    '--m-accent:'+cfg.accent+';--accent:'+cfg.accent+';' +
-    '--m-border:color-mix(in srgb, '+cfg.accent+' 45%, '+cfg.surface+');--border:var(--m-border);' +
-    '--m-rx:0deg;--m-ry:0deg;--m-scroll:0px;}\n' +
+  var surfaceVal = cfg.backdropHtml ? 'color-mix(in srgb, '+cfg.surface+' 78%, transparent)' : cfg.surface;
+  var surface2Val = cfg.backdropHtml ? 'color-mix(in srgb, '+cfg.surface2+' 82%, transparent)' : cfg.surface2;
+  var rootVars = ':root{' +
+    '--m-bg:'+cfg.bg+'!important;--bg:'+cfg.bg+'!important;' +
+    '--m-surface:'+surfaceVal+'!important;--surface:'+surfaceVal+'!important;--m-primary:'+surfaceVal+'!important;' +
+    '--m-surface2:'+surface2Val+'!important;--surface2:'+surface2Val+'!important;' +
+    '--m-fg:'+cfg.fg+'!important;--fg:'+cfg.fg+'!important;--m-text:'+cfg.fg+'!important;' +
+    '--m-ink:'+cfg.ink+'!important;--ink:'+cfg.ink+'!important;' +
+    '--m-accent:'+cfg.accent+'!important;--accent:'+cfg.accent+'!important;' +
+    '--m-border:color-mix(in srgb, '+cfg.accent+' 45%, '+cfg.surface+')!important;--border:var(--m-border)!important;' +
+    '--m-rx:0deg;--m-ry:0deg;--m-scroll:0px;}\n';
+
+  var structuralCss =
     'html{background-color:var(--m-bg)!important;color:var(--m-fg)!important;overflow-x:hidden!important;}\n' +
     'html body{background-color:transparent!important;color:var(--m-fg)!important;position:relative;z-index:1;overflow-x:hidden!important;}\n' +
-    '#__mydes_backdrop{position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none!important;z-index:0!important;overflow:hidden;transform:translateZ(0);will-change:transform;}\n' +
-    '/* Page content stacks above the backdrop. :where() keeps specificity 0 so the own z-index values of the page still win; static children are lifted via data-mydes-lift (set in retag) so fixed/sticky/absolute ones are never turned into relative */\n' +
-    ':where(html body > *:not(#__mydes_backdrop):not(#__mydes_hud)){z-index:1;}\n' +
-    'html body > [data-mydes-lift]{position:relative;}\n' +
+    '#__mydes_backdrop{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;pointer-events:none!important;z-index:2147483630!important;mix-blend-mode:screen!important;opacity:0.42!important;overflow:hidden!important;transform:translateZ(0);}\n' +
+    '#__mydes_backdrop > *, #__mydes_backdrop svg, #__mydes_backdrop canvas{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;z-index:2147483630!important;pointer-events:none!important;}\n' +
     '#__mydes_hud{position:fixed;z-index:2147483640;pointer-events:none;inset:0;transform:translateZ(0);}\n' +
     '#__mydes_hud *{pointer-events:auto;}\n' +
-    '/* Multi-item shelves/carousels & continuation sentinels always span full width inside any grid */\n' +
-    '[data-mydes-shelf="true"], [data-mydes-sentinel="true"], ytm-reel-shelf-renderer, ytm-rich-section-renderer, ytm-continuation-item-renderer { grid-column: 1 / -1 !important; width: 100% !important; }\n' +
-    '/* Containment: nothing inside a grid/card may exceed the viewport width (native fixed-px widths) */\n' +
+    'html body header button, html body [data-mydes="header"] button, html body button:has(svg, img) { background-color: transparent !important; box-shadow: none !important; }\n' +
+    /* Force EVERY child of a grid (or lazy-list) to span full width unless it is explicitly a compact grid tile */
+    'lazy-list { display: flex !important; flex-direction: column !important; gap: 14px !important; width: 100% !important; max-width: 100% !important; padding: 12px 8px !important; box-sizing: border-box !important; }\n' +
+    '[data-mydes-shelf="true"], [data-mydes-sentinel="true"], ytm-reel-shelf-renderer, ytm-rich-section-renderer, ytm-continuation-item-renderer, ytm-item-section-renderer { grid-column: 1 / -1 !important; width: 100% !important; max-width: 100% !important; }\n' +
     'html body [data-mydes="grid"], html body [data-mydes="card"], html body [data-mydes="card"] * { max-width: 100% !important; box-sizing: border-box !important; }\n' +
-    '/* Ensure intermediate thumbnail/media wrappers inside cards expand to full width of the card */\n' +
-    'html body [data-mydes="card"] > *, html body [data-mydes="card"] a:has(img,video,picture), html body [data-mydes="card"] div:has(> img, > video, > picture) { width: 100% !important; max-width: 100% !important; box-sizing: border-box !important; }\n' +
-    'html body [data-mydes="card"] img:not([width^="1"]):not([width^="2"]):not([width^="3"]), html body [data-mydes="card"] video { width: 100% !important; height: auto !important; object-fit: cover !important; display: block !important; }\n';
-
-  var fullCss = baseVars + '\n' + (cfg.customCss || '') + '\nhtml{background-color:var(--m-bg)!important;}\n';
+    /* Universal Card Framing & Full-Width Media Un-Constrainer (expands ALL intermediate wrappers holding the thumbnail) */
+    'html body [data-mydes="card"] { display: flex !important; flex-direction: column !important; align-items: stretch !important; width: 100% !important; margin: 8px 0 !important; padding: 10px !important; height: auto !important; overflow: visible !important; background-color: var(--m-surface) !important; border: 1px solid var(--m-border) !important; }\n' +
+    'html body [data-mydes="card"] ytm-media-item, html body [data-mydes="card"] [class*="media-item"] { display: flex !important; flex-direction: column !important; align-items: stretch !important; width: 100% !important; height: auto !important; }\n' +
+    'html body [data-mydes="card"] *:has(> img, > video, > picture, > yt-collections-stack, > ytm-thumbnail-overlay-time-status-renderer), html body [data-mydes="card"] yt-collections-stack, html body [data-mydes="card"] a[class*="thumbnail"], html body [data-mydes="card"] div[class*="thumbnail"] { width: 100% !important; max-width: 100% !important; min-width: 100% !important; height: auto !important; display: block !important; position: relative !important; }\n' +
+    'html body [data-mydes="card"] img:not([width^="1"]):not([width^="2"]):not([width^="3"]):not([width^="4"]):not([class*="avatar"]):not([class*="channel"]), html body [data-mydes="card"] video { width: 100% !important; max-width: 100% !important; height: auto !important; aspect-ratio: 16 / 9 !important; object-fit: cover !important; display: block !important; }\n' +
+    'html body [data-mydes="card"] [data-mydes="heading"], html body [data-mydes="card"] h1, html body [data-mydes="card"] h2, html body [data-mydes="card"] h3 { padding: 6px 4px !important; box-sizing: border-box !important; }\n';
+    
+  // Put rootVars & structuralCss AFTER customCss so LLM :root redeclarations don't kill backdrop translucency or card stacking
+  var fullCss = (cfg.customCss || '') + '\n' + rootVars + structuralCss;
   var root = document.head || document.documentElement;
-  
-
   if(!root) return;
   if(!eStyle || !eStyle.isConnected) {
     eStyle = document.createElement('style');
@@ -838,6 +872,22 @@ function applySheets() {
     root.appendChild(eStyle);
   }
   if(eStyle.textContent !== fullCss) eStyle.textContent = fullCss;
+
+  // Universal Google Fonts loader (requests default weight only so single-weight fonts never 404)
+  var fontRegex = /font-family\s*:\s*['"]?([^;'"!,}]+)['"]?/gi, match;
+  while((match = fontRegex.exec(cfg.customCss || '')) !== null) {
+    var fam = match[1].trim();
+    if(fam && !/^(serif|sans-serif|monospace|cursive|fantasy|system-ui|inherit|initial|unset|Georgia|Arial|Verdana|Tahoma|Courier|Times)$/i.test(fam)) {
+      var id = '__mydes_font_' + fam.replace(/\W+/g, '_');
+      if(!document.getElementById(id) && document.head) {
+        var link = document.createElement('link');
+        link.id = id;
+        link.rel = 'stylesheet';
+        link.href = 'https://fonts.googleapis.com/css2?family=' + encodeURIComponent(fam).replace(/%20/g, '+') + '&display=swap';
+        document.head.appendChild(link);
+      }
+    }
+  }
 }
 
 /* ---------- 3. Custom Stage Layers (3D Backdrop + Optional HUD + Sandbox JS) ---------- */
@@ -852,7 +902,8 @@ function mountLayers() {
       document.body.prepend(bd);
     }
     if(bd.getAttribute('data-m-id') !== cfg.id) {
-      bd.innerHTML = cfg.backdropHtml;
+      var cleanBd = cfg.backdropHtml.replace(/<@keyframes\s+([^>]+)>/gi, '<style>@keyframes $1</style>');
+      bd.innerHTML = cleanBd; 
       bd.setAttribute('data-m-id', cfg.id);
     }
   } else if(bd) { bd.remove(); }
@@ -878,8 +929,13 @@ function mountLayers() {
       var openB = (jsCode.match(/\{/g)||[]).length - (jsCode.match(/\}/g)||[]).length;
       while(openB-- > 0) jsCode += '}';
       while(openP-- > 0) jsCode += ')';
+      // If the LLM wrote a bare function expression without invoking it, return & call it!
+      if(/^\s*\(\s*(?:function|\([^)]*\)\s*=>)/.test(jsCode) && !/\)\s*\([^)]*\)\s*;?\s*$/.test(jsCode)) {
+        jsCode = 'return (' + jsCode + ')(MydesBridge, T);';
+      }
       var fn = new Function('MydesBridge', 'T', jsCode);
-      fn(window.MydesBridge, cfg);
+      var ret = fn(window.MydesBridge, cfg);
+      if(typeof ret === 'function') ret(window.MydesBridge, cfg);
     } catch(e) { console.warn('[Mydes CustomJS Error]', e); }
   }
   window.MydesBridge._applyDecorators();
@@ -972,17 +1028,36 @@ function retag(){
     if(f)putNew(f,'search');
   });
   if(performance.now()-t0<35)findGrids();
-  each('[data-component-type="s-search-result"],[data-asin]:not([data-asin=""]),article,ytm-media-item,ytm-video-with-context-renderer',function(e){
-    if(e.parentElement && e.parentElement.closest('[data-mydes="card"]')) return; // Never nest a card inside a card!
+  // 1. Tag outer card containers FIRST so inner elements are never tagged instead of their parent on scroll
+  each('[data-component-type="s-search-result"],[data-asin]:not([data-asin=""]),article,ytm-video-with-context-renderer,ytm-rich-item-renderer',function(e){
+    if(e.parentElement && e.parentElement.closest('[data-mydes="card"]')) return;
+    if(!e.closest('#__mydes_hud,#__mydes_backdrop,nav,header,footer') && cardLike(e)){
+      put(e,'card');
+      if(e.parentElement && !e.parentElement.hasAttribute('data-mydes')) put(e.parentElement,'grid');
+      decorate(e);
+    }
+  });
+  // 2. Fallback for standalone inner media items that do NOT live inside an outer card container
+  each('ytm-media-item',function(e){
+    if(e.parentElement && e.parentElement.closest('[data-mydes="card"]')) {
+      e.removeAttribute('data-mydes'); // Clean up if previously mis-tagged before parent finished rendering
+      return;
+    }
     if(!e.closest('#__mydes_hud,#__mydes_backdrop,nav,header,footer') && cardLike(e)){
       putNew(e,'card');
       if(e.parentElement && !e.parentElement.hasAttribute('data-mydes')) putNew(e.parentElement,'grid');
       decorate(e);
     }
   });
-  // Mark multi-item shelves/carousels so they span full width if their parent becomes a CSS grid
+  // 3. Only mark true multi-card shelves/carousels (never mark a single card that just has an avatar + thumbnail)
   each('[data-mydes="grid"] > *, lazy-list > *, main > *', function(e){
-    if(e.querySelectorAll('img, video').length >= 3) e.setAttribute('data-mydes-shelf', 'true');
+    if(e.getAttribute('data-mydes') === 'card') {
+      e.removeAttribute('data-mydes-shelf');
+      return;
+    }
+    if(e.querySelectorAll('[data-mydes="card"], ytm-shorts-lockup-view-model, a:has(img)').length >= 2) {
+      e.setAttribute('data-mydes-shelf', 'true');
+    }
   });
   each('h1',function(e){if(!e.closest('#__mydes_hud,.__mydes_deco'))putNew(e,'title');});
   each('h2,h3,h4',function(e){if(!e.closest('#__mydes_hud,.__mydes_deco'))putNew(e,'heading');});
@@ -1218,55 +1293,136 @@ start();
      */
     const val OUTLINE_PROBE_JS = """
         (function(){
-          function getSel(e){
-            if(!e || e===document.body || e===document.documentElement) return '';
-            var s = e.tagName.toLowerCase();
-            if(e.id && !/\d{4,}/.test(e.id)) return s + '#' + CSS.escape(e.id);
-            var cl = (e.className && typeof e.className === 'string') ? e.className.trim().split(/\s+/).filter(function(c){ return c && c !== '__mydes_deco'; }) : [];
-            if(cl.length) s += '.' + cl.slice(0,2).map(function(c){ return window.CSS && CSS.escape ? CSS.escape(c) : c; }).join('.');
-            return s;
+          var vw = innerWidth, vh = innerHeight;
+
+          function getUniqueSel(el) {
+            if(!el || el === document.body || el === document.documentElement) return '';
+            var tag = el.tagName.toLowerCase();
+            if(el.id && !/\d{4,}/.test(el.id)) return tag + '#' + CSS.escape(el.id);
+            var classes = Array.from(el.classList || [])
+              .filter(function(c){ return c && !c.startsWith('__mydes') && !/\d{4,}/.test(c); })
+              .slice(0, 2);
+            return classes.length ? tag + '.' + classes.map(CSS.escape).join('.') : tag;
           }
 
-          var counts={};
-          ['header','nav','main','aside','footer','form','button','input','img','article','h1','h2','h3'].forEach(function(t){
-            counts[t]=document.querySelectorAll(t).length;
-          });
-          var groups={};
-          var cand=document.querySelectorAll('ytm-media-item,ytm-video-with-context-renderer,article,a,li,section,div');
-          for(var i=0;i<cand.length&&i<4000;i++){
-            var e=cand[i];
-            if(e.closest('#__mydes_hud,#__mydes_backdrop,.__mydes_deco'))continue;
-            if(e.children.length<1||e.children.length>16||!e.querySelector('img,video'))continue;
-            var t=(e.textContent||'').replace(/\s+/g,' ').trim();
-            if(t.length<8||t.length>300)continue;
-            var k=getSel(e);
-            if(!k)continue;
-            var p=e.parentElement;
-            var parentSel=p?getSel(p):'';
-            var g=groups[k]||(groups[k]={sel:k,parentSel:parentSel,n:0,sample:t.slice(0,40)});
-            g.n++;
+          // Middle-ground visibility check: must have real rendered pixel dimensions, anywhere in the entire document height!
+          function isRendered(el) {
+            if(!el || el.nodeType !== 1) return false;
+            var cs = getComputedStyle(el);
+            if(cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) === 0) return false;
+            var r = el.getBoundingClientRect();
+            return r.width > 16 && r.height > 16;
           }
-          var rawRep=Object.keys(groups).map(function(k){return groups[k];}).filter(function(g){return g.n>=3;}).sort(function(x,y){return y.n-x.n;});
-          var rep=[];
-          for(var rIdx=0;rIdx<rawRep.length&&rep.length<5;rIdx++){
-            var candG=rawRep[rIdx], isInner=false;
-            try{
-              var sampleEl=document.querySelector(candG.sel);
-              for(var pIdx=0;pIdx<rep.length;pIdx++){
-                if(sampleEl && sampleEl.parentElement && sampleEl.parentElement.closest(rep[pIdx].sel)){
-                  isInner=true; break;
+
+          // 1. Top Navigation / Header
+          var topBars = Array.from(document.querySelectorAll('header, nav, [role="banner"], [class*="header"], [class*="topbar"], [class*="navbar"]'))
+            .filter(function(el){
+              if(!isRendered(el)) return false;
+              var r = el.getBoundingClientRect();
+              var cs = getComputedStyle(el);
+              return (r.top <= 60 && r.width >= vw * 0.8 && r.height <= 120) || cs.position === 'fixed' || cs.position === 'sticky';
+            });
+          var searchEl = topBars[0] ? topBars[0].querySelector('input, form, yt-searchbox, [class*="search"], button[aria-label*="Search" i], [role="search"]') : null;
+          var header = topBars[0] ? {
+            sel: getUniqueSel(topBars[0]),
+            searchSel: searchEl ? getUniqueSel(searchEl) : null,
+            height: Math.round(topBars[0].getBoundingClientRect().height)
+          } : null;
+
+          // 2. Bottom Bar / Dock
+          var bottomBars = Array.from(document.querySelectorAll('footer, ytm-pivot-bar-renderer, [role="navigation"], [class*="bottom"], [class*="pivot"], [class*="tabbar"]'))
+            .filter(function(el){
+              if(!isRendered(el)) return false;
+              var r = el.getBoundingClientRect();
+              var cs = getComputedStyle(el);
+              return (r.bottom >= vh - 20 && r.width >= vw * 0.8 && r.height <= 90) || (cs.position === 'fixed' && r.top > vh * 0.7);
+            });
+          var bottomBar = bottomBars[0] ? {
+            sel: getUniqueSel(bottomBars[0]),
+            height: Math.round(bottomBars[0].getBoundingClientRect().height)
+          } : null;
+
+          // 3. Filter / Chip Strip
+          var filterBars = Array.from(document.querySelectorAll('ytm-chip-cloud-renderer, [class*="chip"], [class*="filter"], [role="tablist"]'))
+            .filter(function(el){
+              if(!isRendered(el)) return false;
+              var r = el.getBoundingClientRect();
+              return r.height < 65 && r.width >= vw * 0.7 && el != (bottomBars[0] || null);
+            });
+          var filterBar = filterBars[0] ? { sel: getUniqueSel(filterBars[0]) } : null;
+
+          // 4. All Card Archetypes Across the Entire Document (Categorized by Size & Orientation, NOT "primary vs secondary")
+          var cand = document.querySelectorAll('ytm-video-with-context-renderer, ytm-rich-item-renderer, ytm-compact-video-renderer, ytm-playlist-panel-video-renderer, ytm-shorts-lockup-view-model, article, [data-component-type="s-search-result"], [class*="card"], [class*="item"], [class*="renderer"], li');
+          var groups = {};
+          for(var i=0; i<cand.length && i<3000; i++) {
+            var c = cand[i];
+            if(c.closest('header, nav, footer, ytm-pivot-bar-renderer, #__mydes_backdrop, #__mydes_hud, .__mydes_deco')) continue;
+            if(!isRendered(c)) continue;
+            var r = c.getBoundingClientRect();
+            if(r.width < vw * 0.22 || r.height < 45) continue;
+            if(!c.querySelector('img, video, picture')) continue;
+            var t = (c.textContent || '').trim();
+            if(t.length < 6 || t.length > 600) continue;
+
+            var s = getUniqueSel(c);
+            if(!s || s === 'div' || s === 'section') continue;
+            var pSel = c.parentElement ? getUniqueSel(c.parentElement) : '';
+            groups[s] = groups[s] || { sel: s, parentSel: pSel, sample: c, count: 0, w: Math.round(r.width), h: Math.round(r.height) };
+            groups[s].count++;
+          }
+
+          // Filter out inner wrappers if an outer card wrapper in the same subtree is already in `groups`
+          var rawList = Object.keys(groups).map(function(k){ return groups[k]; }).filter(function(g){ return g.count >= 2; });
+          var cardArchetypes = [];
+          for(var a=0; a<rawList.length; a++) {
+            var g = rawList[a];
+            var isNestedInsideAnother = false;
+            for(var b=0; b<rawList.length; b++) {
+              if(a === b) continue;
+              if(g.sample.parentElement && g.sample.parentElement.closest(rawList[b].sel)) {
+                // Only skip if the outer one isn't a multi-card shelf holding 2+ of these
+                if(rawList[b].sample.querySelectorAll(g.sel).length <= 1) {
+                  isNestedInsideAnother = true;
+                  break;
                 }
               }
-            }catch(e){}
-            if(!isInner) rep.push(candG);
+            }
+            if(isNestedInsideAnother) continue;
+
+            var sampleEl = g.sample;
+            var imgEl = sampleEl.querySelector('img, video');
+            var headingEl = sampleEl.querySelector('h1, h2, h3, h4, [class*="title"], [class*="headline"]');
+            var isRow = false;
+            if(imgEl && headingEl) {
+              var ir = imgEl.getBoundingClientRect(), hr = headingEl.getBoundingClientRect();
+              if(ir.width > 0 && hr.width > 0 && Math.abs(ir.top - hr.top) < 40 && ir.left < hr.left) isRow = true;
+            }
+            var sizeCategory = g.w >= vw * 0.7 ? (isRow ? 'full-width-horizontal-row-card' : 'full-width-vertical-card') : 'compact-grid-tile';
+            cardArchetypes.push({
+              sizeCategory: sizeCategory,
+              cardSelector: g.sel,
+              containerSelector: g.parentSel,
+              dimensions: { w: g.w, h: g.h },
+              count: g.count,
+              anatomy: {
+                mediaWrapper: imgEl ? getUniqueSel(imgEl.closest('a, [class*="thumbnail"]') || imgEl) : null,
+                mediaImg: imgEl ? getUniqueSel(imgEl) : null,
+                title: headingEl ? getUniqueSel(headingEl) : null
+              }
+            });
           }
-          var heads=[].slice.call(document.querySelectorAll('h1,h2,h3')).slice(0,6).map(function(h){return (h.textContent||'').trim().slice(0,40);});
-          var o;
-          if(window.__mydes && window.__mydes.outline){o=JSON.parse(window.__mydes.outline());}
-          else{o={url:location.href,host:location.hostname,title:(document.title||'').slice(0,80),viewport:{w:innerWidth,h:innerHeight},counts:counts};}
-          o.repeatedItems=rep;
-          o.headings=heads;
-          return o;
+
+          return JSON.stringify({
+            url: location.href,
+            host: location.hostname,
+            viewport: { w: vw, h: vh },
+            components: {
+              header: header,
+              filterBar: filterBar,
+              cardArchetypes: cardArchetypes.slice(0, 6),
+              bottomBar: bottomBar
+            }
+          });
         })();
     """
 
@@ -1970,21 +2126,32 @@ EXECUTION ORDER & MANDATORY DIRECTIONS
 - You MUST populate the 1-line `implemented` checklist at the very top of the JSON first (`signature`, `layout`, `surface`, `newElements`, `rules`), committing to the exact selectors and mechanisms from the outline before generating code. Each `implemented` value is ONE short sentence (max 20 words), with no code and no lists.
 - You MUST generate `backdropHtml` and `customJs` BEFORE `customCss` so that the SIGNATURE backdrop and NEW DOM ELEMENTS (`MydesBridge.decorateUnits` and `MydesBridge.injectOrnament`) are fully realized while your attention is 100% fresh.
 - In `customCss`, you MUST implement every single item from `RULES` (header, search, headings, repeated items/cards, links, buttons, images), `SURFACE`, `LAYOUT`, and `TYPE`. Never skip any direction.
-- Import the needed fonts in customCss through Google Fonts. Link structure for importing a font- 'https://fonts.googleapis.com/css2?family=' + fontName + ':wght@400;600;700;800&display=swap'.
+
+COMPONENT ARCHETYPE CONTRACT:
+The outline provides a `components` map containing the exact live selectors for this website:
+1. `header`: Apply the SIGNATURE header rules, backdrop/glass styling, and brand identity directly to `components.header.sel` (and use MydesBridge.injectOrnament on it). Style `components.header.sel` as the themed bar, and style `components.header.searchSel` (if present) as the search input/trigger.
+2. `filterBar`: If present, style `components.filterBar.sel` and its child chips/pills to match the theme's surface, accent border, and typography.
+3. `cardArchetypes`: The outline lists ALL card types on the page grouped by their dimensions (`full-width-vertical-card`, `full-width-horizontal-row-card`, `compact-grid-tile`):
+   - You MUST style EVERY `cardSelector` in `components.cardArchetypes` (along with `[data-mydes="card"]`) using the art director's SURFACE, RULES, and NEW DOM ELEMENTS (`MydesBridge.decorateUnits`).
+   - Respect their dimensions:
+     * For `full-width-vertical-card` and `full-width-horizontal-row-card`: keep them as full-width dossier panels (`width: 100% !important; display: flex !important; flex-direction: column !important;`) with their `anatomy.mediaWrapper` and `anatomy.mediaImg` stretched to `width: 100% !important; height: auto !important;`.
+     * For `compact-grid-tile`: keep them in a 2-column grid (`grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 10px !important;`) on their `containerSelector`.
+     * Style every archetype's `anatomy.title` with the TYPE directions (`-webkit-line-clamp: unset !important; overflow: visible !important;`).4. `shelves`: If any shelf selectors are listed in `components.shelves`, span them full width (`grid-column: 1 / -1 !important; width: 100% !important;`).
+5. `bottomBar`: If present, style `components.bottomBar.sel` to match the theme background, surface borders, and icons.
 
 RUNTIME & TOOLS
 - Real elements carry data-mydes="header|nav|search|main|grid|card|title|heading|price|btn|field|media|aside|footer". Select with `html body [data-mydes="X"]`. Roles are hints, not guarantees: the page's main repeating items may NOT be tagged `card`. The outline lists roleCounts, roleSamples and repeatedItems (real `sel` and `parentSel` selectors). Whenever the directions talk about items, cards or results, style `html body [data-mydes="card"]` AND those real `sel` selectors too. Also style standard tags (h1-h3, p, a, ul, li, table, figure, img).
 - :root variables: --m-bg --m-surface --m-surface2 --m-fg --m-ink --m-accent, and motion variables --m-rx --m-ry (deg) --m-scroll (px).
 - `backdropHtml`: A vivid scene drawn with inline SVG, CSS or one canvas that realizes the SIGNATURE background/stage. It sits behind all page content. Keep `html { background-color: var(--m-bg) !important; }` and `body, main, [data-mydes="main"], [data-mydes="grid"] { background-color: transparent !important; }` so the backdrop shows through clearly. When animating SVG `<g>` or `<circle>` elements inside backdropHtml, use pure `rotate(0deg)` -> `rotate(360deg)` with `transform-origin: center; transform-box: fill-box;` (never put `translate(-50%, -50%)` inside @keyframes on inner SVG shapes).
-- `customJs`: Runs as (MydesBridge, T). You MUST use `customJs` to create the `NEW DOM ELEMENTS` specified in the directions:
-  * `MydesBridge.decorateUnits(selector, htmlString)`: In `MydesBridge.decorateUnits(sel, htmlString)`, pass an HTML/SVG string as the second argument (do NOT write complex DOM-creation callbacks). Only target the outermost card selector in repeatedItems, never inner details wrappers.
+- `customJs`: Runs as (MydesBridge, T). Write top-level statements directly: MydesBridge.decorateUnits(...); MydesBridge.injectOrnament(...); MydesBridge.enable3DTilt(12);. NEVER wrap customJs in (function(){...})! You MUST use `customJs` to create the `NEW DOM ELEMENTS` specified in the directions:
+  * `MydesBridge.decorateUnits(selector, htmlString)`: In `MydesBridge.decorateUnits(sel, htmlString)`, pass an HTML/SVG string as the second argument (do NOT write complex DOM-creation callbacks). Only target the outermost card selector in repeatedItems, never inner details wrappers. Always pass components.primaryFeed.cardSelector + ', [data-mydes=\"card\"]' as the first argument to MydesBridge.decorateUnits(...) so every card on the page gets the SVG ornaments.
   * `MydesBridge.injectOrnament(targetSelector, svgOrHtmlString, "append"|"prepend")`: Creates and mounts new thematic SVG/HTML centerpiece or structural elements into the header or main stage.
   * `MydesBridge.enable3DTilt(n)`: Updates `--m-rx` and `--m-ry` on scroll/touch. Whenever you call `enable3DTilt`, you MUST reference `var(--m-rx)` and `var(--m-ry)` inside a `transform` rule in `customCss`.
   * Also available: `focusSearch()`, `proxySearch(q)`, `proxyClick(selector)`, `onCleanup(fn)`.
 
 SPATIAL & LAYOUT SAFETY (APPLIES TO ANY CHOSEN LAYOUT)
 - Implement whatever `LAYOUT` the directions specify on the parent container (`parentSel` and `[data-mydes="grid"]`) and child items (`sel` and `[data-mydes="card"]`), while obeying these structural physics laws so the layout never breaks on any screen size:
-  1. NO HORIZONTAL OVERFLOW: Any multi-column or flex/grid container must use fluid tracks (`minmax(0, 1fr)`) and `width: 100% !important; max-width: 100% !important; box-sizing: border-box !important;`, and all child items must include `min-width: 0 !important; max-width: 100% !important; box-sizing: border-box !important;`.
+  1. NO HORIZONTAL OVERFLOW: Any multi-column grid MUST use explicit column counts like grid-template-columns: repeat(2, minmax(0, 1fr)) or minimum pixel widths like repeat(auto-fill, minmax(160px, 1fr)) — NEVER write repeat(auto-fill, minmax(0, 1fr))! and `width: 100% !important; max-width: 100% !important; box-sizing: border-box !important;`, and all child items must include `min-width: 0 !important; max-width: 100% !important; box-sizing: border-box !important;`.
   2. REFLOW INTERNAL ROWS WHEN NARROWED: Whenever your layout places items side-by-side or narrows an item below 60% of the viewport width, any horizontal row inside that item (such as a side-by-side thumbnail + text wrapper) MUST be stacked vertically (`display: flex !important; flex-direction: column !important; width: 100% !important;`) with its media/thumbnail container and `img`/`video` set to `width: 100% !important; height: auto !important;`.
   3. PROTECT NESTED CAROUSELS/SHELVES: Never squeeze a container that already holds multiple side-by-side cards (`[data-mydes-shelf="true"]`) into a narrow single column of a parent grid—always let nested shelves and continuation sentinels (`[data-mydes-sentinel="true"]`) span the full container width (`grid-column: 1 / -1 !important; width: 100% !important;`).
   4. BAN @MEDIA (MAX-WIDTH: 600PX) RESETS: The target viewport is ALREADY a mobile phone (~400px wide). NEVER write @media (max-width: 600px) or @media (max-width: 768px) rules that collapse your layout back to 1fr—design your primary layout directly for the ~400px mobile viewport.
@@ -1996,6 +2163,7 @@ HARD RULES
 - MEDIA OVERLAYS: Never cover an image or video thumbnail with opaque elements! If a card places its heading/title inside an overlay on top of media, either set `position: static !important; width: 100% !important;` on the text wrapper so the title sits neatly BELOW the media, or keep the overlay compact (`font-size: 12px !important; padding: 3px 6px !important; max-height: 3.4em !important;`) at the bottom edge.
 - FULL TITLES (NO PREMATURE TRUNCATION): Whenever you style headings or titles (`h1-h4`, `[data-mydes="heading"]`, `[data-mydes="title"]`, `[class*="headline"]`), ALWAYS include `-webkit-line-clamp: unset !important; line-clamp: unset !important; max-height: none !important; height: auto !important; overflow: visible !important; display: block !important; white-space: normal !important; word-break: normal !important; overflow-wrap: break-word !important;` so titles are never sliced off after two words or wrapped letter-by-letter.
 - TEXT COLOUR: Never set `color` on generic tags (p, span, a, div, h1-h3) unless the same rule also sets the background behind them. A surface you style (card, header, item) sets its own background and `color` together and its descendants inherit; everything else inherits --m-fg from the page. All text must stay readable (>= 4.5:1 contrast).
+- CLIP-PATH SAFETY: Never use clip-path: polygon(...) with corner cuts deeper than 8px (use calc(100% - 8px) instead of percentages like 12% / 88%), or prefer borders, box-shadow, and MydesBridge.decorateUnits SVG frames so you never slice off card titles or corner ornaments.
 - No invented words in CSS `::before`/`::after` `content`. Use `MydesBridge.decorateUnits` and `MydesBridge.injectOrnament` in `customJs` for custom SVG/HTML elements instead.
 
 OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
