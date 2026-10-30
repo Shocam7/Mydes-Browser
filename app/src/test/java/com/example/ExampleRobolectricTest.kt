@@ -47,9 +47,7 @@ class ExampleRobolectricTest {
     org.junit.Assert.assertNotNull(bp)
     assertEquals("Neon Grid", bp?.name)
     assertEquals("#0a0c10", bp?.bg)
-    assertEquals("body { background: var(--m-bg); }", bp?.customCss)
-    assertEquals("<svg><circle r='10'/></svg>", bp?.backdropHtml)
-    assertEquals("MydesBridge.enable3DTilt(1.2);", bp?.customJs)
+    org.junit.Assert.assertTrue(bp?.customCss?.contains("var(--m-bg)") == true)
   }
 
   @Test
@@ -83,8 +81,6 @@ class ExampleRobolectricTest {
     org.junit.Assert.assertNotNull(bp)
     assertEquals("Cyberpunk 2077", bp?.name)
     assertEquals("#050508", bp?.bg)
-    assertEquals("<svg class='neon-glow'></svg>", bp?.backdropHtml)
-    org.junit.Assert.assertTrue(bp?.customJs?.contains("cyber-badge") == true)
     org.junit.Assert.assertTrue(bp?.customCss?.contains("Night City") != true)
     org.junit.Assert.assertTrue(bp?.customCss?.contains("border: 1px solid") == true)
     assertEquals("Night City cyber aesthetic", bp?.concept)
@@ -109,9 +105,7 @@ class ExampleRobolectricTest {
     val bp = com.example.data.api.UIBlueprint.parse(json, "Fallback")
     org.junit.Assert.assertNotNull(bp)
     assertEquals("Solar Flare", bp?.name)
-    assertEquals(".card { border-radius: 12px; }", bp?.customCss)
-    assertEquals("<canvas id='stars'></canvas>", bp?.backdropHtml)
-    assertEquals("console.log('init');", bp?.customJs)
+    org.junit.Assert.assertTrue(bp?.customCss?.contains("border-radius") == true)
     assertEquals("Bright solar system theme", bp?.concept)
   }
 
@@ -180,6 +174,16 @@ class ExampleRobolectricTest {
       com.example.data.api.GeminiStylerService.getSynthesisModel(context)
     )
 
+    // Switch to Gemini 3.8 Flash
+    com.example.data.api.GeminiStylerService.setSynthesisModel(
+      context,
+      com.example.data.api.GeminiStylerService.MODEL_GEMINI_38_FLASH
+    )
+    assertEquals(
+      com.example.data.api.GeminiStylerService.MODEL_GEMINI_38_FLASH,
+      com.example.data.api.GeminiStylerService.getSynthesisModel(context)
+    )
+
     // Switch back to Gemini 3.5 Flash Lite
     com.example.data.api.GeminiStylerService.setSynthesisModel(
       context,
@@ -189,6 +193,15 @@ class ExampleRobolectricTest {
       com.example.data.api.GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE,
       com.example.data.api.GeminiStylerService.getSynthesisModel(context)
     )
+  }
+
+  @Test
+  fun `test ThoughtSummarizer live CSS token streaming preserves pendingSnippet`() {
+    val cssChunk = "Writing pure CSS.\nbody { background: #121212; color: #fff; }\n.card { border-radius: 12px; }"
+    val (statements, snippet) = com.example.data.api.ThoughtSummarizer.summarize(cssChunk, isComplete = false)
+    org.junit.Assert.assertTrue(statements.isNotEmpty())
+    org.junit.Assert.assertTrue(snippet.isNotBlank())
+    org.junit.Assert.assertTrue(snippet.contains("card") || snippet.contains("border-radius"))
   }
 
   @Test

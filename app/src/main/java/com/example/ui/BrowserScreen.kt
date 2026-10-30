@@ -16,6 +16,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -62,6 +63,7 @@ import com.example.ui.components.FindInPageBar
 import com.example.ui.components.HistorySheet
 import com.example.ui.components.ImportRedesignDialog
 import com.example.ui.components.MorphingOptionsButton
+import com.example.ui.components.MorphingWebOverlay
 import com.example.ui.components.NewTabPlusButton
 import com.example.ui.components.OptionsPillMenu
 import com.example.ui.components.SettingsSheet
@@ -262,6 +264,15 @@ fun BrowserScreen(
             }
         }
 
+        // 1.5. Morphing Web Overlay:
+        // Translucent overlay with extracted theme 'bg' rising from bottom behind all app controls,
+        // displaying live streaming thinking statements in 'fg' color inside an expandable dropdown.
+        MorphingWebOverlay(
+            state = aiThinkingState,
+            onDismiss = { viewModel.dismissMorphOverlay() },
+            modifier = Modifier.fillMaxSize()
+        )
+
         // 2. Slim Top Progress Line at the very top of screen
         SlimTopProgressBar(
             isLoading = currentTab.isLoading,
@@ -334,25 +345,31 @@ fun BrowserScreen(
                             strokeWidth = 2.5.dp
                         )
                     }
+                    val isBrushActive = isCustomStyleApplied
                     Box(
                         modifier = Modifier
                             .size(44.dp)
-                            .shadow(3.dp, CircleShape)
+                            .shadow(if (isBrushActive) 5.dp else 2.dp, CircleShape)
                             .clip(CircleShape)
-                            .background(if (isAiStylerPillVisible || isCustomStyleApplied) Color(0xFF1E2024) else Color(0xFFE4E6EA))
+                            .background(if (isBrushActive) Color(0xFF1E2024) else Color(0xFFE4E6EA))
+                            .border(
+                                width = if (isBrushActive) 1.5.dp else 0.dp,
+                                color = if (isBrushActive) Color(0xFFF6C343) else Color.Transparent,
+                                shape = CircleShape
+                            )
                             .clickable(
                                 interactionSource = remember { MutableInteractionSource() },
                                 indication = ripple(bounded = true),
                                 onClick = { viewModel.toggleAiStylerPill() }
                             )
                             .testTag("standalone_brush_button")
-                            .semantics { contentDescription = "AI Website Styler brush" },
+                            .semantics { contentDescription = if (isBrushActive) "AI Website Styler brush (Theme active)" else "AI Website Styler brush" },
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.Default.Brush,
                             contentDescription = null,
-                            tint = if (isAiStylerPillVisible || isCustomStyleApplied) Color(0xFFF6C343) else Color(0xFF33373D),
+                            tint = if (isBrushActive) Color(0xFFF6C343) else Color(0xFF33373D),
                             modifier = Modifier.size(20.dp)
                         )
                     }

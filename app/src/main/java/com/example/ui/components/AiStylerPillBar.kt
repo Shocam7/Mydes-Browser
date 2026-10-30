@@ -18,6 +18,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -53,6 +54,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -174,6 +176,41 @@ fun AiStylerPillBar(
                 .padding(horizontal = 14.dp, vertical = 6.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // Deactivation cross button on right side just above AiStylerPillBar
+            if (isStyleApplied) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 6.dp, end = 2.dp),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .shadow(4.dp, CircleShape)
+                            .clip(CircleShape)
+                            .background(Color(0xFF1E2024))
+                            .border(1.dp, Color(0xFFFF6B6B).copy(alpha = 0.6f), CircleShape)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = ripple(bounded = true),
+                                onClick = onResetStyle
+                            )
+                            .testTag("deactivate_theme_cross_button")
+                            .semantics { contentDescription = "Deactivate theme and restore original website" },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = null,
+                            tint = Color(0xFFFF6B6B),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+            }
+
             // 1. CAROUSEL OF PREVIOUS GENERATIONS FOR THIS WEBSITE
             if (previousGenerations.isNotEmpty()) {
                 PreviousGenerationsSection(
@@ -193,15 +230,43 @@ fun AiStylerPillBar(
                     .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // 1-Tap Quick Model Switcher: Nemotron 3 Ultra (NIM) <-> Gemini 3.5 Flash Lite
+                // 1-Tap Quick Model Switcher: Gemini 3.5 Flash Lite <-> Gemini 3.8 Flash <-> Nemotron 3 Ultra (NIM)
                 val isNemotron = selectedSynthesisModel == com.example.data.api.GeminiStylerService.MODEL_NVIDIA_NEMOTRON_3_ULTRA
+                val isGemini38 = selectedSynthesisModel == com.example.data.api.GeminiStylerService.MODEL_GEMINI_38_FLASH
+
+                val modelLabel = when {
+                    isNemotron -> "Nemotron 3 Ultra (NIM)"
+                    isGemini38 -> "Gemini 3.8 Flash"
+                    else -> "Gemini 3.5 Flash Lite"
+                }
+                val dotColor = when {
+                    isNemotron -> Color(0xFF76B900)
+                    isGemini38 -> Color(0xFFA855F7)
+                    else -> Color(0xFF4285F4)
+                }
+                val bgColor = when {
+                    isNemotron -> Color(0xFF1B3818)
+                    isGemini38 -> Color(0xFF281438)
+                    else -> Color(0xFF182845)
+                }
+                val borderColor = when {
+                    isNemotron -> Color(0xFF76B900)
+                    isGemini38 -> Color(0xFFA855F7)
+                    else -> Color(0xFF4285F4)
+                }
+                val switchColor = when {
+                    isNemotron -> Color(0xFF76B900)
+                    isGemini38 -> Color(0xFFD8B4FE)
+                    else -> Color(0xFF8AB4F8)
+                }
+
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(16.dp))
-                        .background(if (isNemotron) Color(0xFF1B3818) else Color(0xFF182845))
+                        .background(bgColor)
                         .border(
                             width = 1.dp,
-                            color = if (isNemotron) Color(0xFF76B900) else Color(0xFF4285F4),
+                            color = borderColor,
                             shape = RoundedCornerShape(16.dp)
                         )
                         .clickable(onClick = onToggleSynthesisModel)
@@ -217,17 +282,17 @@ fun AiStylerPillBar(
                             modifier = Modifier
                                 .size(7.dp)
                                 .clip(CircleShape)
-                                .background(if (isNemotron) Color(0xFF76B900) else Color(0xFF4285F4))
+                                .background(dotColor)
                         )
                         Text(
-                            text = if (isNemotron) "Nemotron 3 Ultra (NIM)" else "Gemini 3.5 Flash Lite",
+                            text = modelLabel,
                             color = Color.White,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
                             text = "⇄ Switch",
-                            color = if (isNemotron) Color(0xFF76B900) else Color(0xFF8AB4F8),
+                            color = switchColor,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.SemiBold
                         )
@@ -419,15 +484,6 @@ fun AiStylerPillBar(
                         )
                     }
                 }
-            }
-
-            // 4. Live AI Thinking & Reasoning Display (Chatbot-style)
-            if (thinkingState.isActive || (thinkingState.isFinished && thinkingState.summarizedStatements.isNotEmpty())) {
-                Spacer(modifier = Modifier.height(8.dp))
-                AiThinkingDisplayPanel(
-                    state = thinkingState,
-                    modifier = Modifier.fillMaxWidth()
-                )
             }
 
             // Error notice if generation had an issue

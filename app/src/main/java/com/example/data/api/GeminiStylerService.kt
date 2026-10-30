@@ -50,21 +50,21 @@ import kotlin.coroutines.resume
 import kotlin.math.roundToInt
 
 /*
- * v11 - "Generative UI Synthesis Engine: V4 Visual Core + Asymmetric Panels + Live DOM Elements"
+ * v19 - "Zero-Lag 60fps Static Artistry Engine"
  *
- * How it works:
- * 1. Restores the exact high-contrast, high-creativity runtime core of v4 (`remapSurfaces = true`,
- *    clean stylesheet ordering without destructive post-CSS inline overrides).
- * 2. Preserves all production infrastructure: SSE Streaming (`streamGenerateContent`), `onThinkingUpdate`
- *    progress callbacks, fail-fast Concept Pass, and `ResilientGoogleDns` (4-tier raw socket + cache).
- * 3. Solves the 3 V4 Limitations:
- *    - Asymmetric Panel Grids (1-2-1 Span Pattern): Teach the builder to alternate full-width hero panels
- *      (`:nth-child(3n+1) { grid-column: 1 / -1 }`) with angled side-by-side split panels while keeping
- *      multi-item shelves (`[data-mydes-shelf="true"]`) spanned full-width so nothing ever gets crushed.
- *    - New DOM Elements (`newElements` + `MydesBridge.decorateUnits` / `injectOrnament`): Explicitly directs
- *      `customJs` to create and mount bespoke SVG/HTML elements onto cards and headers.
- *    - Thumbnail & Title Integrity: Prevents opaque text boxes from covering vertical thumbnails and
- *      unclamps headings (`-webkit-line-clamp: unset`) so titles are never cut off after two words.
+ * Designed for Mid-to-High Tier Mobile Devices:
+ * 1. Zero GPU Lag & Zero Full-Screen Overdraw:
+ *    - Eliminates full-viewport `body::before`/`body::after` particle/blend overlays, continuous
+ *      `@keyframes` loops, `background-attachment: fixed`, and per-card `backdrop-filter: blur()`.
+ *    - Guarantees native 60fps scrolling performance on mid-tier mobile GPUs.
+ * 2. Token-Efficient, High-Craftsmanship Pipeline:
+ *    - Pass 1 (Visual Architect) focuses 100% on static visual artistry: rich color harmony,
+ *      tactile surface gradients, crisp geometric corner/edge trims, polychromatic :nth-child
+ *      rhythms, and expressive typography.
+ *    - Pass 2 (Pure CSS Compiler) compiles clean, lightweight, conflict-free CSS with instant
+ *      `:active` / `:focus-within` tactile transitions instead of heavy infinite animations.
+ *    - Pass 3 (Telemetry & Visual Reviewer) stitches any un-themed host containers (`clashingSurfaces`)
+ *      and low-contrast text (`lowContrastText`) without adding heavy overlays.
  */
 
 // ───────────────────────── Gemini wire models ─────────────────────────
@@ -167,14 +167,22 @@ object Hex {
             (p[2] + (q[2] - p[2]) * t).roundToInt()
         )
     }
+
+    private val HEX_FINDER = Regex("#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})")
+    fun extractFirstHex(s: String?, fallback: String): String {
+        if (s.isNullOrBlank()) return fallback
+        val m = HEX_FINDER.find(s) ?: return fallback
+        return norm(m.value, fallback)
+    }
+    fun extractSecondHex(s: String?, fallback: String): String {
+        if (s.isNullOrBlank()) return fallback
+        val matches = HEX_FINDER.findAll(s).toList()
+        return if (matches.size >= 2) norm(matches[1].value, fallback) else extractFirstHex(s, fallback)
+    }
 }
 
-// ───────────────────── Generative UI Blueprint ─────────────────────
+// ───────────────────── 60fps Mobile GPU Sanitizer & Auto-Healer ─────────────────────
 
-/**
- * Removes ::before/::after rules that inject generic fake text labels (e.g. content:"> SYS.RECORD").
- * Icons, symbols, bullets, and SVG/data-URIs are kept.
- */
 internal fun stripInventedLabels(css: String): String =
     css.replace(
         Regex("""[^{}]*::?(?:before|after)\s*\{[^{}]*content\s*:\s*(["'])(?!data:)[^"'{}]*[A-Za-z]{4,}[^"'{}]*\1[^{}]*\}""", RegexOption.IGNORE_CASE),
@@ -182,22 +190,119 @@ internal fun stripInventedLabels(css: String): String =
     )
 
 /**
- * 1. Strips @import rules from CSS (we load fonts cleanly via <link> in JS without :wght@ 404 errors).
- * 2. Strips any @media (max-width: ...) block that collapses grid-template-columns to 1fr on mobile.
+ * 60fps Mobile GPU & Layout Firewall:
+ * 1. Strips full-screen `body::before` and `body::after` overlays (eliminates full-screen blend-mode overdraw).
+ * 2. Strips `background-attachment: fixed` (which disables hardware-accelerated scrolling on mobile WebViews).
+ * 3. Strips `backdrop-filter` on repeating `[data-mydes="card"]` elements (prevents per-card Gaussian blur lag).
+ * 4. Repairs mojibake in `content: "..."` and illegal shorthand tokens inside `background-image:`.
+ * 5. Protects native Flexbox/Grid layouts and prevents bare `a`/`button` tags from breaking containers.
  */
 internal fun sanitizeGeneratedCss(css: String): String {
     var out = stripInventedLabels(css)
     out = out.replace(Regex("""@import\s+url\([^)]+\)\s*;?""", RegexOption.IGNORE_CASE), "")
-    // CRITICAL FIX: repeat(auto-fill, minmax(0, 1fr)) creates dozens of 0px columns and crushes cards into skinny vertical strips!
+
+    // 1. Strip full-screen body::before and body::after rules & @keyframes to guarantee 60fps scrolling
     out = out.replace(
-        Regex("""repeat\(\s*auto-(?:fill|fit)\s*,\s*minmax\(\s*0(?:px)?\s*,\s*1fr\s*\)\s*\)""", RegexOption.IGNORE_CASE),
-        "repeat(auto-fill, minmax(160px, 1fr))"
+        Regex("""(?:html\s+)?body::?(?:before|after)\s*\{[^{}]*\}""", RegexOption.IGNORE_CASE),
+        ""
     )
     out = out.replace(
-        Regex("""@media\s*\(\s*max-width\s*:\s*\d+px\s*\)\s*\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}""", RegexOption.IGNORE_CASE)
-    ) { match ->
-        if (match.value.contains("1fr")) "" else match.value
+        Regex("""@keyframes\s+[A-Za-z0-9_-]+\s*\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}""", RegexOption.IGNORE_CASE),
+        ""
+    )
+    out = out.replace(
+        Regex("""animation(?:-name|-duration|-timing-function|-iteration-count|-direction)?\s*:[^;!}]+(?:!important)?\s*;?""", RegexOption.IGNORE_CASE),
+        ""
+    )
+
+    // 2. Strip `background-attachment: fixed` (causes severe repaint lag during touch scrolling on Android WebView)
+    out = out.replace(
+        Regex("""background-attachment\s*:\s*fixed\s*(?:!important)?\s*;?""", RegexOption.IGNORE_CASE),
+        ""
+    )
+
+    // 3. Strip `backdrop-filter` from repeating `[data-mydes="card"]` rules (major GPU bottleneck on mid-tier phones)
+    out = out.replace(Regex("""(\[data-mydes=['"]card['"]\][^{]*\{)([^}]+)\}""", RegexOption.IGNORE_CASE)) { match ->
+        val sel = match.groupValues[1]
+        val body = match.groupValues[2]
+            .replace(Regex("""(?:-webkit-)?backdrop-filter\s*:[^;!}]+(?:!important)?\s*;?""", RegexOption.IGNORE_CASE), "")
+        "$sel$body}"
     }
+
+    // 4. Fix corrupted UTF-8 / mojibake inside ::before/::after `content: "..."`
+    out = out.replace(Regex("""content\s*:\s*(["'])([^"']*)\1""")) { match ->
+        val quote = match.groupValues[1]
+        val inner = match.groupValues[2]
+        if (inner.isEmpty() || inner.startsWith("\\")) {
+            match.value
+        } else {
+            val hasMojibake = inner.any { ch ->
+                val code = ch.code
+                (code in 0xE000..0xF8FF) || (code in 0xFF61..0xFF9F) || (code in 0x4E00..0x9FFF && inner.length <= 4) || code == 0xFFFD
+            }
+            if (hasMojibake) "content: ${quote}\\2726 ${quote}" else match.value
+        }
+    }
+
+    // 5. Strip layout-breaking flex-direction overrides & negative margins
+    out = out.replace(
+        Regex("""flex-direction\s*:\s*column\s*(?:!important)?\s*;?""", RegexOption.IGNORE_CASE),
+        ""
+    )
+    out = out.replace(
+        Regex("""margin(?:-bottom|-top)?\s*:\s*-\d+(?:\.\d+)?(?:px|rem|em|%)\s*(?:!important)?\s*;?""", RegexOption.IGNORE_CASE),
+        "margin-bottom: 12px;"
+    )
+
+    // 6. Strip unreferenced external SVG url(#id) masks
+    out = out.replace(
+        Regex("""(?:-webkit-)?mask(?:-image)?\s*:\s*url\([^)]+\)\s*(?:!important)?\s*;?""", RegexOption.IGNORE_CASE),
+        ""
+    )
+
+    // 7. Syntax Auto-Healer: Clean illegal shorthand placement inside background-image declarations
+    out = out.replace(Regex("""background-image\s*:\s*([^;!}]+)""", RegexOption.IGNORE_CASE)) { match ->
+        val propVal = match.groupValues[1]
+        val cleaned = propVal.replace(
+            Regex("""\)\s+(?:[\d.]+(?:px|%|em|rem)?\s+[\d.]+(?:px|%|em|rem)?(?:\/[\d.]+(?:px|%|em|rem)?)?|no-repeat|repeat-x|repeat-y|repeat)\b""", RegexOption.IGNORE_CASE),
+            ")"
+        )
+        "background-image: $cleaned"
+    }
+
+    // 8. Prevent [data-mydes="btn"] from forcing fixed square/circle width & height
+    out = out.replace(Regex("""(\[data-mydes=['"]btn['"]\][^{]*\{)([^}]+)\}""", RegexOption.IGNORE_CASE)) { match ->
+        val sel = match.groupValues[1]
+        val body = match.groupValues[2]
+            .replace(Regex("""\b(?:width|height)\s*:\s*\d+(?:px|rem|em)\s*(?:!important)?\s*;?""", RegexOption.IGNORE_CASE), "")
+        "$sel$body}"
+    }
+
+    // 9. Isolate broad 'a' and 'button' tags from box-model mutations
+    out = out.replace(Regex("""([^{}@]+)\{([^{}]+)\}""")) { match ->
+        val rawSelectors = match.groupValues[1]
+        val body = match.groupValues[2]
+        val touchesBoxModel = Regex("""\b(?:padding|border|background|display|width|height)\b""", RegexOption.IGNORE_CASE).containsMatchIn(body)
+        if (!touchesBoxModel) {
+            match.value
+        } else {
+            val safeSelectors = rawSelectors.split(',').map { sel ->
+                val s = sel.trim()
+                when {
+                    Regex("""^(?:html\s+|body\s+)*a(?::[a-zA-Z-]+)?$""").matches(s) -> {
+                        val pseudo = s.substringAfter("a", "")
+                        "a[data-mydes=\"btn\"]$pseudo"
+                    }
+                    Regex("""^(?:html\s+|body\s+)*(?:button|\[data-mydes=['"]btn['"]\])(?::[a-zA-Z-]+)?$""").matches(s) -> {
+                        "$s:not(:has(svg, img)):not([aria-label])"
+                    }
+                    else -> s
+                }
+            }.joinToString(", ")
+            "$safeSelectors{$body}"
+        }
+    }
+
     return out
 }
 
@@ -219,11 +324,13 @@ data class UIBlueprint(
     val concept: String = "",
     val needsHud: Boolean = false,
     val hudReason: String = "",
-    val fingerprint: String = ""
+    val fingerprint: String = "",
+    val designSpec: String = ""
 ) {
     fun toJson(): String = JSONObject()
         .put("concept", concept)
         .put("fingerprint", fingerprint)
+        .put("designSpec", designSpec)
         .put("needsHud", needsHud)
         .put("hudReason", hudReason)
         .put("id", id)
@@ -243,14 +350,8 @@ data class UIBlueprint(
         .toString()
 
     companion object {
-        const val RUNTIME_VERSION = 11
+        const val RUNTIME_VERSION = 19
 
-        /**
-         * Rebuilds a JSON object that was cut off mid-stream (token limit / dropped connection):
-         * closes an open string, drops a dangling comma, fills a dangling `"key":` with null and
-         * appends the missing `}` / `]`. Works from the first `{` to the END of the text, because
-         * the last `}` in a truncated response usually sits inside a CSS/JS string.
-         */
         fun repairTruncatedJson(raw: String): String {
             var s = raw
             if (s.contains("</think>")) s = s.substringAfterLast("</think>")
@@ -298,7 +399,6 @@ data class UIBlueprint(
 
         private fun jsonSlice(raw: String): String {
             var s = raw.trim()
-            // Reasoning models may leak their chain of thought into `content`; its braces would corrupt the slice.
             if (s.contains("</think>")) s = s.substringAfterLast("</think>").trim()
             Regex("```(?:json)?\\s*([\\s\\S]*?)\\s*```", RegexOption.IGNORE_CASE).find(s)?.let {
                 s = it.groupValues[1].trim()
@@ -320,38 +420,23 @@ data class UIBlueprint(
             val white = "#ffffff"
             val black = "#000000"
 
-            val bg = Hex.norm(j.optString("bg"), if (dark) "#080b12" else "#fbf9f5")
+            val bg = Hex.norm(j.optString("bg"), if (dark) "#0a0c0e" else "#f8f9fa")
             val surface = Hex.norm(j.optString("surface"), Hex.mix(bg, if (dark) white else black, 0.08))
             val surface2 = Hex.norm(j.optString("surface2"), Hex.mix(surface, if (dark) white else black, 0.08))
 
-            var fg = Hex.norm(j.optString("fg"), if (dark) "#f0f6ff" else "#121316")
+            var fg = Hex.norm(j.optString("fg"), if (dark) "#e2e8f0" else "#1a202c")
             if (Hex.contrast(fg, bg) < 4.5) {
-                fg = if (Hex.lum(bg) < 0.4) "#f5f8ff" else "#111111"
+                fg = if (Hex.lum(bg) < 0.4) "#f8fafc" else "#0f172a"
             }
-            val ink = Hex.norm(j.optString("ink"), "#111215")
-            val accent = Hex.norm(j.optString("accent"), if (dark) "#00e5ff" else "#0055ff")
+            val rawInk = Hex.norm(j.optString("ink"), fg)
+            val ink = if (Hex.contrast(rawInk, surface) >= 3.0) rawInk else fg
+            val accent = Hex.norm(j.optString("accent"), if (dark) "#00ff88" else "#0284c7")
 
             val rawCss = when {
                 j.has("customCss") -> j.optString("customCss", "")
                 j.has("custom_css") -> j.optString("custom_css", "")
                 j.has("css") -> j.optString("css", "")
                 j.has("fixCss") -> j.optString("fixCss", "")
-                else -> ""
-            }
-
-            val rawJs = when {
-                j.has("customJs") -> j.optString("customJs", "")
-                j.has("custom_js") -> j.optString("custom_js", "")
-                j.has("js") -> j.optString("js", "")
-                j.has("fixJs") -> j.optString("fixJs", "")
-                else -> ""
-            }
-
-            val rawBackdrop = when {
-                j.has("backdropHtml") -> j.optString("backdropHtml", "")
-                j.has("backdrop_html") -> j.optString("backdrop_html", "")
-                j.has("backdrop") -> j.optString("backdrop", "")
-                j.has("html") -> j.optString("html", "")
                 else -> ""
             }
 
@@ -363,12 +448,9 @@ data class UIBlueprint(
             }.take(50)
 
             val concept = (j.optString("concept", "").ifBlank { j.optString("idea", "") }).take(300)
-            val needsHud = j.optBoolean("needsHud", false) &&
-                j.optString("hudReason").isNotBlank() &&
-                j.optString("hudHtml").isNotBlank()
 
             return UIBlueprint(
-                id = sha1Hex("v$RUNTIME_VERSION|${prompt.trim().lowercase(Locale.US)}|$rawCss|$rawBackdrop|$rawJs").take(12),
+                id = sha1Hex("v$RUNTIME_VERSION|${prompt.trim().lowercase(Locale.US)}|$rawCss").take(12),
                 name = name,
                 dark = dark,
                 bg = bg,
@@ -377,16 +459,16 @@ data class UIBlueprint(
                 fg = fg,
                 ink = ink,
                 accent = accent,
-                // Default to true (just like v4) so unstyled surfaces & text contrast stay harmonious
-                remapSurfaces = j.optBoolean("remapSurfaces", true),
+                remapSurfaces = true,
                 customCss = sanitizeGeneratedCss(rawCss),
-                backdropHtml = rawBackdrop,
-                hudHtml = if (needsHud) j.optString("hudHtml", "") else "",
-                customJs = rawJs,
+                backdropHtml = "",
+                hudHtml = "",
+                customJs = "",
                 concept = concept,
-                needsHud = needsHud,
-                hudReason = j.optString("hudReason", "").take(200),
-                fingerprint = j.optString("fingerprint", "").take(120)
+                needsHud = false,
+                hudReason = "",
+                fingerprint = j.optString("fingerprint", "").take(120),
+                designSpec = j.optString("designSpec", "")
             )
         }
     }
@@ -406,10 +488,10 @@ object ResilientGoogleDns : Dns {
     private const val TTL_MS = 15 * 60 * 1000L
 
     private val PUBLIC_DNS_SERVERS = listOf(
-        byteArrayOf(8, 8, 8, 8),         // Google Primary
-        byteArrayOf(1, 1, 1, 1),         // Cloudflare Primary
-        byteArrayOf(8, 8, 4, 4),         // Google Secondary
-        byteArrayOf(9, 9, 9, 9)          // Quad9
+        byteArrayOf(8, 8, 8, 8),
+        byteArrayOf(1, 1, 1, 1),
+        byteArrayOf(8, 8, 4, 4),
+        byteArrayOf(9, 9, 9, 9)
     )
 
     private val GOOGLE_API_FALLBACK_IPS = listOf(
@@ -554,7 +636,7 @@ object ResilientGoogleDns : Dns {
     }
 }
 
-// ───────────────────── Generative Runtime + MydesBridge ─────────────────────
+// ───────────────────── Zero-Lag 60fps Universal Runtime v19 ─────────────────────
 
 object MydesRuntime {
 
@@ -564,306 +646,46 @@ if(window.__mydes && window.__mydes.clear){try{window.__mydes.clear();}catch(e){
 if(BP.skip && BP.skip.indexOf(location.hostname)>=0) return;
 
 var cfg = BP;
-var changes=[], EB=new WeakMap(), done=new WeakSet(), jobs=[], draining=false;
-var tagDirty=true, lastTag=0, tagDelay=120, BG, FG, INK;
-var cleanupFns=[], unitDecorators=[], ornamentRules=[], mo=null;
-var nodeUidCounter=0;
+var cleanupFns=[], mo=null, retagRaf=0;
 
-function hex(h){return {r:parseInt(h.substr(1,2),16),g:parseInt(h.substr(3,2),16),b:parseInt(h.substr(5,2),16),a:1};}
-function rgbStr(c){return 'rgb('+Math.round(c.r)+','+Math.round(c.g)+','+Math.round(c.b)+')';}
-function configure(){BG=hex(cfg.bg);FG=hex(cfg.fg);INK=hex(cfg.ink);}
-configure();
-
-/* ---------- 1. MydesBridge: Safe API for LLM-generated UIs & Live DOM Elements ---------- */
 window.MydesBridge = {
-  /*
-   * Attaches bespoke SVG/HTML ornaments (e.g., comic action bursts, rotating gears, targeting reticles,
-   * speech bubble tails) onto matching cards/units and automatically applies them to infinite-scrolled items.
-   */
-  decorateUnits: function(selector, htmlOrBuilderFn) {
-    var sel = selector || '[data-mydes="card"]';
-    unitDecorators.push({ sel: sel, fn: htmlOrBuilderFn });
-    window.MydesBridge._applyDecorators();
-  },
-
-  /*
-   * Injects a new thematic SVG/HTML centerpiece or banner into a target container (like header or main)
-   * and keeps it alive across SPA DOM re-renders.
-   */
-  injectOrnament: function(targetSelector, htmlString, position) {
-    var sel = targetSelector || '[data-mydes="header"], header';
-    ornamentRules.push({ sel: sel, html: htmlString, pos: position || 'append' });
-    window.MydesBridge._applyDecorators();
-  },
-
-  _applyDecorators: function() {
-    for(var r=0; r<unitDecorators.length; r++) {
-      var rule = unitDecorators[r];
-      // Always include [data-mydes="card"] so newly infinite-scrolled cards get decorated too
-      var combinedSel = rule.sel ? (rule.sel + ', [data-mydes="card"]') : '[data-mydes="card"]';
-      var nodes = document.querySelectorAll(combinedSel);
-      for(var i=0; i<nodes.length && i<300; i++) {
-        var el = nodes[i];
-        // Never decorate an inner element if its parent card is already decorated
-        if(el.parentElement && el.parentElement.closest('[data-m-deco="' + cfg.id + '"]')) continue;
-        if(el.closest('#__mydes_hud,#__mydes_backdrop') || el.getAttribute('data-m-deco') === cfg.id) continue;
-        el.setAttribute('data-m-deco', cfg.id);
-        var cs = getComputedStyle(el);
-        if(cs.position === 'static') el.style.setProperty('position', 'relative', 'important');
-        var res = typeof rule.fn === 'function' ? rule.fn(el, i) : String(rule.fn || '');
-        if(typeof res === 'string' && res.trim()) {
-          var deco = document.createElement('div');
-          deco.className = '__mydes_deco';
-          deco.setAttribute('aria-hidden', 'true');
-          deco.style.cssText = 'pointer-events:none !important; position:absolute; inset:4px; overflow:visible; z-index:10;';
-          deco.innerHTML = res;
-          el.appendChild(deco);
-        }
-      }
-    }
-    for(var o=0; o<ornamentRules.length; o++) {
-      var orn = ornamentRules[o];
-      var target = document.querySelector(orn.sel) || document.querySelector('[data-mydes="header"], header, [role="banner"]');
-      if(target && !document.querySelector('.__mydes_orn_' + o)) {
-        var wrap = document.createElement('div');
-        wrap.className = '__mydes_deco __mydes_orn_' + o;
-        var isHdr = target.tagName === 'HEADER' || target.getAttribute('data-mydes') === 'header' || /header|topbar/i.test(orn.sel);
-        if(isHdr) {
-          var hRect = target.getBoundingClientRect();
-          wrap.style.cssText = 'pointer-events:none!important;position:fixed!important;left:0!important;right:0!important;top:' + Math.max(44, Math.round(hRect.height)) + 'px!important;z-index:2147483642!important;display:flex!important;justify-content:center!important;align-items:center!important;width:100vw!important;';
-          document.body.appendChild(wrap);
-        } else {
-          wrap.style.cssText = 'pointer-events:none!important;position:relative!important;z-index:10!important;width:100%!important;display:block!important;';
-          if(orn.pos === 'prepend') target.prepend(wrap); else target.appendChild(wrap);
-        }
-        wrap.innerHTML = orn.html;
-      }
-    }
-  },
-
-  extractNodes: function(customSelector) {
-    var sel = customSelector || '[data-mydes="card"], article, section > div, li, tr';
-    var nodes = document.querySelectorAll(sel);
-    var list = [];
-    for(var i=0; i<nodes.length && list.length<60; i++) {
-      var n = nodes[i];
-      if(n.closest('#__mydes_hud,#__mydes_backdrop,nav,header,footer')) continue;
-      var r = n.getBoundingClientRect();
-      if(r.width < 60 || r.height < 24) continue;
-      var txt = (n.textContent || '').replace(/\s+/g, ' ').trim();
-      if(txt.length < 6) continue;
-
-      var uid = n.getAttribute('data-mydes-uid');
-      if(!uid) {
-        uid = 'm-node-' + (++nodeUidCounter);
-        n.setAttribute('data-mydes-uid', uid);
-      }
-      var headingEl = n.querySelector('h1,h2,h3,h4,h5,h6,[data-mydes="heading"],[data-mydes="title"],strong,b,a[href]');
-      var imgEl = n.querySelector('img,picture img');
-      var vidEl = n.querySelector('video');
-      var linkEl = n.tagName === 'A' ? n : n.querySelector('a[href]');
-      var metaEl = n.querySelector('[data-mydes="price"],time,small');
-
-      var titleText = (headingEl ? headingEl.textContent : txt.slice(0, 80)).replace(/\s+/g, ' ').trim();
-      var bodyText = txt.replace(titleText, '').trim().slice(0, 180);
-
-      list.push({
-        uid: uid,
-        title: titleText,
-        body: bodyText,
-        meta: metaEl ? metaEl.textContent.replace(/\s+/g, ' ').trim() : '',
-        img: imgEl ? (imgEl.currentSrc || imgEl.src || imgEl.getAttribute('data-src') || '') : '',
-        hasVideo: !!vidEl,
-        href: linkEl ? linkEl.href : ''
-      });
-    }
-    return list;
-  },
-
-  extractFeed: function(sel) { return window.MydesBridge.extractNodes(sel); },
-
-  triggerNode: function(uid, subSelector) {
-    if(!uid) return false;
-    var el = document.querySelector('[data-mydes-uid="' + CSS.escape(uid) + '"]');
-    if(!el) return false;
-    var target = (subSelector ? el.querySelector(subSelector) : null) || el.querySelector('a[href],button,[role="button"],input') || el;
-    target.scrollIntoView({behavior:'smooth', block:'center'});
-    target.focus();
-    var opts = {bubbles: true, cancelable: true, view: window};
-    target.dispatchEvent(new PointerEvent('pointerdown', opts));
-    target.dispatchEvent(new MouseEvent('mousedown', opts));
-    target.dispatchEvent(new PointerEvent('pointerup', opts));
-    target.dispatchEvent(new MouseEvent('mouseup', opts));
-    target.click();
-    return true;
-  },
-
-  triggerItem: function(uid, subSelector) { return window.MydesBridge.triggerNode(uid, subSelector); },
-
-  loadMore: function(onLoaded) {
-    var prevCount = document.body ? document.body.querySelectorAll('*').length : 0;
-    window.scrollTo({top: document.documentElement.scrollHeight, behavior: 'instant'});
-    window.dispatchEvent(new Event('scroll', {bubbles: true}));
-    var attempts = 0;
-    var check = setInterval(function() {
-      attempts++;
-      var curCount = document.body ? document.body.querySelectorAll('*').length : 0;
-      if(curCount > prevCount + 5 || attempts > 15) {
-        clearInterval(check);
-        if(typeof onLoaded === 'function') onLoaded(window.MydesBridge.extractNodes());
-      }
-    }, 200);
-  },
-
-  proxyClick: function(sel) {
-    var l = document.querySelectorAll(sel);
-    for(var i=0; i<l.length; i++) {
-      var e = l[i];
-      if(e.closest('#__mydes_hud,#__mydes_backdrop')) continue;
-      var r = e.getBoundingClientRect();
-      if(r.width > 0 && r.height > 0) {
-        e.scrollIntoView({behavior:'smooth', block:'center'});
-        e.focus();
-        e.click();
-        return true;
-      }
-    }
-    return false;
-  },
-
-  proxySearch: function(query) {
-    var inp = document.querySelector('input[type="search"],input[name="k"],input[name="q"],input[name="s"],input[name="query"],[data-mydes="search"] input');
-    if(!inp) inp = document.querySelector('input[type="text"]');
-    if(!inp) return false;
-    inp.focus();
-    var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-    if(setter) setter.call(inp, query); else inp.value = query;
-    inp.dispatchEvent(new Event('input', {bubbles:true}));
-    inp.dispatchEvent(new Event('change', {bubbles:true}));
-    var form = inp.closest('form');
-    if(form) {
-      var btn = form.querySelector('button[type="submit"],input[type="submit"],[data-mydes="btn"]');
-      if(btn) btn.click(); else form.submit();
-    } else {
-      inp.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', keyCode:13, bubbles:true}));
-    }
-    return true;
-  },
-
-  focusSearch: function() {
-    var inp = document.querySelector('input[type="search"],input[name="k"],input[name="q"],[data-mydes="search"] input,input[type="text"]');
-    if(inp) {
-      inp.scrollIntoView({behavior:'smooth', block:'center'});
-      inp.focus();
-      inp.style.setProperty('outline', '4px solid ' + cfg.accent, 'important');
-      return true;
-    }
-    return false;
-  },
-
-  zoom: function(delta) {
-    var cur = parseFloat(document.documentElement.getAttribute('data-m-zoom') || '1');
-    var next = Math.min(1.8, Math.max(0.8, cur + delta));
-    document.documentElement.setAttribute('data-m-zoom', String(next));
-    document.documentElement.style.setProperty('font-size', Math.round(next * 100) + '%', 'important');
-  },
-
-  speakPage: function(customText) {
-    try {
-      if(!window.speechSynthesis) return;
-      window.speechSynthesis.cancel();
-      var txt = customText;
-      if(!txt) {
-        var nodes = document.querySelectorAll('[data-mydes="title"],[data-mydes="heading"],[data-mydes="price"]');
-        var arr = [];
-        for(var i=0; i<nodes.length && arr.length<12; i++) {
-          var t = (nodes[i].textContent||'').trim();
-          if(t.length > 3) arr.push(t);
-        }
-        txt = arr.join('. ') || document.title;
-      }
-      var u = new SpeechSynthesisUtterance(txt.slice(0, 600));
-      u.rate = 0.92;
-      window.speechSynthesis.speak(u);
-    } catch(e){}
-  },
-
-  enable3DTilt: function(intensity) {
-    var mult = typeof intensity === 'number' ? intensity : 1.0;
-    var raf = 0, lastY = window.scrollY;
-    function onScroll() {
-      if(raf) return;
-      raf = requestAnimationFrame(function() {
-        var sy = window.scrollY;
-        var dy = Math.max(-18, Math.min(18, (sy - lastY) * 0.4 * mult));
-        lastY = sy;
-        document.documentElement.style.setProperty('--m-rx', dy.toFixed(2) + 'deg');
-        document.documentElement.style.setProperty('--m-scroll', sy + 'px');
-        raf = 0;
-      });
-    }
-    var touchRaf = 0;
-    function onTouch(e) {
-      if(!e.touches || !e.touches[0]) return;
-      var cx = e.touches[0].clientX;
-      var cy = e.touches[0].clientY;
-      if(touchRaf) return;
-      touchRaf = requestAnimationFrame(function() {
-        var ry = ((cx / Math.max(1, innerWidth)) - 0.5) * 22 * mult;
-        var rx = (0.5 - (cy / Math.max(1, innerHeight))) * 16 * mult;
-        document.documentElement.style.setProperty('--m-rx', rx.toFixed(2) + 'deg');
-        document.documentElement.style.setProperty('--m-ry', ry.toFixed(2) + 'deg');
-        touchRaf = 0;
-      });
-    }
-    window.addEventListener('scroll', onScroll, {passive:true});
-    window.addEventListener('touchmove', onTouch, {passive:true});
-    cleanupFns.push(function() {
-      window.removeEventListener('scroll', onScroll);
-      window.removeEventListener('touchmove', onTouch);
-      if(raf) cancelAnimationFrame(raf);
-      if(touchRaf) cancelAnimationFrame(touchRaf);
-    });
-  },
+  decorateUnits: function() {},
+  injectOrnament: function() {},
+  spawnParticles: function() {},
+  enable3DTilt: function() {},
   onCleanup: function(fn) { if(typeof fn === 'function') cleanupFns.push(fn); }
 };
 
-/* ---------- 2. Constructable / Injected Stylesheets (V4 Clean Ordering) ---------- */
+/* ---------- 1. Lightweight 60fps Stylesheet Engine ---------- */
 var eStyle = null;
 function applySheets() {
-  var surfaceVal = cfg.backdropHtml ? 'color-mix(in srgb, '+cfg.surface+' 78%, transparent)' : cfg.surface;
-  var surface2Val = cfg.backdropHtml ? 'color-mix(in srgb, '+cfg.surface2+' 82%, transparent)' : cfg.surface2;
   var rootVars = ':root{' +
-    '--m-bg:'+cfg.bg+'!important;--bg:'+cfg.bg+'!important;' +
-    '--m-surface:'+surfaceVal+'!important;--surface:'+surfaceVal+'!important;--m-primary:'+surfaceVal+'!important;' +
-    '--m-surface2:'+surface2Val+'!important;--surface2:'+surface2Val+'!important;' +
-    '--m-fg:'+cfg.fg+'!important;--fg:'+cfg.fg+'!important;--m-text:'+cfg.fg+'!important;' +
-    '--m-ink:'+cfg.ink+'!important;--ink:'+cfg.ink+'!important;' +
-    '--m-accent:'+cfg.accent+'!important;--accent:'+cfg.accent+'!important;' +
-    '--m-border:color-mix(in srgb, '+cfg.accent+' 45%, '+cfg.surface+')!important;--border:var(--m-border)!important;' +
-    '--m-rx:0deg;--m-ry:0deg;--m-scroll:0px;}\n';
+    '--m-bg:'+cfg.bg+';--bg:'+cfg.bg+';' +
+    '--m-surface:'+cfg.surface+';--surface:'+cfg.surface+';--m-primary:'+cfg.surface+';' +
+    '--m-surface2:'+cfg.surface2+';--surface2:'+cfg.surface2+';' +
+    '--m-fg:'+cfg.fg+';--fg:'+cfg.fg+';--m-text:'+cfg.fg+';' +
+    '--m-ink:'+cfg.ink+';--ink:'+cfg.ink+';' +
+    '--m-accent:'+cfg.accent+';--accent:'+cfg.accent+';' +
+    '--m-border:color-mix(in srgb, '+cfg.accent+' 50%, '+cfg.surface2+');--border:var(--m-border);' +
+    '}\n';
 
-  var structuralCss =
-    'html{background-color:var(--m-bg)!important;color:var(--m-fg)!important;overflow-x:hidden!important;}\n' +
-    'html body{background-color:transparent!important;color:var(--m-fg)!important;position:relative;z-index:1;overflow-x:hidden!important;}\n' +
-    '#__mydes_backdrop{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;pointer-events:none!important;z-index:2147483630!important;mix-blend-mode:screen!important;opacity:0.42!important;overflow:hidden!important;transform:translateZ(0);}\n' +
-    '#__mydes_backdrop > *, #__mydes_backdrop svg, #__mydes_backdrop canvas{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;z-index:2147483630!important;pointer-events:none!important;}\n' +
-    '#__mydes_hud{position:fixed;z-index:2147483640;pointer-events:none;inset:0;transform:translateZ(0);}\n' +
-    '#__mydes_hud *{pointer-events:auto;}\n' +
-    'html body header button, html body [data-mydes="header"] button, html body button:has(svg, img) { background-color: transparent !important; box-shadow: none !important; }\n' +
-    /* Force EVERY child of a grid (or lazy-list) to span full width unless it is explicitly a compact grid tile */
-    'lazy-list { display: flex !important; flex-direction: column !important; gap: 14px !important; width: 100% !important; max-width: 100% !important; padding: 12px 8px !important; box-sizing: border-box !important; }\n' +
-    '[data-mydes-shelf="true"], [data-mydes-sentinel="true"], ytm-reel-shelf-renderer, ytm-rich-section-renderer, ytm-continuation-item-renderer, ytm-item-section-renderer { grid-column: 1 / -1 !important; width: 100% !important; max-width: 100% !important; }\n' +
-    'html body [data-mydes="grid"], html body [data-mydes="card"], html body [data-mydes="card"] * { max-width: 100% !important; box-sizing: border-box !important; }\n' +
-    /* Universal Card Framing & Full-Width Media Un-Constrainer (expands ALL intermediate wrappers holding the thumbnail) */
-    'html body [data-mydes="card"] { display: flex !important; flex-direction: column !important; align-items: stretch !important; width: 100% !important; margin: 8px 0 !important; padding: 10px !important; height: auto !important; overflow: visible !important; background-color: var(--m-surface) !important; border: 1px solid var(--m-border) !important; }\n' +
-    'html body [data-mydes="card"] ytm-media-item, html body [data-mydes="card"] [class*="media-item"] { display: flex !important; flex-direction: column !important; align-items: stretch !important; width: 100% !important; height: auto !important; }\n' +
-    'html body [data-mydes="card"] *:has(> img, > video, > picture, > yt-collections-stack, > ytm-thumbnail-overlay-time-status-renderer), html body [data-mydes="card"] yt-collections-stack, html body [data-mydes="card"] a[class*="thumbnail"], html body [data-mydes="card"] div[class*="thumbnail"] { width: 100% !important; max-width: 100% !important; min-width: 100% !important; height: auto !important; display: block !important; position: relative !important; }\n' +
-    'html body [data-mydes="card"] img:not([width^="1"]):not([width^="2"]):not([width^="3"]):not([width^="4"]):not([class*="avatar"]):not([class*="channel"]), html body [data-mydes="card"] video { width: 100% !important; max-width: 100% !important; height: auto !important; aspect-ratio: 16 / 9 !important; object-fit: cover !important; display: block !important; }\n' +
-    'html body [data-mydes="card"] [data-mydes="heading"], html body [data-mydes="card"] h1, html body [data-mydes="card"] h2, html body [data-mydes="card"] h3 { padding: 6px 4px !important; box-sizing: border-box !important; }\n';
-    
-  // Put rootVars & structuralCss AFTER customCss so LLM :root redeclarations don't kill backdrop translucency or card stacking
-  var fullCss = (cfg.customCss || '') + '\n' + rootVars + structuralCss;
+  var universalBaseCss =
+    'html, body { background-color: var(--m-bg) !important; color: var(--m-fg) !important; }\n' +
+    'main, [role="main"], [data-mydes="main"], [data-mydes="grid"], lazy-list, ytm-rich-grid-renderer, ytm-section-list-renderer, ytm-item-section-renderer, ytm-single-column-browse-results-renderer, #page-manager, #content { background-color: transparent !important; }\n' +
+    '[data-mydes="header"], header, .mobile-topbar-header { background-color: var(--m-surface); border-bottom: 2px solid var(--m-accent); }\n' +
+    '[data-mydes="search"], yt-searchbox, input[type="search"], input[name="q"], input[name="k"] { background-color: var(--m-surface2); color: var(--m-fg); border: 1px solid var(--m-accent); border-radius: 18px; }\n' +
+    '[data-mydes="chip"] { background-color: var(--m-surface2); color: var(--m-ink); border: 1px solid var(--m-border); border-radius: 12px; }\n' +
+    '[data-mydes="card"] { background-color: var(--m-surface); border: 1.5px solid var(--m-border); border-radius: 14px; margin-bottom: 12px !important; padding: 10px !important; box-sizing: border-box !important; color: var(--m-fg); position: relative; }\n' +
+    '[data-mydes="heading"], [data-mydes="title"], [data-mydes="card"] h1, [data-mydes="card"] h2, [data-mydes="card"] h3, [data-mydes="card"] h4, [class*="media-item-headline"], [class*="title"] { color: var(--m-ink); }\n' +
+    '[data-mydes="heading"] *, [data-mydes="title"] *, [class*="media-item-headline"] * { font-family: inherit !important; color: inherit !important; letter-spacing: inherit !important; text-shadow: inherit !important; text-transform: inherit !important; }\n' +
+    '[data-mydes="bottom-bar"], ytm-pivot-bar-renderer, footer { background-color: var(--m-surface); border-top: 2px solid var(--m-accent); color: var(--m-fg); }\n';
+
+  var safetyResetCss =
+    '\n/* --- Pure-CSS Safety Resets --- */\n' +
+    'html body a:has(img, video, picture, h1, h2, h3, h4, div), html body [class*="thumbnail"] a, html body [class*="media"] a { border: none !important; padding: 0 !important; background: transparent !important; box-shadow: none !important; }\n' +
+    'html body button:has(svg, img), html body [role="button"]:has(svg, img), html body [aria-label*="menu" i], html body [aria-label*="More" i], html body [aria-label*="Action" i] { background: transparent !important; border: none !important; box-shadow: none !important; }\n';
+
+  var fullCss = rootVars + universalBaseCss + '\n' + (cfg.customCss || '') + safetyResetCss;
   var root = document.head || document.documentElement;
   if(!root) return;
   if(!eStyle || !eStyle.isConnected) {
@@ -873,375 +695,175 @@ function applySheets() {
   }
   if(eStyle.textContent !== fullCss) eStyle.textContent = fullCss;
 
-  // Universal Google Fonts loader (requests default weight only so single-weight fonts never 404)
-  var fontRegex = /font-family\s*:\s*['"]?([^;'"!,}]+)['"]?/gi, match;
+  // Automatic Google Fonts loader
+  var fontRegex = /(?:font-family|--[a-zA-Z0-9_-]*font[a-zA-Z0-9_-]*)\s*:\s*['"]?([^;'"!,}]+)['"]?/gi, match;
   while((match = fontRegex.exec(cfg.customCss || '')) !== null) {
     var fam = match[1].trim();
-    if(fam && !/^(serif|sans-serif|monospace|cursive|fantasy|system-ui|inherit|initial|unset|Georgia|Arial|Verdana|Tahoma|Courier|Times)$/i.test(fam)) {
+    if(fam && !/^(serif|sans-serif|monospace|cursive|fantasy|system-ui|inherit|initial|unset|var\(|Georgia|Arial|Verdana|Tahoma|Courier|Times)$/i.test(fam)) {
       var id = '__mydes_font_' + fam.replace(/\W+/g, '_');
       if(!document.getElementById(id) && document.head) {
         var link = document.createElement('link');
         link.id = id;
         link.rel = 'stylesheet';
-        link.href = 'https://fonts.googleapis.com/css2?family=' + encodeURIComponent(fam).replace(/%20/g, '+') + '&display=swap';
+        link.href = 'https://fonts.googleapis.com/css2?family=' + encodeURIComponent(fam).replace(/%20/g, '+') + ':wght@400;500;600;700&display=swap';
         document.head.appendChild(link);
       }
     }
   }
 }
 
-/* ---------- 3. Custom Stage Layers (3D Backdrop + Optional HUD + Sandbox JS) ---------- */
-function mountLayers() {
-  if(!document.body) return;
-  var bd = document.getElementById('__mydes_backdrop');
-  if(cfg.backdropHtml) {
-    if(!bd) {
-      bd = document.createElement('div');
-      bd.id = '__mydes_backdrop';
-      bd.setAttribute('aria-hidden', 'true');
-      document.body.prepend(bd);
-    }
-    if(bd.getAttribute('data-m-id') !== cfg.id) {
-      var cleanBd = cfg.backdropHtml.replace(/<@keyframes\s+([^>]+)>/gi, '<style>@keyframes $1</style>');
-      bd.innerHTML = cleanBd; 
-      bd.setAttribute('data-m-id', cfg.id);
-    }
-  } else if(bd) { bd.remove(); }
-
-  var hud = document.getElementById('__mydes_hud');
-  if(cfg.hudHtml) {
-    if(!hud) {
-      hud = document.createElement('div');
-      hud.id = '__mydes_hud';
-      document.body.appendChild(hud);
-    }
-    if(hud.getAttribute('data-m-id') !== cfg.id) {
-      hud.innerHTML = cfg.hudHtml;
-      hud.setAttribute('data-m-id', cfg.id);
-    }
-  } else if(hud) { hud.remove(); }
-
-  if(cfg.customJs && document.body.getAttribute('data-m-js') !== cfg.id) {
-    document.body.setAttribute('data-m-js', cfg.id);
-    try {
-      var jsCode = cfg.customJs.trim();
-      var openP = (jsCode.match(/\(/g)||[]).length - (jsCode.match(/\)/g)||[]).length;
-      var openB = (jsCode.match(/\{/g)||[]).length - (jsCode.match(/\}/g)||[]).length;
-      while(openB-- > 0) jsCode += '}';
-      while(openP-- > 0) jsCode += ')';
-      // If the LLM wrote a bare function expression without invoking it, return & call it!
-      if(/^\s*\(\s*(?:function|\([^)]*\)\s*=>)/.test(jsCode) && !/\)\s*\([^)]*\)\s*;?\s*$/.test(jsCode)) {
-        jsCode = 'return (' + jsCode + ')(MydesBridge, T);';
-      }
-      var fn = new Function('MydesBridge', 'T', jsCode);
-      var ret = fn(window.MydesBridge, cfg);
-      if(typeof ret === 'function') ret(window.MydesBridge, cfg);
-    } catch(e) { console.warn('[Mydes CustomJS Error]', e); }
-  }
-  window.MydesBridge._applyDecorators();
-}
-
-/* ---------- 4. Semantic DOM Role Tagger ---------- */
+/* ---------- 2. Universal Semantic & Geometric Role Tagger ---------- */
 function each(sel,fn){var l=document.querySelectorAll(sel);for(var i=0;i<l.length;i++)fn(l[i]);}
 function put(e,r){if(e.getAttribute('data-mydes')!==r)e.setAttribute('data-mydes',r);}
 function putNew(e,r){if(!e.hasAttribute('data-mydes'))e.setAttribute('data-mydes',r);}
 var PRICE=/^\s*(?:(?:[\u0024\u20AC\u00A3\u00A5\u20B9]|USD|EUR|GBP|INR|Rs\.?)\s?\d[\d,.]*|\d[\d,.]*\s?(?:[\u0024\u20AC\u00A3\u00A5\u20B9]|USD|EUR|GBP|INR))\s*$/;
 function inContent(e){return !!e.closest('main,article,section,[role="main"]');}
-function sig(e){return e.tagName+'.'+(e.classList[0]||'')+'.'+(e.classList[1]||'');}
+
 function cardLike(e){
-  if(e.closest('nav,footer,#__mydes_hud,#__mydes_backdrop,.__mydes_deco,[data-mydes="nav"],[data-mydes="footer"]'))return false;
+  if(e.closest('nav,footer,header,[data-mydes="nav"],[data-mydes="footer"],[data-mydes="header"],[data-mydes="bottom-bar"]'))return false;
   var tag = e.tagName.toLowerCase();
-  if(/continuation|spinner|skeleton|loader|sentinel/.test(tag + ' ' + (e.className||''))) {
-    e.setAttribute('data-mydes-sentinel', 'true');
-    return false;
-  }
-  var link=e.tagName==='A'||!!e.querySelector('a[href]');
-  if(!link)return false;
-  var t=(e.textContent||'').trim().length;
-  if(t<6||t>800)return false;
-  return !!e.querySelector('img,picture,video')||t>=35;
+  if(/continuation|spinner|skeleton|loader|sentinel/.test(tag + ' ' + (e.className||''))) return false;
+  var link = e.tagName==='A' || !!e.querySelector('a[href]');
+  var hasMedia = !!e.querySelector('img,picture,video,yt-thumbnail-view-model,ytm-thumbnail-overlay-time-status-renderer');
+  var t = (e.textContent||'').trim().length;
+  return (link || hasMedia) && (hasMedia || t >= 20);
 }
+
 function decorate(c){
   if(c.querySelector('h1,h2,h3,h4,h5,h6,[data-mydes="heading"]'))return;
-  var l=c.querySelectorAll('a,span,div,p,strong,b');
+  var l=c.querySelectorAll('[class*="headline"],[class*="title"],a,span,div,p,strong,b');
   for(var i=0;i<l.length;i++){
     var x=l[i];
-    if(x.children.length===0){
+    if(x.children.length<=1){
       var t=(x.textContent||'').trim();
-      if(t.length>=8&&t.length<=140&&!PRICE.test(t)){x.setAttribute('data-mydes','heading');return;}
+      if(t.length>=8&&t.length<=160&&!PRICE.test(t)){x.setAttribute('data-mydes','heading');return;}
     }
-  }
-}
-function findGrids(){
-  var ps=document.body.querySelectorAll('*:not(#__mydes_hud *):not(#__mydes_backdrop *):not(.__mydes_deco):not(.__mydes_deco *)'),n=0;
-  for(var i=ps.length-1;i>=0&&n<2500;i--){
-    var p=ps[i],k=p.children.length;
-    if(k<2||k>80)continue;
-    n++;
-    if(p.getAttribute('data-mydes')==='grid'){
-      for(var q=0;q<k;q++){var c0=p.children[q];if(!c0.hasAttribute('data-mydes')&&cardLike(c0)){c0.setAttribute('data-mydes','card');decorate(c0);}}
-      continue;
-    }
-    if(p.closest('nav,footer,header,#__mydes_hud,#__mydes_backdrop,[data-mydes="nav"],[data-mydes="footer"],[data-mydes="header"]'))continue;
-    if(p.querySelector('[data-mydes="card"]'))continue;
-    var groups={},best=null,j;
-    for(j=0;j<k;j++){var s=sig(p.children[j]);(groups[s]=groups[s]||[]).push(p.children[j]);}
-    for(var g in groups){if(!best||groups[g].length>best.length)best=groups[g];}
-    if(!best||best.length<2||best.length<k*0.55)continue;
-    var cards=best.filter(cardLike);
-    if(cards.length<2||cards.length<best.length*0.65)continue;
-    p.setAttribute('data-mydes','grid');
-    p.setAttribute('data-m-size',cards.length<=8?'s':'l');
-    cards.forEach(function(c){c.setAttribute('data-mydes','card');decorate(c);});
-  }
-}
-function markPrices(){
-  var l=document.querySelectorAll('span,div,p,strong,b,em,ins,bdi,.a-price,.a-offscreen'),n=0;
-  for(var i=0;i<l.length&&n<400;i++){
-    var e=l[i];
-    if(e.closest('#__mydes_hud,#__mydes_backdrop,.__mydes_deco'))continue;
-    if(e.children.length>2||e.hasAttribute('data-mydes'))continue;
-    var t=(e.textContent||'').trim();
-    if(t.length>24)continue;
-    if(PRICE.test(t)){e.setAttribute('data-mydes','price');n++;}
   }
 }
 
 function retag(){
   if(!document.body)return;
-  var t0=performance.now();
-  if(cfg.backdropHtml){
-    var kids=document.body.children;
-    for(var ki=0;ki<kids.length;ki++){
-      var k=kids[ki];
-      if(k.id==='__mydes_backdrop'||k.id==='__mydes_hud'||SKIPTAG.test(k.tagName.toUpperCase())||k.hasAttribute('data-mydes-lift'))continue;
-      if(getComputedStyle(k).position==='static')k.setAttribute('data-mydes-lift','1');
-    }
-  }
-  each('header,[role="banner"],#navbar,#nav-main',function(e){if(!inContent(e))put(e,'header');});
-  each('nav,[role="navigation"],#nav-xshop',function(e){put(e,'nav');});
-  each('footer,[role="contentinfo"],#navFooter',function(e){if(!inContent(e))put(e,'footer');});
-  each('main,[role="main"],#pageContent,#search',function(e){put(e,'main');});
-  each('aside,[role="complementary"]',function(e){putNew(e,'aside');});
-  each('form[role="search"],form[name="site-search"],input[type="search"],input[name="q"],input[name="k"]',function(e){
-    var f=e.tagName==='FORM'?e:e.closest('form');
-    if(f)putNew(f,'search');
+  var vw = window.innerWidth || 400;
+
+  // 1. Header, Bottom Bar, Search, Chips
+  each('header,[role="banner"],#navbar,#nav-main,#navbar-main,.mobile-topbar-header',function(e){if(!inContent(e))put(e,'header');});
+  each('footer,[role="contentinfo"],#navFooter,ytm-pivot-bar-renderer',function(e){
+    put(e,'bottom-bar');
   });
-  if(performance.now()-t0<35)findGrids();
-  // 1. Tag outer card containers FIRST so inner elements are never tagged instead of their parent on scroll
-  each('[data-component-type="s-search-result"],[data-asin]:not([data-asin=""]),article,ytm-video-with-context-renderer,ytm-rich-item-renderer',function(e){
-    if(e.parentElement && e.parentElement.closest('[data-mydes="card"]')) return;
-    if(!e.closest('#__mydes_hud,#__mydes_backdrop,nav,header,footer') && cardLike(e)){
-      put(e,'card');
-      if(e.parentElement && !e.parentElement.hasAttribute('data-mydes')) put(e.parentElement,'grid');
-      decorate(e);
-    }
+  each('yt-searchbox,form[role="search"],form[name="site-search"],input[type="search"],input[name="q"],input[name="k"]',function(e){
+    if(e.parentElement && e.parentElement.closest('[data-mydes="search"]')) return;
+    put(e,'search');
   });
-  // 2. Fallback for standalone inner media items that do NOT live inside an outer card container
-  each('ytm-media-item',function(e){
+  each('ytm-chip-cloud-chip-renderer,[role="tab"],[class*="chip-cloud-chip"]',function(e){
+    if(e.closest('ytm-pivot-bar-renderer,footer,[data-mydes="bottom-bar"],header,[data-mydes="header"]')) {
+      if(e.getAttribute('data-mydes')==='chip') e.removeAttribute('data-mydes');
+      return;
+    }
+    if(e.parentElement && e.parentElement.closest('[data-mydes="chip"]')) {
+      if(e.getAttribute('data-mydes')==='chip') e.removeAttribute('data-mydes');
+      return;
+    }
+    put(e,'chip');
+  });
+
+  // 2. Universal & Platform Card Archetypes
+  var cardSel = [
+    '[data-component-type="s-search-result"]',
+    '[data-asin]:not([data-asin=""])',
+    '.s-result-item',
+    '.a-cardui',
+    'article',
+    'ytm-video-with-context-renderer',
+    'ytm-rich-item-renderer',
+    'ytm-compact-video-renderer',
+    'ytm-shorts-lockup-view-model',
+    'ytm-shorts-lockup-view-model-v2',
+    'ytm-playlist-video-renderer'
+  ].join(',');
+
+  each(cardSel, function(e){
     if(e.parentElement && e.parentElement.closest('[data-mydes="card"]')) {
-      e.removeAttribute('data-mydes'); // Clean up if previously mis-tagged before parent finished rendering
+      e.removeAttribute('data-mydes');
       return;
     }
-    if(!e.closest('#__mydes_hud,#__mydes_backdrop,nav,header,footer') && cardLike(e)){
-      putNew(e,'card');
-      if(e.parentElement && !e.parentElement.hasAttribute('data-mydes')) putNew(e.parentElement,'grid');
+    if(!e.closest('nav,header,footer,[data-mydes="header"],[data-mydes="bottom-bar"]') && cardLike(e)){
+      put(e,'card');
       decorate(e);
     }
   });
-  // 3. Only mark true multi-card shelves/carousels (never mark a single card that just has an avatar + thumbnail)
-  each('[data-mydes="grid"] > *, lazy-list > *, main > *', function(e){
-    if(e.getAttribute('data-mydes') === 'card') {
-      e.removeAttribute('data-mydes-shelf');
-      return;
-    }
-    if(e.querySelectorAll('[data-mydes="card"], ytm-shorts-lockup-view-model, a:has(img)').length >= 2) {
-      e.setAttribute('data-mydes-shelf', 'true');
-    }
-  });
-  each('h1',function(e){if(!e.closest('#__mydes_hud,.__mydes_deco'))putNew(e,'title');});
-  each('h2,h3,h4',function(e){if(!e.closest('#__mydes_hud,.__mydes_deco'))putNew(e,'heading');});
-  each('button,input[type="submit"],input[type="button"],[role="button"],a[class*="btn"],a[class*="button"],.a-button',function(e){
-    if(!e.closest('#__mydes_hud,.__mydes_deco'))putNew(e,'btn');
-  });
-  each('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]),textarea,select',function(e){
-    if(!e.closest('#__mydes_hud,.__mydes_deco'))putNew(e,'field');
-  });
-  each('img',function(e){if(!e.closest('#__mydes_hud,#__mydes_backdrop,.__mydes_deco'))putNew(e,'media');});
-  markPrices();
-}
 
-/* ---------- 5. Infinite Scroll Keeper ---------- */
-function setupInfiniteScrollKeeper() {
-  var lastKick = 0;
-  function checkBottom() {
-    var now = Date.now();
-    if(now - lastKick < 500) return;
-    var scrollPos = window.scrollY + window.innerHeight;
-    var docHeight = Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0);
-    if(docHeight - scrollPos < 450) {
-      lastKick = now;
-      window.dispatchEvent(new Event('scroll', {bubbles: true}));
-      window.dispatchEvent(new Event('resize', {bubbles: true}));
+  // 3. Geometric Repeating Feed Detector
+  var containers = document.querySelectorAll('main, [role="main"], section, ul, ol, lazy-list, [id*="feed" i], [class*="feed" i], [class*="list" i], [class*="results" i], [class*="grid" i]');
+  for(var c=0; c<containers.length && c<80; c++) {
+    var parent = containers[c];
+    if(parent.closest('header, nav, footer, [data-mydes="header"], [data-mydes="bottom-bar"]')) continue;
+    var kids = parent.children;
+    if(!kids || kids.length < 3) continue;
+    var sigCounts = {};
+    for(var k=0; k<kids.length && k<50; k++) {
+      var ch = kids[k];
+      var sig = ch.tagName + '|' + (ch.classList[0] || '');
+      sigCounts[sig] = (sigCounts[sig] || 0) + 1;
+    }
+    for(var k2=0; k2<kids.length && k2<50; k2++) {
+      var item = kids[k2];
+      var itemSig = item.tagName + '|' + (item.classList[0] || '');
+      if(sigCounts[itemSig] >= 3 && !item.hasAttribute('data-mydes') && !item.closest('[data-mydes="card"]')) {
+        var rect = item.getBoundingClientRect();
+        if(rect.width >= vw * 0.42 && rect.height >= 48 && cardLike(item)) {
+          put(item, 'card');
+          decorate(item);
+        }
+      }
     }
   }
-  window.addEventListener('scroll', checkBottom, {passive: true});
-  cleanupFns.push(function() {
-    window.removeEventListener('scroll', checkBottom);
+
+  each('h1',function(e){putNew(e,'title');});
+  each('h2,h3,h4,[class*="media-item-headline"]',function(e){
+    // Only tag headings that are NOT inside channel sub-metadata
+    if(e.closest('[class*="byline"],[class*="channel-name"],[class*="metadata-row"]')) return;
+    putNew(e,'heading');
+  });
+  each('button,input[type="submit"],input[type="button"],[role="button"],a[class*="btn"],a[class*="button"],.a-button',function(e){
+    if(e.closest('ytm-pivot-bar-renderer,footer,[data-mydes="bottom-bar"],[data-mydes="chip"]')) return;
+    if(e.querySelector('img, video, picture, svg, h1, h2, h3, h4')) return;
+    putNew(e,'btn');
   });
 }
 
-/* ---------- 6. Page Outline Extractor ---------- */
+/* ---------- 3. Page Summary ---------- */
 function summary(){
   try{retag();}catch(e){}
-  var counts={},samples={};
+  var counts={};
   each('[data-mydes]',function(e){
     var r=e.getAttribute('data-mydes');
     counts[r]=(counts[r]||0)+1;
-    if(!samples[r] && r!=='media'){
-      var txt=(e.textContent||'').replace(/\s+/g,' ').trim().slice(0,50);
-      var cls=e.tagName.toLowerCase()+(e.id?'#'+e.id:'')+(e.classList[0]?'.'+e.classList[0]:'');
-      samples[r]=cls+(txt?' ("'+txt+'")':'');
-    }
   });
   return JSON.stringify({
     url:location.href,
     host:location.hostname,
     title:(document.title||'').slice(0,80),
     viewport:{w:innerWidth,h:innerHeight},
-    roleCounts:counts,
-    roleSamples:samples
+    roleCounts:counts
   });
 }
 
-/* ---------- 7. Surface Remapper & Contrast Guard (V4 Proven Engine) ---------- */
-var SKIPTAG=/^(SCRIPT|STYLE|NOSCRIPT|IMG|SVG|PATH|VIDEO|CANVAS|IFRAME|PICTURE|INPUT|TEXTAREA|SELECT|OPTION|BR|HR|META|LINK|TITLE|HEAD|SOURCE|TEMPLATE|BUTTON)$/;
-var SURFACE_ROLE=/^(card|header|nav|footer|hero|aside)$/;
-function rgba(s){
-  var m=/rgba?\(([^)]+)\)/.exec(s||'');
-  if(!m)return null;
-  var p=m[1].split(/[ ,\/]+/).filter(Boolean).map(parseFloat);
-  if(p.length<3||p.some(isNaN))return null;
-  return {r:p[0],g:p[1],b:p[2],a:p.length>3?p[3]:1};
-}
-function lum(c){function f(v){v/=255;return v<=0.03928?v/12.92:Math.pow((v+0.055)/1.055,2.4);}return 0.2126*f(c.r)+0.7152*f(c.g)+0.0722*f(c.b);}
-function contrast(a,b){var x=lum(a),y=lum(b);return (Math.max(x,y)+0.05)/(Math.min(x,y)+0.05);}
-function blend(f,b){var a=f.a;return {r:f.r*a+b.r*(1-a),g:f.g*a+b.g*(1-a),b:f.b*a+b.b*(1-a),a:1};}
-
-function setProp(el,p,v){
-  if(changes.length>35000)return;
-  changes.push({el:el,p:p,v:el.style.getPropertyValue(p),pr:el.style.getPropertyPriority(p)});
-  el.style.setProperty(p,v,'important');
-}
-function undoAll(){
-  for(var i=changes.length-1;i>=0;i--){
-    var c=changes[i];
-    try{if(c.v)c.el.style.setProperty(c.p,c.v,c.pr);else c.el.style.removeProperty(c.p);}catch(e){}
-  }
-  changes=[];EB=new WeakMap();done=new WeakSet();unitDecorators=[];ornamentRules=[];
-  var decos = document.querySelectorAll('.__mydes_deco');
-  for(var d=0; d<decos.length; d++){ try{decos[d].remove();}catch(e){} }
-  var marked = document.querySelectorAll('[data-m-deco]');
-  for(var m=0; m<marked.length; m++){ try{marked[m].removeAttribute('data-m-deco');}catch(e){} }
-  for(var j=0;j<cleanupFns.length;j++){try{cleanupFns[j]();}catch(e){}}
-  cleanupFns=[];
-}
-function hasBgImage(cs){return !!cs.backgroundImage&&cs.backgroundImage!=='none';}
-function eff(el){
-  if(!el||el.nodeType!==1)return BG;
-  if(EB.has(el))return EB.get(el);
-  var cs=getComputedStyle(el),v;
-  if(hasBgImage(cs))v=BG;
-  else{
-    var c=rgba(cs.backgroundColor);
-    if(c&&c.a>=0.85)v=c;
-    else v=el.parentElement?eff(el.parentElement):BG;
-  }
-  EB.set(el,v);
-  return v;
-}
-function ownText(el){for(var n=el.firstChild;n;n=n.nextSibling){if(n.nodeType===3&&/\S/.test(n.nodeValue))return true;}return false;}
-function pickInk(bg){
-  var cands=[FG,INK,{r:255,g:255,b:255},{r:0,g:0,b:0}],best=cands[0],bc=0;
-  for(var i=0;i<cands.length;i++){var c=contrast(cands[i],bg);if(c>=4.5)return cands[i];if(c>bc){bc=c;best=cands[i];}}
-  return best;
-}
-function handle(el){
-  if(done.has(el))return;
-  done.add(el);
-  if(el.closest && el.closest('#__mydes_hud,#__mydes_backdrop,.__mydes_deco'))return;
-  var tag=el.tagName.toUpperCase();
-  if(SKIPTAG.test(tag))return;
-  var cs=getComputedStyle(el);
-  var bdRole=el.getAttribute('data-mydes')||'';
-  if(cfg.backdropHtml && tag!=='BODY' && tag!=='HTML' && bdRole!=='card' && bdRole!=='header' && bdRole!=='btn' && cs.position!=='fixed' && !hasBgImage(cs)){
-    var wb=rgba(cs.backgroundColor);
-    if(wb&&wb.a>=0.5){
-      var wr=el.getBoundingClientRect();
-      if(wr.width>=innerWidth*0.85&&wr.height>=innerHeight*0.18){setProp(el,'background-color','transparent');EB.delete(el);}
-    }
-  }
-  if(cfg.remapSurfaces && tag!=='BODY' && tag!=='HTML' && !hasBgImage(cs)){
-    if(el.querySelector('img,video,picture,svg,[role="img"]')) return;
-    var b=rgba(cs.backgroundColor);
-    if(b&&b.a>=0.85&&((cfg.dark&&lum(b)>0.5)||(!cfg.dark&&lum(b)<0.2))){
-      var role=el.getAttribute('data-mydes')||'';
-      var r=el.getBoundingClientRect();
-      if((r.width>=innerWidth*0.35&&r.height>=20)||SURFACE_ROLE.test(role)){
-        setProp(el,'background-color',role==='card'?cfg.surface2:cfg.surface);
-        EB.delete(el);
-      }
-    }
-  }
-  if(ownText(el)){
-    var bg=eff(el);
-    if(bg){
-      var fg=rgba(getComputedStyle(el).color);
-      if(fg&&fg.a>0.05){
-        if(fg.a<1)fg=blend(fg,bg);
-        if(contrast(fg,bg)<4.5)setProp(el,'color',rgbStr(pickInk(bg)));
-      }
-    }
-  }
-}
-
-function enqueue(root){jobs.push({root:root,list:null,i:0});kick();}
-function kick(){if(!draining){draining=true;setTimeout(drain,16);}}
-function drain(){
-  var t0=performance.now();
-  if(tagDirty&&t0-lastTag>tagDelay){
-    tagDirty=false;
-    try{retag();mountLayers();}catch(e){}
-    lastTag=performance.now();
-    tagDelay=Math.min(1200,Math.max(120,(lastTag-t0)*6));
-  }
-  while(jobs.length&&performance.now()-t0<12){
-    var j=jobs[0];
-    if(!j.list)j.list=[j.root].concat(Array.prototype.slice.call(j.root.querySelectorAll('*'),0,3500));
-    while(j.i<j.list.length&&performance.now()-t0<12){try{handle(j.list[j.i]);}catch(e){}j.i++;}
-    if(j.i>=j.list.length)jobs.shift();
-  }
-  if(jobs.length||tagDirty)setTimeout(drain,20);else draining=false;
-}
-
+/* ---------- 4. Continuous SPA & Scroll Observer ---------- */
 function observe(){
   try{
-    if(mo)mo.disconnect();
-    mo=new MutationObserver(function(muts){
-      tagDirty=true;
-      var n=0;
-      for(var i=0;i<muts.length&&n<120;i++){
-        var a=muts[i].addedNodes;
-        for(var j=0;j<a.length;j++){
-          if(a[j].nodeType===1 && a[j].id!=='__mydes_backdrop' && a[j].id!=='__mydes_hud' && !a[j].classList.contains('__mydes_deco')){
-            enqueue(a[j]);n++;
-          }
-        }
-      }
-      kick();
+    if(mo) mo.disconnect();
+    mo = new MutationObserver(function(){
+      if(retagRaf) return;
+      retagRaf = requestAnimationFrame(function(){
+        retagRaf = 0;
+        if(!document.getElementById('__mydes_style')) applySheets();
+        retag();
+      });
     });
-    mo.observe(document.documentElement,{childList:true,subtree:true});
-  }catch(e){}
+    mo.observe(document.documentElement, {childList: true, subtree: true});
+    window.addEventListener('popstate', retag, {passive: true});
+    window.addEventListener('yt-navigate-finish', retag, {passive: true});
+  } catch(e){}
 }
 
 function start(){
@@ -1249,9 +871,6 @@ function start(){
   var go=function(){
     if(!document.body)return;
     retag();
-    mountLayers();
-    setupInfiniteScrollKeeper();
-    enqueue(document.body);
     observe();
   };
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',go);else go();
@@ -1260,19 +879,40 @@ function start(){
 window.__mydes={
   id:function(){return cfg.id;},
   setBlueprint:function(nextBp){
-    undoAll();
     cfg=nextBp;
-    configure();
-    if(document.body)document.body.removeAttribute('data-m-js');
     start();
   },
   outline:summary,
+  exit:function(done){
+    if(mo)mo.disconnect();
+    var exitStyle = document.createElement('style');
+    exitStyle.id = '__mydes_exit_anim';
+    exitStyle.textContent = '* { transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1), transform 0.4s cubic-bezier(0.4, 0, 0.2, 1) !important; } [data-mydes], header, footer { opacity: 0.25 !important; transform: scale(0.98) translateY(4px) !important; }';
+    (document.head || document.documentElement).appendChild(exitStyle);
+    setTimeout(function() {
+      var s = document.getElementById('__mydes_style'); if(s) s.remove();
+      var sOld = document.getElementById('mydes-ai-styler-style'); if(sOld) sOld.remove();
+      exitStyle.remove();
+      document.querySelectorAll('[data-mydes]').forEach(function(el) {
+        el.removeAttribute('data-mydes');
+        el.style.opacity = '';
+        el.style.transform = '';
+      });
+      document.querySelectorAll('link[id^="__mydes_font_"]').forEach(function(l) { l.remove(); });
+      if(typeof done === 'function') done();
+    }, 400);
+  },
   clear:function(){
-    undoAll();
     if(mo)mo.disconnect();
     var s=document.getElementById('__mydes_style');if(s)s.remove();
-    var b=document.getElementById('__mydes_backdrop');if(b)b.remove();
-    var h=document.getElementById('__mydes_hud');if(h)h.remove();
+    var sOld=document.getElementById('mydes-ai-styler-style');if(sOld)sOld.remove();
+    var exitS=document.getElementById('__mydes_exit_anim');if(exitS)exitS.remove();
+    document.querySelectorAll('[data-mydes]').forEach(function(el){
+      el.removeAttribute('data-mydes');
+      el.style.opacity = '';
+      el.style.transform = '';
+    });
+    document.querySelectorAll('link[id^="__mydes_font_"]').forEach(function(l){l.remove();});
   }
 };
 start();
@@ -1287,209 +927,160 @@ start();
         return "(function(BP){$CORE\n})($bpJson);"
     }
 
-    /**
-     * Lightweight tagger + outline extractor script that discovers both standard elements and custom web
-     * components (e.g. ytm-media-item, article) along with their parent feed container selector.
-     */
     const val OUTLINE_PROBE_JS = """
         (function(){
           var vw = innerWidth, vh = innerHeight;
-
-          function getUniqueSel(el) {
-            if(!el || el === document.body || el === document.documentElement) return '';
-            var tag = el.tagName.toLowerCase();
-            if(el.id && !/\d{4,}/.test(el.id)) return tag + '#' + CSS.escape(el.id);
-            var classes = Array.from(el.classList || [])
-              .filter(function(c){ return c && !c.startsWith('__mydes') && !/\d{4,}/.test(c); })
-              .slice(0, 2);
-            return classes.length ? tag + '.' + classes.map(CSS.escape).join('.') : tag;
-          }
-
-          // Middle-ground visibility check: must have real rendered pixel dimensions, anywhere in the entire document height!
-          function isRendered(el) {
-            if(!el || el.nodeType !== 1) return false;
-            var cs = getComputedStyle(el);
-            if(cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) === 0) return false;
-            var r = el.getBoundingClientRect();
-            return r.width > 16 && r.height > 16;
-          }
-
-          // 1. Top Navigation / Header
-          var topBars = Array.from(document.querySelectorAll('header, nav, [role="banner"], [class*="header"], [class*="topbar"], [class*="navbar"]'))
-            .filter(function(el){
-              if(!isRendered(el)) return false;
-              var r = el.getBoundingClientRect();
-              var cs = getComputedStyle(el);
-              return (r.top <= 60 && r.width >= vw * 0.8 && r.height <= 120) || cs.position === 'fixed' || cs.position === 'sticky';
-            });
-          var searchEl = topBars[0] ? topBars[0].querySelector('input, form, yt-searchbox, [class*="search"], button[aria-label*="Search" i], [role="search"]') : null;
-          var header = topBars[0] ? {
-            sel: getUniqueSel(topBars[0]),
-            searchSel: searchEl ? getUniqueSel(searchEl) : null,
-            height: Math.round(topBars[0].getBoundingClientRect().height)
-          } : null;
-
-          // 2. Bottom Bar / Dock
-          var bottomBars = Array.from(document.querySelectorAll('footer, ytm-pivot-bar-renderer, [role="navigation"], [class*="bottom"], [class*="pivot"], [class*="tabbar"]'))
-            .filter(function(el){
-              if(!isRendered(el)) return false;
-              var r = el.getBoundingClientRect();
-              var cs = getComputedStyle(el);
-              return (r.bottom >= vh - 20 && r.width >= vw * 0.8 && r.height <= 90) || (cs.position === 'fixed' && r.top > vh * 0.7);
-            });
-          var bottomBar = bottomBars[0] ? {
-            sel: getUniqueSel(bottomBars[0]),
-            height: Math.round(bottomBars[0].getBoundingClientRect().height)
-          } : null;
-
-          // 3. Filter / Chip Strip
-          var filterBars = Array.from(document.querySelectorAll('ytm-chip-cloud-renderer, [class*="chip"], [class*="filter"], [role="tablist"]'))
-            .filter(function(el){
-              if(!isRendered(el)) return false;
-              var r = el.getBoundingClientRect();
-              return r.height < 65 && r.width >= vw * 0.7 && el != (bottomBars[0] || null);
-            });
-          var filterBar = filterBars[0] ? { sel: getUniqueSel(filterBars[0]) } : null;
-
-          // 4. All Card Archetypes Across the Entire Document (Categorized by Size & Orientation, NOT "primary vs secondary")
-          var cand = document.querySelectorAll('ytm-video-with-context-renderer, ytm-rich-item-renderer, ytm-compact-video-renderer, ytm-playlist-panel-video-renderer, ytm-shorts-lockup-view-model, article, [data-component-type="s-search-result"], [class*="card"], [class*="item"], [class*="renderer"], li');
-          var groups = {};
-          for(var i=0; i<cand.length && i<3000; i++) {
-            var c = cand[i];
-            if(c.closest('header, nav, footer, ytm-pivot-bar-renderer, #__mydes_backdrop, #__mydes_hud, .__mydes_deco')) continue;
-            if(!isRendered(c)) continue;
-            var r = c.getBoundingClientRect();
-            if(r.width < vw * 0.22 || r.height < 45) continue;
-            if(!c.querySelector('img, video, picture')) continue;
-            var t = (c.textContent || '').trim();
-            if(t.length < 6 || t.length > 600) continue;
-
-            var s = getUniqueSel(c);
-            if(!s || s === 'div' || s === 'section') continue;
-            var pSel = c.parentElement ? getUniqueSel(c.parentElement) : '';
-            groups[s] = groups[s] || { sel: s, parentSel: pSel, sample: c, count: 0, w: Math.round(r.width), h: Math.round(r.height) };
-            groups[s].count++;
-          }
-
-          // Filter out inner wrappers if an outer card wrapper in the same subtree is already in `groups`
-          var rawList = Object.keys(groups).map(function(k){ return groups[k]; }).filter(function(g){ return g.count >= 2; });
-          var cardArchetypes = [];
-          for(var a=0; a<rawList.length; a++) {
-            var g = rawList[a];
-            var isNestedInsideAnother = false;
-            for(var b=0; b<rawList.length; b++) {
-              if(a === b) continue;
-              if(g.sample.parentElement && g.sample.parentElement.closest(rawList[b].sel)) {
-                // Only skip if the outer one isn't a multi-card shelf holding 2+ of these
-                if(rawList[b].sample.querySelectorAll(g.sel).length <= 1) {
-                  isNestedInsideAnother = true;
-                  break;
-                }
-              }
-            }
-            if(isNestedInsideAnother) continue;
-
-            var sampleEl = g.sample;
-            var imgEl = sampleEl.querySelector('img, video');
-            var headingEl = sampleEl.querySelector('h1, h2, h3, h4, [class*="title"], [class*="headline"]');
-            var isRow = false;
-            if(imgEl && headingEl) {
-              var ir = imgEl.getBoundingClientRect(), hr = headingEl.getBoundingClientRect();
-              if(ir.width > 0 && hr.width > 0 && Math.abs(ir.top - hr.top) < 40 && ir.left < hr.left) isRow = true;
-            }
-            var sizeCategory = g.w >= vw * 0.7 ? (isRow ? 'full-width-horizontal-row-card' : 'full-width-vertical-card') : 'compact-grid-tile';
-            cardArchetypes.push({
-              sizeCategory: sizeCategory,
-              cardSelector: g.sel,
-              containerSelector: g.parentSel,
-              dimensions: { w: g.w, h: g.h },
-              count: g.count,
-              anatomy: {
-                mediaWrapper: imgEl ? getUniqueSel(imgEl.closest('a, [class*="thumbnail"]') || imgEl) : null,
-                mediaImg: imgEl ? getUniqueSel(imgEl) : null,
-                title: headingEl ? getUniqueSel(headingEl) : null
-              }
-            });
-          }
-
+          var bodyStyles = getComputedStyle(document.body || document.documentElement);
           return JSON.stringify({
             url: location.href,
             host: location.hostname,
             viewport: { w: vw, h: vh },
-            components: {
-              header: header,
-              filterBar: filterBar,
-              cardArchetypes: cardArchetypes.slice(0, 6),
-              bottomBar: bottomBar
-            }
+            baseline: {
+              backgroundColor: bodyStyles.backgroundColor,
+              textColor: bodyStyles.color,
+              fontFamily: (bodyStyles.fontFamily || '').split(',')[0].replace(/['"]/g, '').trim()
+            },
+            semanticTargets: [
+              "html, body",
+              "[data-mydes=\"header\"], header",
+              "[data-mydes=\"search\"], yt-searchbox",
+              "[data-mydes=\"chip\"]",
+              "[data-mydes=\"card\"]",
+              "[data-mydes=\"card\"] img",
+              "[data-mydes=\"heading\"], [data-mydes=\"title\"]",
+              "[data-mydes=\"btn\"]",
+              "[data-mydes=\"bottom-bar\"]"
+            ]
           });
         })();
     """
 
     /**
-     * Audits contrast, horizontal overflow, squished text columns, and unfilled media containers on the live page.
+     * Lightweight Computed-DOM Telemetry Probe (~600 tokens):
+     * Inspects `clashingSurfaces`, `lowContrastText`, and `squishedColumns` on the painted page.
      */
     const val VISUAL_AND_DOM_AUDIT_JS = """
         (function(){
-          try{
+          try {
             var vw = document.documentElement.clientWidth || innerWidth;
             var vh = document.documentElement.clientHeight || innerHeight;
-            function P(c){var m=/rgba?\(([^)]+)\)/.exec(c||'');if(!m)return null;var p=m[1].split(/[ ,\/]+/).filter(Boolean).map(parseFloat);return {r:p[0],g:p[1],b:p[2],a:p.length>3?p[3]:1};}
-            function L(c){function f(v){v/=255;return v<=0.03928?v/12.92:Math.pow((v+0.055)/1.055,2.4);}return 0.2126*f(c.r)+0.7152*f(c.g)+0.0722*f(c.b);}
-            function R(a,b){var x=L(a),y=L(b);if(x<y){var t=x;x=y;y=t;}return (x+0.05)/(y+0.05);}
-            function mix(t,b){var a=t.a;return {r:t.r*a+b.r*(1-a),g:t.g*a+b.g*(1-a),b:t.b*a+b.b*(1-a),a:1};}
-            function hx(c){function h(v){v=Math.max(0,Math.min(255,Math.round(v)));return (v<16?'0':'')+v.toString(16);}return '#'+h(c.r)+h(c.g)+h(c.b);}
-            function sel(e){var s=e.tagName.toLowerCase();var d=e.getAttribute('data-mydes');if(d)s+='[data-mydes="'+d+'"]';var cl=e.classList;for(var i=0;i<cl.length&&i<2;i++){if(cl[i]!=='__mydes_deco')s+='.'+(window.CSS&&CSS.escape?CSS.escape(cl[i]):cl[i]);}return s;}
-            var hasBackdrop=!!document.getElementById('__mydes_backdrop');
-            var rootBg=P(getComputedStyle(document.documentElement).backgroundColor)||{r:255,g:255,b:255,a:1};
-            if(rootBg.a<1)rootBg=mix(rootBg,{r:255,g:255,b:255,a:1});
-            function bgOf(el){
-              var layers=[],opaque=false;
-              for(var n=el;n&&n.nodeType===1;n=n.parentElement){
-                var cs=getComputedStyle(n);
-                if(cs.backgroundImage&&cs.backgroundImage!=='none')return null;
-                var c=P(cs.backgroundColor);
-                if(c&&c.a>0){layers.push(c);if(c.a>=0.99){opaque=true;break;}}
-              }
-              if(!opaque&&hasBackdrop)return null;
-              var base=rootBg;
-              for(var i=layers.length-1;i>=0;i--)base=mix(layers[i],base);
-              return base;
+
+            function parseRgba(c) {
+              var m = /rgba?\(([^)]+)\)/.exec(c || '');
+              if(!m) return null;
+              var p = m[1].split(/[ ,\/]+/).filter(Boolean).map(parseFloat);
+              return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
             }
-            var found={},squished=[],checked=0,unknown=0,guard=0,node;
-            var seen=new WeakSet();
-            var tw=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null);
-            var limitY=vh*2.5;
-            while((node=tw.nextNode())&&guard++<3000&&checked<500){
-              if(!/\S/.test(node.nodeValue))continue;
-              var el=node.parentElement;
-              if(!el||seen.has(el))continue;
-              seen.add(el);
-              if(el.closest('#__mydes_hud,#__mydes_backdrop,.__mydes_deco,script,style,noscript'))continue;
-              var r=el.getBoundingClientRect();
-              if(r.width<4||r.height<4||r.bottom<0||r.top>limitY)continue;
-              if(r.width < 85 && r.height > r.width * 1.8 && (node.nodeValue||'').trim().length > 12 && squished.length < 6) {
-                squished.push({sel: sel(el), w: Math.round(r.width), h: Math.round(r.height)});
+            function lum(c) {
+              function f(v){ v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }
+              return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
+            }
+            function contrastRatio(a, b) {
+              var x = lum(a), y = lum(b);
+              return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+            }
+            function toHex(c) {
+              function h(v){ v = Math.max(0, Math.min(255, Math.round(v))); return (v < 16 ? '0' : '') + v.toString(16); }
+              return '#' + h(c.r) + h(c.g) + h(c.b);
+            }
+            function cleanSel(el) {
+              if(!el || el.nodeType !== 1) return '';
+              var s = el.tagName.toLowerCase();
+              var md = el.getAttribute('data-mydes');
+              if(md) return s + '[data-mydes="' + md + '"]';
+              if(el.id && !/\d{4,}/.test(el.id)) return s + '#' + CSS.escape(el.id);
+              var cls = Array.from(el.classList || []).filter(function(c){ return c && !/\d{4,}/.test(c); }).slice(0, 2);
+              return cls.length ? s + '.' + cls.map(function(c){ return CSS.escape(c); }).join('.') : s;
+            }
+
+            var rootBg = parseRgba(getComputedStyle(document.documentElement).backgroundColor) || {r:10,g:10,b:15,a:1};
+            var isDarkTheme = lum(rootBg) < 0.35;
+
+            function effectiveBg(el) {
+              for(var n = el; n && n.nodeType === 1; n = n.parentElement) {
+                var cs = getComputedStyle(n);
+                var c = parseRgba(cs.backgroundColor);
+                if(c && c.a >= 0.5) return c;
               }
-              var cs2=getComputedStyle(el);
-              if(cs2.visibility==='hidden'||cs2.display==='none'||parseFloat(cs2.opacity)===0)continue;
-              var fg=P(cs2.color);
-              if(!fg||fg.a===0)continue;
-              var bg=bgOf(el);
-              if(!bg){unknown++;continue;}
-              var fgc=fg.a<1?mix(fg,bg):fg;
-              checked++;
-              var ratio=R(fgc,bg);
-              if(ratio<3){
-                var key=sel(el)+'|'+hx(fgc)+'|'+hx(bg);
-                var f=found[key]||(found[key]={sel:sel(el),text:(node.nodeValue||'').trim().slice(0,28),fg:hx(fgc),bg:hx(bg),ratio:Math.round(ratio*100)/100,count:0});
-                f.count++;
+              return rootBg;
+            }
+
+            var roleCounts = {};
+            var roles = ['header','search','chip','card','heading','title','btn','bottom-bar'];
+            roles.forEach(function(r){ roleCounts[r] = document.querySelectorAll('[data-mydes="' + r + '"]').length; });
+
+            var clashingSurfaces = [];
+            var clashingSeen = {};
+            var allEls = document.body ? document.body.querySelectorAll('*') : [];
+            for(var i = 0; i < allEls.length && clashingSurfaces.length < 10; i++) {
+              var el = allEls[i];
+              if(el.tagName === 'IMG' || el.tagName === 'VIDEO' || el.tagName === 'SVG') continue;
+              var r = el.getBoundingClientRect();
+              if(r.width < 100 || r.height < 28 || r.bottom < 0 || r.top > vh * 1.8) continue;
+              var cs = getComputedStyle(el);
+              if(cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) < 0.2) continue;
+              var bg = parseRgba(cs.backgroundColor);
+              if(bg && bg.a >= 0.65) {
+                var bgLum = lum(bg);
+                if((isDarkTheme && bgLum > 0.65) || (!isDarkTheme && bgLum < 0.08)) {
+                  var s = cleanSel(el);
+                  if(s && !clashingSeen[s]) {
+                    clashingSeen[s] = true;
+                    clashingSurfaces.push({
+                      sel: s,
+                      bg: toHex(bg),
+                      w: Math.round(r.width),
+                      h: Math.round(r.height)
+                    });
+                  }
+                }
               }
             }
-            var worst=Object.keys(found).map(function(k){return found[k];}).sort(function(a,b){return a.ratio-b.ratio;});
-            var failing=0;worst.forEach(function(w){failing+=w.count;});
-            return {checked:checked,unknownBg:unknown,failing:failing,overflowX:document.documentElement.scrollWidth-vw,squishedColumns:squished,worst:worst.slice(0,10)};
-          }catch(e){return {error:String(e)};}
+
+            var lowContrastText = [];
+            var squishedColumns = [];
+            var textSeen = {};
+            var tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+            var node, guard = 0;
+            while((node = tw.nextNode()) && guard++ < 1500 && lowContrastText.length < 8) {
+              if(!/\S/.test(node.nodeValue)) continue;
+              var p = node.parentElement;
+              if(!p || p.closest('script,style,noscript')) continue;
+              var pr = p.getBoundingClientRect();
+              if(pr.width < 6 || pr.height < 6 || pr.bottom < 0 || pr.top > vh * 1.8) continue;
+              if(pr.width < 75 && pr.height > pr.width * 2 && node.nodeValue.trim().length > 12 && squishedColumns.length < 5) {
+                squishedColumns.push({ sel: cleanSel(p), w: Math.round(pr.width), h: Math.round(pr.height) });
+              }
+              var pcs = getComputedStyle(p);
+              var fg = parseRgba(pcs.color);
+              if(!fg || fg.a < 0.2) continue;
+              var ebg = effectiveBg(p);
+              var ratio = contrastRatio(fg, ebg);
+              if(ratio < 3.2) {
+                var ts = cleanSel(p);
+                if(ts && !textSeen[ts]) {
+                  textSeen[ts] = true;
+                  lowContrastText.push({
+                    sel: ts,
+                    fg: toHex(fg),
+                    bg: toHex(ebg),
+                    ratio: Math.round(ratio * 100) / 100,
+                    sample: node.nodeValue.trim().slice(0, 24)
+                  });
+                }
+              }
+            }
+
+            return JSON.stringify({
+              overflowX: document.documentElement.scrollWidth - vw,
+              roleCounts: roleCounts,
+              clashingSurfaces: clashingSurfaces,
+              lowContrastText: lowContrastText,
+              squishedColumns: squishedColumns
+            });
+          } catch(e) {
+            return JSON.stringify({ error: String(e) });
+          }
         })();
     """
 
@@ -1522,11 +1113,11 @@ suspend fun WebView.evaluateJsSuspend(script: String): String? = withContext(Dis
 // ───────────────────── Blueprint Cache ─────────────────────
 
 class ThemeStore(context: Context) {
-    private val prefs = context.applicationContext.getSharedPreferences("mydes_blueprints_v11", Context.MODE_PRIVATE)
+    private val prefs = context.applicationContext.getSharedPreferences("mydes_blueprints_v19", Context.MODE_PRIVATE)
     private fun key(prompt: String, domain: String) =
-        "bp11|" + sha1Hex("${domain.trim().lowercase(Locale.US)}|${prompt.trim().lowercase(Locale.US)}")
+        "bp19|" + sha1Hex("${domain.trim().lowercase(Locale.US)}|${prompt.trim().lowercase(Locale.US)}")
     private fun lastPromptKey(prompt: String) =
-        "bp11_last|" + sha1Hex(prompt.trim().lowercase(Locale.US))
+        "bp19_last|" + sha1Hex(prompt.trim().lowercase(Locale.US))
 
     fun get(prompt: String, domain: String = "*"): UIBlueprint? {
         val exact = prefs.getString(key(prompt, domain), null)?.let { UIBlueprint.parse(it, prompt) }
@@ -1556,7 +1147,7 @@ class ThemeStore(context: Context) {
     }
 }
 
-// ───────────────────── The Gemini UI Synthesis Service ─────────────────────
+// ───────────────────── The Gemini UI Synthesis Service (v19) ─────────────────────
 
 class GeminiStylerService {
 
@@ -1565,13 +1156,8 @@ class GeminiStylerService {
         const val MODEL_GEMINI_38_FLASH = "gemini-3.8-flash"
         const val MODEL_NVIDIA_NEMOTRON_3_ULTRA = "nvidia/nemotron-3-ultra-550b-a55b"
 
-        /** Fast model for Pass 1 (Art Director creative concept brief) */
         const val CONCEPT_MODEL = MODEL_GEMINI_35_FLASH_LITE
-
-        /** Default synthesis model for Pass 2 (Main CSS3/SVG/JS synthesis) */
         const val SYNTHESIS_MODEL = MODEL_GEMINI_35_FLASH_LITE
-
-        /** Fast, quota-friendly model for Pass 3 (Visual QA & CSS review fix patch) */
         const val REVIEW_MODEL = MODEL_GEMINI_35_FLASH_LITE
 
         fun isNvidiaModel(model: String): Boolean =
@@ -1647,7 +1233,8 @@ class GeminiStylerService {
         forceFresh: Boolean = false,
         outlineJson: String? = null,
         initialScreenshotBase64: String? = null,
-        onThinkingUpdate: ((phase: String, chunk: String, isComplete: Boolean) -> Unit)? = null
+        onThinkingUpdate: ((phase: String, chunk: String, isComplete: Boolean) -> Unit)? = null,
+        onConceptReady: ((bg: String, fg: String) -> Unit)? = null
     ): Result<String> = synthesizeBlueprint(
         context = context,
         prompt = userPrompt,
@@ -1657,7 +1244,8 @@ class GeminiStylerService {
         screenshotBase64 = initialScreenshotBase64,
         forceFresh = forceFresh,
         isReviewPass = false,
-        onThinkingUpdate = onThinkingUpdate
+        onThinkingUpdate = onThinkingUpdate,
+        onConceptReady = onConceptReady
     ).map { MydesRuntime.script(it) }
 
     suspend fun generateUserScriptWithFeedback(
@@ -1670,7 +1258,9 @@ class GeminiStylerService {
         screenHeight: Int,
         outlineJson: String? = null,
         auditJson: String? = null,
-        onThinkingUpdate: ((phase: String, chunk: String, isComplete: Boolean) -> Unit)? = null
+        onThinkingUpdate: ((phase: String, chunk: String, isComplete: Boolean) -> Unit)? = null,
+        screenshotPath: String? = null,
+        onConceptReady: ((bg: String, fg: String) -> Unit)? = null
     ): Result<String> = synthesizeBlueprint(
         context = context,
         prompt = userPrompt,
@@ -1682,7 +1272,9 @@ class GeminiStylerService {
         forceFresh = false,
         auditJson = auditJson,
         isReviewPass = true,
-        onThinkingUpdate = onThinkingUpdate
+        onThinkingUpdate = onThinkingUpdate,
+        screenshotPath = screenshotPath,
+        onConceptReady = onConceptReady
     ).map { MydesRuntime.script(it) }
 
     suspend fun adaptUserScriptForWebpage(
@@ -1711,7 +1303,11 @@ class GeminiStylerService {
         pageOutlineJson: String? = null,
         screenshotBase64: String? = null,
         forceFresh: Boolean = false,
-        onThinkingUpdate: ((phase: String, chunk: String, isComplete: Boolean) -> Unit)? = null
+        auditJson: String? = null,
+        isReviewPass: Boolean = false,
+        onThinkingUpdate: ((phase: String, chunk: String, isComplete: Boolean) -> Unit)? = null,
+        screenshotPath: String? = null,
+        onConceptReady: ((bg: String, fg: String) -> Unit)? = null
     ): Result<UIBlueprint> = synthesizeBlueprint(
         context = context,
         prompt = prompt,
@@ -1720,16 +1316,21 @@ class GeminiStylerService {
         pageOutlineJson = pageOutlineJson,
         screenshotBase64 = screenshotBase64,
         forceFresh = forceFresh,
-        isReviewPass = screenshotBase64 != null && !forceFresh,
-        onThinkingUpdate = onThinkingUpdate
+        auditJson = auditJson,
+        isReviewPass = isReviewPass || (screenshotBase64 != null && !forceFresh),
+        onThinkingUpdate = onThinkingUpdate,
+        screenshotPath = screenshotPath,
+        onConceptReady = onConceptReady
     )
 
-    // ───── Pass 1: Concept Pass (Art Director) ─────
+    // ───── Pass 1: Static Visual Architect (Fast, Token-Efficient, Zero-Lag Design) ─────
 
     private class ConceptBrief(
         val raw: String,
         val idea: String,
-        val fingerprint: String
+        val fingerprint: String,
+        val bg: String,
+        val fg: String
     )
 
     private fun extractJsonObject(raw: String): String? {
@@ -1770,36 +1371,26 @@ class GeminiStylerService {
         apiKey: String,
         onThinkingUpdate: ((phase: String, chunk: String, isComplete: Boolean) -> Unit)? = null
     ): Result<ConceptBrief> {
-        // Concept Pass (Pass 1) ALWAYS runs on gemini-3.5-flash-lite only
-        onThinkingUpdate?.invoke("Pass 1: Concept Direction ($CONCEPT_MODEL)", "Brainstorming creative aesthetic and visual anatomy...", false)
+        onThinkingUpdate?.invoke("Pass 1: Visual Architecture ($CONCEPT_MODEL)", "Designing static artistic UI surfaces, trims, and typography...", false)
         val input = buildString {
             appendLine("USER REQUEST: \"$prompt\"")
             appendLine("TARGET WEBSITE: $websiteName ($websiteUrl)")
-            if (!pageOutlineJson.isNullOrBlank()) appendLine("LIVE DOM SEMANTIC OUTLINE: ${pageOutlineJson.take(4_000)}")
             val recent = storeFor(context).recentConcepts()
             if (recent.isNotEmpty()) {
-                appendLine("RECENT DESIGNS ALREADY SHIPPED (name: traits):")
+                appendLine("RECENT THEMES SHIPPED (create a completely distinct visual design):")
                 recent.forEach { appendLine("- $it") }
             }
-            appendLine("Write the design brief JSON now.")
+            appendLine("Design the static element-by-element visual specification JSON now.")
         }
         val logInput = buildString {
             appendLine("=== TARGET MODEL ===")
             appendLine(CONCEPT_MODEL)
             appendLine()
             appendLine("=== PASS TYPE ===")
-            appendLine("Pass 1: Concept Brief (Art Director)")
+            appendLine("Pass 1: Static Artistic Visual Specification")
             appendLine()
             appendLine("=== SYSTEM INSTRUCTION ===")
             appendLine(UI_CONCEPT_SYSTEM_PROMPT)
-            appendLine()
-            appendLine("=== GENERATION CONFIG ===")
-            appendLine("""{
-  "temperature": 1.15,
-  "topP": 0.98,
-  "maxOutputTokens": 1024,
-  "responseMimeType": "application/json"
-}""")
             appendLine()
             appendLine("=== USER CONTENT & PROMPT ===")
             append(input)
@@ -1811,33 +1402,53 @@ class GeminiStylerService {
                 apiKey,
                 UI_CONCEPT_SYSTEM_PROMPT,
                 listOf(Part(text = input)),
-                1.15f,
-                0.98f,
-                1024,
+                1.05f,
+                0.95f,
+                1536,
                 onThoughtChunk = { chunk ->
-                    onThinkingUpdate?.invoke("Pass 1: Concept Brainstorming", chunk, false)
+                    onThinkingUpdate?.invoke("Pass 1: Visual Architecture", chunk, false)
                 }
             )
             val json = JSONObject(extractJsonObject(raw) ?: throw IllegalStateException("no JSON in brief: ${raw.take(200)}"))
             val idea = json.optString("idea", "").trim()
             if (idea.isBlank()) throw IllegalStateException("brief has no idea: ${raw.take(200)}")
 
+            val bgRaw = when {
+                json.has("bg") && json.optString("bg").isNotBlank() -> json.optString("bg")
+                json.has("background") && json.optString("background").isNotBlank() -> json.optString("background")
+                else -> Hex.extractFirstHex(json.optString("palette", ""), "#0a0c0e")
+            }
+            val fgRaw = when {
+                json.has("fg") && json.optString("fg").isNotBlank() -> json.optString("fg")
+                json.has("foreground") && json.optString("foreground").isNotBlank() -> json.optString("foreground")
+                else -> Hex.extractSecondHex(json.optString("palette", ""), "#e2e8f0")
+            }
+            val bg = Hex.norm(bgRaw, "#0a0c0e")
+            var fg = Hex.norm(fgRaw, "#e2e8f0")
+            if (Hex.contrast(fg, bg) < 4.0) {
+                fg = if (Hex.lum(bg) < 0.4) "#f8fafc" else "#0f172a"
+            }
+
             val directions = listOf(
-                "idea" to "IDEA",
-                "signature" to "SIGNATURE",
-                "palette" to "PALETTE",
-                "type" to "TYPE",
-                "surface" to "SURFACE",
-                "layout" to "LAYOUT",
-                "newElements" to "NEW DOM ELEMENTS TO CREATE (SVG/HTML injected via customJs)",
-                "rules" to "RULES"
-            ).mapNotNull { (k, label) -> json.optString(k, "").trim().takeIf { it.isNotBlank() }?.let { "$label: $it" } }
-            .joinToString("\n")
+                "idea" to "1. OVERALL VISUAL CONCEPT",
+                "palette" to "2. EXACT COLOR PALETTE & HARMONY ACCENTS",
+                "typographyAndSymbol" to "3. TYPOGRAPHY & 4-DIGIT BMP UNICODE HEX SYMBOL",
+                "backdropCanvas" to "4. BASE PAGE CANVAS (html, body)",
+                "headerBar" to "5. TOP HEADER BAR & ICON DESIGN ([data-mydes=\"header\"])",
+                "searchBox" to "6. SEARCH BOX & FOCUS STATE ([data-mydes=\"search\"])",
+                "filterChips" to "7. FILTER CHIPS, COLOR CYCLING & SELECTED STATE ([data-mydes=\"chip\"])",
+                "cardsAndCorners" to "8. CARDS, SURFACE TEXTURE, CORNER ORNAMENTS & COLOR CYCLING ([data-mydes=\"card\"])",
+                "thumbnailsAndButtons" to "9. THUMBNAIL IMAGE GRADING & ACTION BUTTONS ([data-mydes=\"card\"] img, [data-mydes=\"btn\"])",
+                "bottomBar" to "10. BOTTOM NAVIGATION BAR ([data-mydes=\"bottom-bar\"])"
+            ).mapNotNull { (k, label) -> json.optString(k, "").trim().takeIf { it.isNotBlank() }?.let { "$label:\n$it" } }
+            .joinToString("\n\n")
 
             val brief = ConceptBrief(
                 raw = directions,
                 idea = idea.take(300),
-                fingerprint = json.optString("fingerprint", "").take(120)
+                fingerprint = json.optString("fingerprint", "").take(120),
+                bg = bg,
+                fg = fg
             )
             ApiRequestLogger.logRequest(context, "conceptBrief ($CONCEPT_MODEL)", websiteName, websiteUrl, prompt, logInput, json.toString(2), true)
             Result.success(brief)
@@ -1848,7 +1459,7 @@ class GeminiStylerService {
         }
     }
 
-    // ───── Pass 2 (Synthesis) & Pass 3 (Review) ─────
+    // ───── Pass 2 (60fps Pure CSS Compiler) & Pass 3 (Telemetry Reviewer) ─────
 
     private suspend fun synthesizeBlueprint(
         context: Context,
@@ -1860,7 +1471,9 @@ class GeminiStylerService {
         forceFresh: Boolean = false,
         auditJson: String? = null,
         isReviewPass: Boolean = false,
-        onThinkingUpdate: ((phase: String, chunk: String, isComplete: Boolean) -> Unit)? = null
+        onThinkingUpdate: ((phase: String, chunk: String, isComplete: Boolean) -> Unit)? = null,
+        screenshotPath: String? = null,
+        onConceptReady: ((bg: String, fg: String) -> Unit)? = null
     ): Result<UIBlueprint> = withContext(Dispatchers.IO) {
         val cleanPrompt = prompt.trim()
         if (cleanPrompt.isEmpty()) return@withContext Result.failure(IllegalArgumentException("Empty prompt"))
@@ -1868,13 +1481,15 @@ class GeminiStylerService {
         val domain = extractSafeDomain(websiteUrl, websiteName)
 
         if (!isReviewPass && screenshotBase64 == null && auditJson == null && !forceFresh) {
-            storeFor(context).get(cleanPrompt, domain)?.let { return@withContext Result.success(it) }
+            storeFor(context).get(cleanPrompt, domain)?.let {
+                onConceptReady?.invoke(it.bg, it.fg)
+                return@withContext Result.success(it)
+            }
         }
 
         val geminiApiKey = getApiKey(context)
         val nvidiaApiKey = getNvidiaApiKey(context)
 
-        // Gemini API key is always required because Pass 1 (Concept) and Pass 3 (Review) strictly run on gemini-3.5-flash-lite
         if (geminiApiKey.isBlank()) {
             return@withContext Result.failure(IllegalStateException("GEMINI_API_KEY is not set. Please set your Gemini API key in Settings."))
         }
@@ -1889,8 +1504,6 @@ class GeminiStylerService {
 
         val isReview = isReviewPass || (previous != null && !forceFresh && (!screenshotBase64.isNullOrBlank() || !auditJson.isNullOrBlank()))
 
-        // Pass 3 (Review) strictly runs on REVIEW_MODEL ("gemini-3.5-flash-lite").
-        // Pass 2 (Synthesis) is the ONLY pass that uses the user's selected synthesis model (Nemotron or Gemini).
         val synthesisModel = getSynthesisModel(context)
         val isNemotronSynthesis = !isReview && isNvidiaModel(synthesisModel)
         val activeModel = if (isReview) REVIEW_MODEL else synthesisModel
@@ -1899,7 +1512,6 @@ class GeminiStylerService {
             return@withContext Result.failure(IllegalStateException("NVIDIA NIM API key is not set. Please enter your NVIDIA API key (nvapi-...) in Settings."))
         }
 
-        // FAIL-FAST: Pass 1 (Concept Pass) strictly runs on CONCEPT_MODEL ("gemini-3.5-flash-lite")
         val brief: ConceptBrief? = if (isReview) {
             null
         } else {
@@ -1907,41 +1519,46 @@ class GeminiStylerService {
                 .getOrElse { conceptError -> return@withContext Result.failure(conceptError) }
         }
 
+        if (brief != null) {
+            onConceptReady?.invoke(brief.bg, brief.fg)
+        }
+
         if (!isReview) {
             val modelLabel = if (isNemotronSynthesis) "Nemotron 3 Ultra 550B (NVIDIA NIM)" else activeModel
-            onThinkingUpdate?.invoke("Pass 2: Generative Synthesis ($modelLabel)", "Building CSS, SVG backdrop, and DOM ornaments...", false)
+            onThinkingUpdate?.invoke("Pass 2: 60fps Pure CSS Compilation ($modelLabel)", "Compiling lightweight, artistic Pure CSS...", false)
         } else {
-            onThinkingUpdate?.invoke("Pass 3: Visual Review & QA ($activeModel)", "Auditing live render and preparing fixes...", false)
+            onThinkingUpdate?.invoke("Pass 3: Visual & Telemetry QA ($activeModel)", "Checking live surface contrast and compatibility...", false)
         }
 
         val userContextText = if (isReview) buildString {
-            appendLine("REVIEW PASS")
+            appendLine("REVIEW & SELF-HEALING PASS")
             appendLine("USER REQUEST: \"$cleanPrompt\"")
             appendLine("TARGET WEBSITE: $websiteName ($websiteUrl)")
-            appendLine("INTENDED CONCEPT: ${previous!!.concept}")
-            appendLine("PALETTE: bg ${previous.bg}, surface ${previous.surface}, surface2 ${previous.surface2}, text ${previous.fg}, ink ${previous.ink}, accent ${previous.accent}")
-            if (!pageOutlineJson.isNullOrBlank()) appendLine("LIVE DOM OUTLINE: ${pageOutlineJson.take(2_500)}")
-            appendLine("MEASURED AUDIT (live page, ground truth): ${auditJson?.takeIf { it.isNotBlank() && it != "null" }?.take(3_000) ?: "not available"}")
-            appendLine("CURRENT CSS:")
+            appendLine("THEME PALETTE: dark=${previous!!.dark}, bg=${previous.bg}, surface=${previous.surface}, surface2=${previous.surface2}, fg=${previous.fg}, ink=${previous.ink}, accent=${previous.accent}")
+            if (previous.designSpec.isNotBlank()) {
+                appendLine()
+                appendLine("ORIGINAL PASS 1 VISUAL SPECIFICATION:")
+                appendLine(previous.designSpec.take(3_000))
+            }
+            appendLine()
+            appendLine("LIVE COMPUTED DOM TELEMETRY (Ground-truth measurements from the painted WebView):")
+            appendLine(auditJson?.takeIf { it.isNotBlank() && it != "null" }?.take(3_000) ?: "not available")
+            appendLine()
+            appendLine("CURRENT CSS (from Pass 2):")
             appendLine(previous.customCss)
-            appendLine("CURRENT CUSTOM JS:")
-            appendLine(previous.customJs)
-            appendLine(if (!screenshotBase64.isNullOrBlank()) "A screenshot of the current render is attached." else "No screenshot is available; rely on the audit.")
-            appendLine("Return the review JSON now.")
+            appendLine()
+            appendLine(if (!screenshotBase64.isNullOrBlank()) "A live screenshot of the rendered page is attached. Stitch any `clashingSurfaces`, `lowContrastText`, or missing static ornaments from Pass 1's spec. Return the review JSON now." else "Return the review JSON now.")
         } else buildString {
             appendLine("USER REQUEST: \"$cleanPrompt\"")
             appendLine("TARGET WEBSITE: $websiteName ($websiteUrl)")
-            if (!pageOutlineJson.isNullOrBlank()) {
-                appendLine("LIVE DOM SEMANTIC OUTLINE: ${pageOutlineJson.take(6_000)}")
-            }
             appendLine()
-            appendLine("DESIGN DIRECTIONS from the art director (the spec; implement them literally):")
+            appendLine("VISUAL ARCHITECTURE SPECIFICATION FROM PASS 1 (Translate every static visual detail into lightweight, 60fps Pure CSS):")
             appendLine(brief!!.raw)
-            appendLine("Generate the complete UIBlueprint JSON now.")
+            appendLine()
+            appendLine("Compile this specification into valid, visible, conflict-free Pure CSS now.")
         }
 
         val parts = mutableListOf<Part>(Part(text = userContextText))
-        // Only attach screenshot on the Review Pass so the Synthesis Pass focuses purely on the Art Director spec + DOM outline (like v4)
         if (isReview && !screenshotBase64.isNullOrBlank()) {
             parts.add(Part(inlineData = InlineData(mimeType = "image/jpeg", data = screenshotBase64)))
         }
@@ -1950,11 +1567,11 @@ class GeminiStylerService {
             contents = listOf(Content(parts = parts)),
             systemInstruction = Content(listOf(Part(text = if (isReview) UI_REVIEW_SYSTEM_PROMPT else UI_SYNTHESIS_SYSTEM_PROMPT))),
             generationConfig = GenerationConfig(
-                temperature = if (isReview) 0.3f else 0.8f,
+                temperature = if (isReview) 0.25f else 0.6f,
                 topP = 0.95f,
-                maxOutputTokens = if (isReview) 1536 else 8192,
+                maxOutputTokens = if (isReview) 3072 else 6144,
                 responseMimeType = if (jsonMode) "application/json" else null,
-                thinkingConfig = if (!isReview) ThinkingConfig(thinkingBudget = 1024) else null
+                thinkingConfig = ThinkingConfig(thinkingBudget = if (isReview) 512 else 768)
             )
         )
 
@@ -1963,26 +1580,18 @@ class GeminiStylerService {
             appendLine("=== TARGET MODEL ===")
             appendLine(if (isNemotronSynthesis) "$activeModel (NVIDIA NIM)" else activeModel)
             appendLine()
-            appendLine("=== PASS TYPE ===")
-            appendLine(if (isReview) "Pass 3: Visual QA & Review Pass" else if (isNemotronSynthesis) "Pass 2: NVIDIA NIM Generative Synthesis Pass" else "Pass 2: Main Generative Synthesis Pass")
-            appendLine()
             appendLine("=== SYSTEM INSTRUCTION ===")
             appendLine(if (isReview) UI_REVIEW_SYSTEM_PROMPT else UI_SYNTHESIS_SYSTEM_PROMPT)
-            appendLine()
-            appendLine("=== GENERATION CONFIG ===")
-            appendLine("""{
-  "temperature": ${if (isReview) 0.3f else 0.8f},
-  "topP": 0.95,
-  "maxOutputTokens": ${if (isReview) 1536 else if (isNemotronSynthesis) NIM_MAX_TOKENS else 8192},
-  "provider": "${if (isNemotronSynthesis) "NVIDIA NIM" else "Google AI Studio"}"
-}""")
             appendLine()
             appendLine("=== USER CONTENT & PROMPT ===")
             append(userContextText)
             if (isReview && !screenshotBase64.isNullOrBlank()) {
                 appendLine()
-                appendLine("=== SCREENSHOT ATTACHMENT ===")
-                appendLine("[Attached JPEG screenshot: ${screenshotBase64.length / 1024} KB base64]")
+                appendLine("=== ATTACHED LIVE SCREENSHOT (SENT TO REVIEW AGENT) ===")
+                appendLine("Payload Size: ${screenshotBase64.length / 1024} KB base64 (image/jpeg)")
+                if (!screenshotPath.isNullOrBlank()) {
+                    appendLine("Screenshot File: $screenshotPath")
+                }
             }
         }
 
@@ -1993,14 +1602,14 @@ class GeminiStylerService {
                     apiKey = nvidiaApiKey,
                     systemInstruction = UI_SYNTHESIS_SYSTEM_PROMPT,
                     userContent = userContextText,
-                    temperature = 0.7f,
+                    temperature = 0.6f,
                     topP = 0.95f,
                     maxTokens = NIM_MAX_TOKENS,
                     onThoughtChunk = { chunk ->
-                        onThinkingUpdate?.invoke("Pass 2: Nemotron 3 Ultra Reasoning", chunk, false)
+                        onThinkingUpdate?.invoke("Pass 2: CSS Engineering", chunk, false)
                     },
                     onOutputChunk = { _ ->
-                        onThinkingUpdate?.invoke("Pass 2: Generating UI Code ($activeModel)", "", false)
+                        onThinkingUpdate?.invoke("Pass 2: Writing Pure CSS ($activeModel)", "", false)
                     }
                 )
             } else {
@@ -2010,14 +1619,14 @@ class GeminiStylerService {
                     geminiApiKey,
                     onThoughtChunk = { chunk ->
                         onThinkingUpdate?.invoke(
-                            if (isReview) "Pass 3: Visual QA Audit" else "Pass 2: Reasoning & Spatial Choreography",
+                            if (isReview) "Pass 3: Visual & Telemetry QA Audit" else "Pass 2: CSS Engineering",
                             chunk,
                             false
                         )
                     },
                     onOutputChunk = { _ ->
                         onThinkingUpdate?.invoke(
-                            if (isReview) "Pass 3: Generating Fixes" else "Pass 2: Generating UI Code",
+                            if (isReview) "Pass 3: Stitching Self-Healing CSS" else "Pass 2: Writing Pure CSS",
                             "",
                             false
                         )
@@ -2028,156 +1637,183 @@ class GeminiStylerService {
                 applyReviewPatch(previous!!, raw, cleanPrompt)
             } else {
                 val parsed = UIBlueprint.parse(raw, cleanPrompt)
-                parsed?.copy(concept = brief!!.idea, fingerprint = brief.fingerprint)
+                parsed?.copy(
+                    concept = brief!!.idea,
+                    fingerprint = brief.fingerprint,
+                    designSpec = brief.raw
+                )
             }
 
             if (blueprint == null) {
-                val err = "Model returned invalid UIBlueprint JSON (finish_reason=${lastNimFinishReason ?: "n/a"}, " +
-                    "contentChars=${raw.length}, reasoningChars=${rawThoughts.length}). Raw start: ${raw.take(200)} ... Raw end: ${raw.takeLast(200)}"
-                val errLog = err + "\n\n=== FULL RAW OUTPUT ===\n" + raw +
-                    (if (rawThoughts.isNotBlank()) "\n\n=== REASONING ===\n" + rawThoughts else "")
-                ApiRequestLogger.logRequest(context, logType, websiteName, websiteUrl, cleanPrompt, requestJson, errLog, false)
+                val err = "Model returned invalid UIBlueprint JSON."
+                ApiRequestLogger.logRequest(
+                    context = context,
+                    type = logType,
+                    websiteName = websiteName,
+                    websiteUrl = websiteUrl,
+                    userPrompt = cleanPrompt,
+                    requestPayload = requestJson,
+                    responseResult = err + "\n\n" + raw,
+                    isSuccess = false,
+                    screenshotBase64 = if (isReview) screenshotBase64 else null,
+                    screenshotPath = if (isReview) screenshotPath else null
+                )
                 Result.failure(IllegalStateException(err))
             } else {
                 storeFor(context).put(cleanPrompt, blueprint, domain, remember = !isReview)
-                val truncNote = if (isNemotronSynthesis && !isReview && lastNimFinishReason == "length") "!!! OUTPUT WAS TRUNCATED (finish_reason=length); blueprint was repaired and may be missing the end of customCss !!!\n\n" else ""
                 val logResponse = if (rawThoughts.isNotBlank()) {
-                    truncNote + "=== REASONING & THINKING PROCESS ===\n$rawThoughts\n\n=== RESPONSE RESULT ===\n" + (if (isReview) raw else blueprint.toJson())
+                    "=== REASONING & THINKING PROCESS ===\n$rawThoughts\n\n=== RESPONSE RESULT ===\n" + (if (isReview) raw else blueprint.toJson())
                 } else {
                     if (isReview) raw else blueprint.toJson()
                 }
-                ApiRequestLogger.logRequest(context, logType, websiteName, websiteUrl, cleanPrompt, requestJson, logResponse, true)
+                ApiRequestLogger.logRequest(
+                    context = context,
+                    type = logType,
+                    websiteName = websiteName,
+                    websiteUrl = websiteUrl,
+                    userPrompt = cleanPrompt,
+                    requestPayload = requestJson,
+                    responseResult = logResponse,
+                    isSuccess = true,
+                    screenshotBase64 = if (isReview) screenshotBase64 else null,
+                    screenshotPath = if (isReview) screenshotPath else null
+                )
                 onThinkingUpdate?.invoke("Theme Synthesis Complete", "", true)
                 Result.success(blueprint)
             }
         } catch (e: Exception) {
             val msg = describe(e)
-            ApiRequestLogger.logRequest(context, logType, websiteName, websiteUrl, cleanPrompt, requestJson, msg, false)
+            ApiRequestLogger.logRequest(
+                context = context,
+                type = logType,
+                websiteName = websiteName,
+                websiteUrl = websiteUrl,
+                userPrompt = cleanPrompt,
+                requestPayload = requestJson,
+                responseResult = msg,
+                isSuccess = false,
+                screenshotBase64 = if (isReview) screenshotBase64 else null,
+                screenshotPath = if (isReview) screenshotPath else null
+            )
             Result.failure(Exception(msg, e))
         }
     }
 
     private fun applyReviewPatch(previous: UIBlueprint, raw: String, prompt: String): UIBlueprint {
         val json = try { JSONObject(extractJsonObject(raw) ?: return previous) } catch (_: Exception) { return previous }
-        val fixCss = stripInventedLabels(json.optString("fixCss", "")).trim().take(3_000)
-        val fixJs = json.optString("fixJs", "").trim().take(2_000)
+        val replacedCss = sanitizeGeneratedCss(json.optString("replacedCss", "")).trim()
+        val fixCss = sanitizeGeneratedCss(json.optString("fixCss", "")).trim().take(4_000)
 
-        if (fixCss.isBlank() && fixJs.isBlank()) return previous
+        if (replacedCss.isBlank() && fixCss.isBlank()) return previous
 
-        val mergedCss = if (fixCss.isNotBlank()) previous.customCss + "\n/* review */\n" + fixCss else previous.customCss
-        val mergedJs = if (fixJs.isNotBlank()) previous.customJs + "\n/* review */\ntry {\n" + fixJs + "\n} catch(e){}" else previous.customJs
+        val baseCss = if (replacedCss.length > 200) replacedCss else previous.customCss
+        val mergedCss = if (fixCss.isNotBlank()) "$baseCss\n/* review-stitch */\n$fixCss" else baseCss
 
-        val merged = JSONObject(previous.toJson())
-            .put("customCss", mergedCss)
-            .put("customJs", mergedJs)
-
+        val merged = JSONObject(previous.toJson()).put("customCss", mergedCss)
         return UIBlueprint.parse(merged.toString(), prompt)
-            ?.copy(concept = previous.concept, fingerprint = previous.fingerprint)
+            ?.copy(
+                concept = previous.concept,
+                fingerprint = previous.fingerprint,
+                designSpec = previous.designSpec
+            )
             ?: previous
     }
 
-    // ───── System Prompts (V4 Core + Asymmetric Panel Grids + New DOM Elements) ─────
+    // ───── v19 Prompts: Simple, Artistic, Zero-Lag Static Craftsmanship ─────
 
     private val UI_REVIEW_SYSTEM_PROMPT = """
-You are the QA reviewer of a live website redesign on an Android phone. The design is final and approved: you do NOT redesign anything. You receive the user's request, the palette, the CURRENT CSS/JS, a MEASURED AUDIT taken from the live page (ground truth), and usually a screenshot of how it renders now.
+You are the Pure-CSS QA & Self-Healing Reviewer inside an Android mobile browser.
+You receive:
+1. The ORIGINAL PASS 1 VISUAL SPECIFICATION.
+2. The LIVE COMPUTED DOM TELEMETRY (`clashingSurfaces`, `lowContrastText`, `squishedColumns`, `roleCounts`) measured from the painted WebView.
+3. The CURRENT CSS generated by Pass 2.
+4. A LIVE SCREENSHOT of how the page renders on the phone screen.
 
-You may ONLY append override CSS in `fixCss` (and optional DOM repair JS in `fixJs`). It is added after the current CSS, so you cannot delete anything. Never undo or tone down the design: keep every transform, shadow, texture, ornament, font, palette colour and the backdrop.
+Fix any visual or compatibility defects using lightweight, 60fps static Pure CSS (`fixCss`):
+1. UN-THEMED / CLASHING HOST SURFACES (`clashingSurfaces` in Telemetry or Screenshot):
+   - Every item in `clashingSurfaces` is a visible container, header bar, search box, or card on the live website that ignored the theme (e.g. stayed bright white `#ffffff` on a dark theme).
+   - For EVERY selector in `clashingSurfaces`, write an explicit rule in `fixCss` (`html body <sel> { background: var(--m-surface) !important; color: var(--m-fg) !important; border-color: var(--m-accent) !important; }`).
+2. UNREADABLE TEXT (`lowContrastText` in Telemetry or Screenshot):
+   - For every selector in `lowContrastText` (contrast < 3.2:1), force readable high-contrast `color: var(--m-fg) !important;` and `text-shadow`.
+3. MISSING STATIC ORNAMENTS FROM PASS 1 SPEC:
+   - If Pass 2 forgot a requested card corner ornament, header border trim, or `:nth-child` color variation, restore it in `fixCss`.
+4. ZERO LAG & LAYOUT PROTECTION:
+   - Do NOT add `@keyframes` animations, `body::before`/`body::after` overlays, or `backdrop-filter: blur()`. Never alter `display`, `flex-direction`, `width`, or `height`.
 
-Fix only real defects, in this order:
-1. Squished vertical text columns (`squishedColumns` non-empty or screenshot shows words wrapping every 2-3 letters inside narrow columns): force the affected container or shelf to span all columns (`grid-column: 1 / -1 !important; width: 100% !important; max-width: 100% !important;`) and set `word-break: normal !important; overflow-wrap: break-word !important;`.
-2. Text covering thumbnails: if a styled heading/title box covers more than 30% of a video/image thumbnail (such as on vertical Shorts), force its overlay wrapper to `position: static !important; width: 100% !important;` so the title sits neatly below the thumbnail, or shrink its padding and font-size.
-3. Truncated titles: if titles are cut off after 1-2 words, set `-webkit-line-clamp: unset !important; max-height: none !important; height: auto !important; overflow: visible !important; display: block !important; white-space: normal !important;`.
-4. Unreadable text: the audit lists elements whose text has under 3:1 contrast against what is behind it. Fix each by setting `color` (and `background-color` if needed) using the design's own palette so that it reaches 4.5:1.
-5. Elements clipped, overlapping unintentionally, or horizontal overflow (audit overflowX above 2): fix with width, max-width, overflow, margin or position overrides.
-
-Use selectors of the form `html body <selector>` with !important. Keep fixCss under 1500 characters. If nothing is wrong, return an empty fixCss.
-
-OUTPUT: ONLY one JSON object, no markdown fences:
-{"problems": ["short list of what you found, max 5 items"], "fixCss": "css or empty string", "fixJs": "optional js or empty string"}
-""".trimIndent()
-
-    private val UI_CONCEPT_SYSTEM_PROMPT = """
-You are the art director of a browser that redesigns any website around the user's imagination. You write no code. You invent one specific, original design idea; a separate builder turns your directions into CSS, a backdrop, and newly created SVG/HTML DOM ornaments on top of the live page.
-
-THINK, silently: What does the user really want to see or feel? What is this site's real content made of (the outline lists real repeated items)? What are three genuinely different worlds it could live in? Pick the least obvious one that still fully honours the request and keeps the site usable, and give it one memorable signature visual. Reject your first idea, anything a generic "make it look <theme>" would produce by default, and anything resembling RECENT DESIGNS (do not reuse their type voice, palette family, shape language or layout idea unless the request leaves no alternative). For accessibility or comfort requests clarity wins over spectacle, but still give the design an identity.
-
-BUILDER CAPABILITIES: It can restyle real page elements with CSS, add a full-screen SVG/Canvas backdrop layer, and run JS (`MydesBridge.decorateUnits` and `MydesBridge.injectOrnament`) to create and attach brand-new thematic SVG/HTML elements onto pre-existing elements. The site's own text, links, search and items can be enhanced but must stay readable and usable on a phone.
-
-OUTPUT: ONLY one JSON object, under 200 words in total. Every value must be concrete (hex colours, named shapes, real behaviours). Vague words like "modern", "futuristic", "sleek" or "immersive" are not decisions.
+OUTPUT: ONLY one valid JSON object, no markdown fences:
 {
-  "considered": ["3 alternative worlds, max 8 words each (for you; the builder never sees them)"],
-  "idea": "one sentence: what this page IS",
-  "signature": "the one memorable visual or interaction, max 25 words",
-  "palette": "4 or 5 colours as hex, each with its job",
-  "type": "typographic styling and formatting using fonts from Google Fonts, max 15 words",
-  "surface": "edges, material, depth, texture, clip-path shapes, borders, shadows, max 25 words",
-    "layout": "how content is arranged and how that transforms the usual list or page flow to fit this world, max 30 words",
-  "newElements": "specific new SVG/HTML elements to create and attach onto items and headers via JS to bring this world to life, max 30 words",
-  "rules": "how each of these behaves in this world: header, search, headings, repeated items or cards, links, buttons, images; max 45 words",
-  "fingerprint": "max 6 words: typographic styling and formatting, palette family, shape language, layout idea"
+  "problems": ["concise list of clashingSurfaces, lowContrastText, or missing ornaments found"],
+  "replacedCss": "",
+  "fixCss": "high-specificity static CSS overrides (using !important) that stitch all clashingSurfaces and restore missing details"
 }
 """.trimIndent()
 
-        private val UI_SYNTHESIS_SYSTEM_PROMPT = """
-You are the front-end builder inside an Android web browser. An art director wrote DESIGN DIRECTIONS for how a live website should look. Implement them as CSS (`customCss`), an animated SVG/HTML backdrop (`backdropHtml`), and DOM-augmenting JS (`customJs`). The directions are the design: follow them literally and make each part visibly present (palette, type, surface, layout, newElements, rules, signature). Do not substitute your own taste or fall back to generic templates.
+    private val UI_CONCEPT_SYSTEM_PROMPT = """
+You are the Master Visual Architect for a mobile browser that transforms any website into a deeply artistic, decorative, and cohesive thematic world using lightweight, 60fps static Pure CSS.
+You write ZERO CSS code. You decide every visual element and describe **exactly what each element looks like visually** (its colors, geometry, surface patterns, borders, corner ornaments, and lighting) so the CSS Compiler can build it cleanly.
 
-EXECUTION ORDER & MANDATORY DIRECTIONS
-- In LLM structured generation, field order is execution order.
-- You MUST populate the 1-line `implemented` checklist at the very top of the JSON first (`signature`, `layout`, `surface`, `newElements`, `rules`), committing to the exact selectors and mechanisms from the outline before generating code. Each `implemented` value is ONE short sentence (max 20 words), with no code and no lists.
-- You MUST generate `backdropHtml` and `customJs` BEFORE `customCss` so that the SIGNATURE backdrop and NEW DOM ELEMENTS (`MydesBridge.decorateUnits` and `MydesBridge.injectOrnament`) are fully realized while your attention is 100% fresh.
-- In `customCss`, you MUST implement every single item from `RULES` (header, search, headings, repeated items/cards, links, buttons, images), `SURFACE`, `LAYOUT`, and `TYPE`. Never skip any direction.
+CRITICAL RULES FOR YOUR VISUAL DECISIONS:
+- Keep it 100% static and GPU-friendly for mid-tier phones: do NOT invent moving particles, full-screen weather overlays (`body::before`/`body::after`), or continuous looping animations!
+- Achieve deep immersion through **crisp static artistry**: multi-layered surface gradients, fine geometric patterns, decorative repeating edge trims on headers/footers, corner motifs on cards, polychromatic `:nth-child` color rhythms, and expressive typography.
+- For `typographyAndSymbol`, choose a classic 4-digit BMP Unicode symbol and write its 4-character hex code (e.g. `\2726`, `\2699`, `\2694`, `\2693`, `\26A1`)—never use raw multi-byte emojis!
 
-COMPONENT ARCHETYPE CONTRACT:
-The outline provides a `components` map containing the exact live selectors for this website:
-1. `header`: Apply the SIGNATURE header rules, backdrop/glass styling, and brand identity directly to `components.header.sel` (and use MydesBridge.injectOrnament on it). Style `components.header.sel` as the themed bar, and style `components.header.searchSel` (if present) as the search input/trigger.
-2. `filterBar`: If present, style `components.filterBar.sel` and its child chips/pills to match the theme's surface, accent border, and typography.
-3. `cardArchetypes`: The outline lists ALL card types on the page grouped by their dimensions (`full-width-vertical-card`, `full-width-horizontal-row-card`, `compact-grid-tile`):
-   - You MUST style EVERY `cardSelector` in `components.cardArchetypes` (along with `[data-mydes="card"]`) using the art director's SURFACE, RULES, and NEW DOM ELEMENTS (`MydesBridge.decorateUnits`).
-   - Respect their dimensions:
-     * For `full-width-vertical-card` and `full-width-horizontal-row-card`: keep them as full-width dossier panels (`width: 100% !important; display: flex !important; flex-direction: column !important;`) with their `anatomy.mediaWrapper` and `anatomy.mediaImg` stretched to `width: 100% !important; height: auto !important;`.
-     * For `compact-grid-tile`: keep them in a 2-column grid (`grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 10px !important;`) on their `containerSelector`.
-     * Style every archetype's `anatomy.title` with the TYPE directions (`-webkit-line-clamp: unset !important; overflow: visible !important;`).4. `shelves`: If any shelf selectors are listed in `components.shelves`, span them full width (`grid-column: 1 / -1 !important; width: 100% !important;`).
-5. `bottomBar`: If present, style `components.bottomBar.sel` to match the theme background, surface borders, and icons.
+OUTPUT: ONLY one valid JSON object with concrete visual instructions:
+{
+  "idea": "One sentence summarizing the visual world and artistic direction.",
+  "bg": "#rrggbb (exact base canvas background hex color)",
+  "fg": "#rrggbb (exact primary high-contrast readable text hex color)",
+  "palette": "Exact hex codes and roles: bg (main canvas), surface (primary card/bar), surface2 (elevated/secondary), fg (primary text), ink (headline highlight text), accent (primary glow/trim), plus 2 or 3 distinct secondary/tertiary harmony hex colors for alternating cards and chips.",
+  "typographyAndSymbol": "Exact Google Font names for headings and body text, casing, letter-spacing, text-shadow colors, and one 4-digit CSS Unicode hex escape to prefix main video/article headlines.",
+  "backdropCanvas": "Detailed visual description of the static background canvas (`html, body`): base gradients and subtle repeating grid or texture patterns.",
+  "headerBar": "Detailed visual description of the top header (`[data-mydes=\"header\"]`): its surface gradient, repeating border-bottom decorative trim pattern, box-shadow, and icon colors.",
+  "searchBox": "Detailed visual description of the search input (`[data-mydes=\"search\"]`): its surface material, border, inner/outer glow, text/placeholder colors, and `:focus-within` highlight.",
+  "filterChips": "Detailed visual description of the filter chips (`[data-mydes=\"chip\"]`): their shape, surface gradient, how every 2nd, 3rd, and 4th chip cycles through the harmony palette colors, and how the active/selected chip lights up.",
+  "cardsAndCorners": "Detailed visual description of the content cards (`[data-mydes=\"card\"]`): their surface gradient, subtle interior texture pattern, top/left edge light-trim, 4-corner geometric ornaments or `::before` badge, and how every 2nd and 3rd card cycles through distinct border and shadow colors.",
+  "thumbnailsAndButtons": "Detailed visual description of how card thumbnails (`[data-mydes=\"card\"] img`) are framed and color-graded, and how action buttons (`[data-mydes=\"btn\"]`) are styled.",
+  "bottomBar": "Detailed visual description of the bottom navigation bar (`[data-mydes=\"bottom-bar\"]`): its surface gradient, top-edge decorative trim pattern, and icon styling."
+}
+""".trimIndent()
 
-RUNTIME & TOOLS
-- Real elements carry data-mydes="header|nav|search|main|grid|card|title|heading|price|btn|field|media|aside|footer". Select with `html body [data-mydes="X"]`. Roles are hints, not guarantees: the page's main repeating items may NOT be tagged `card`. The outline lists roleCounts, roleSamples and repeatedItems (real `sel` and `parentSel` selectors). Whenever the directions talk about items, cards or results, style `html body [data-mydes="card"]` AND those real `sel` selectors too. Also style standard tags (h1-h3, p, a, ul, li, table, figure, img).
-- :root variables: --m-bg --m-surface --m-surface2 --m-fg --m-ink --m-accent, and motion variables --m-rx --m-ry (deg) --m-scroll (px).
-- `backdropHtml`: A vivid scene drawn with inline SVG, CSS or one canvas that realizes the SIGNATURE background/stage. It sits behind all page content. Keep `html { background-color: var(--m-bg) !important; }` and `body, main, [data-mydes="main"], [data-mydes="grid"] { background-color: transparent !important; }` so the backdrop shows through clearly. When animating SVG `<g>` or `<circle>` elements inside backdropHtml, use pure `rotate(0deg)` -> `rotate(360deg)` with `transform-origin: center; transform-box: fill-box;` (never put `translate(-50%, -50%)` inside @keyframes on inner SVG shapes).
-- `customJs`: Runs as (MydesBridge, T). Write top-level statements directly: MydesBridge.decorateUnits(...); MydesBridge.injectOrnament(...); MydesBridge.enable3DTilt(12);. NEVER wrap customJs in (function(){...})! You MUST use `customJs` to create the `NEW DOM ELEMENTS` specified in the directions:
-  * `MydesBridge.decorateUnits(selector, htmlString)`: In `MydesBridge.decorateUnits(sel, htmlString)`, pass an HTML/SVG string as the second argument (do NOT write complex DOM-creation callbacks). Only target the outermost card selector in repeatedItems, never inner details wrappers. Always pass components.primaryFeed.cardSelector + ', [data-mydes=\"card\"]' as the first argument to MydesBridge.decorateUnits(...) so every card on the page gets the SVG ornaments.
-  * `MydesBridge.injectOrnament(targetSelector, svgOrHtmlString, "append"|"prepend")`: Creates and mounts new thematic SVG/HTML centerpiece or structural elements into the header or main stage.
-  * `MydesBridge.enable3DTilt(n)`: Updates `--m-rx` and `--m-ry` on scroll/touch. Whenever you call `enable3DTilt`, you MUST reference `var(--m-rx)` and `var(--m-ry)` inside a `transform` rule in `customCss`.
-  * Also available: `focusSearch()`, `proxySearch(q)`, `proxyClick(selector)`, `onCleanup(fn)`.
+    private val UI_SYNTHESIS_SYSTEM_PROMPT = """
+You are the Pure-CSS Compiler inside an Android mobile browser.
+The Master Visual Architect (Pass 1) has already made 100% of the creative and visual decisions for every element on the page.
+Your job is to **faithfully execute every visual instruction from Pass 1's specification**, writing clean, lightweight, 60fps static Pure CSS (`customCss`) that runs smoothly on mid-tier phones.
 
-SPATIAL & LAYOUT SAFETY (APPLIES TO ANY CHOSEN LAYOUT)
-- Implement whatever `LAYOUT` the directions specify on the parent container (`parentSel` and `[data-mydes="grid"]`) and child items (`sel` and `[data-mydes="card"]`), while obeying these structural physics laws so the layout never breaks on any screen size:
-  1. NO HORIZONTAL OVERFLOW: Any multi-column grid MUST use explicit column counts like grid-template-columns: repeat(2, minmax(0, 1fr)) or minimum pixel widths like repeat(auto-fill, minmax(160px, 1fr)) — NEVER write repeat(auto-fill, minmax(0, 1fr))! and `width: 100% !important; max-width: 100% !important; box-sizing: border-box !important;`, and all child items must include `min-width: 0 !important; max-width: 100% !important; box-sizing: border-box !important;`.
-  2. REFLOW INTERNAL ROWS WHEN NARROWED: Whenever your layout places items side-by-side or narrows an item below 60% of the viewport width, any horizontal row inside that item (such as a side-by-side thumbnail + text wrapper) MUST be stacked vertically (`display: flex !important; flex-direction: column !important; width: 100% !important;`) with its media/thumbnail container and `img`/`video` set to `width: 100% !important; height: auto !important;`.
-  3. PROTECT NESTED CAROUSELS/SHELVES: Never squeeze a container that already holds multiple side-by-side cards (`[data-mydes-shelf="true"]`) into a narrow single column of a parent grid—always let nested shelves and continuation sentinels (`[data-mydes-sentinel="true"]`) span the full container width (`grid-column: 1 / -1 !important; width: 100% !important;`).
-  4. BAN @MEDIA (MAX-WIDTH: 600PX) RESETS: The target viewport is ALREADY a mobile phone (~400px wide). NEVER write @media (max-width: 600px) or @media (max-width: 768px) rules that collapse your layout back to 1fr—design your primary layout directly for the ~400px mobile viewport.
+UNIVERSAL SELECTORS TO TARGET IN `customCss`:
+1. `html, body` (Static base canvas—never use `background-attachment: fixed`)
+2. `[data-mydes="header"], header` (plus `::before`, `::after`) and `[data-mydes="header"] svg, header svg`
+3. `[data-mydes="search"], yt-searchbox` (plus `input`, `input::placeholder`, `svg`, and `:focus-within`)
+4. `[data-mydes="chip"]` (plus `::before`, `:nth-child(4n+2)`, `:nth-child(4n+3)`, `:nth-child(4n)`, and `[aria-selected="true"], [aria-pressed="true"]`)
+5. `[data-mydes="card"]` (plus `::before`, `::after`, `:nth-child(3n+2)`, `:nth-child(3n)`, and `:hover, :active`)
+6. `[data-mydes="card"] img`
+7. `[data-mydes="heading"], [data-mydes="title"]` (plus `[data-mydes="heading"]::before` and `[data-mydes="heading"] *`)
+8. `[data-mydes="btn"]`
+9. `[data-mydes="bottom-bar"]` (plus `::before`, `::after`) and `[data-mydes="bottom-bar"] svg`
 
-HARD RULES
-- BAN @MEDIA (MAX-WIDTH: 600PX) RESETS: The target viewport is ALREADY a mobile phone (~400px wide). NEVER write @media (max-width: 600px) or @media (max-width: 768px) rules that collapse your layout back to 1fr—design your primary layout directly for the ~400px mobile viewport.
-- STYLE ONLY OUTERMOST CARD SELECTORS & RETURN HTML STRINGS IN DECORATEUNITS: In `MydesBridge.decorateUnits(sel, htmlString)`, pass an HTML/SVG string as the second argument (do NOT write complex DOM-creation callbacks). Only target the outermost card selector in repeatedItems, never inner details wrappers.
-- Never hide or break main, card or search. The page stays interactive and infinitely scrollable (never set `overflow: hidden` or a fixed `height` on `html`, `body`, or main feed containers).
-- MEDIA OVERLAYS: Never cover an image or video thumbnail with opaque elements! If a card places its heading/title inside an overlay on top of media, either set `position: static !important; width: 100% !important;` on the text wrapper so the title sits neatly BELOW the media, or keep the overlay compact (`font-size: 12px !important; padding: 3px 6px !important; max-height: 3.4em !important;`) at the bottom edge.
-- FULL TITLES (NO PREMATURE TRUNCATION): Whenever you style headings or titles (`h1-h4`, `[data-mydes="heading"]`, `[data-mydes="title"]`, `[class*="headline"]`), ALWAYS include `-webkit-line-clamp: unset !important; line-clamp: unset !important; max-height: none !important; height: auto !important; overflow: visible !important; display: block !important; white-space: normal !important; word-break: normal !important; overflow-wrap: break-word !important;` so titles are never sliced off after two words or wrapped letter-by-letter.
-- TEXT COLOUR: Never set `color` on generic tags (p, span, a, div, h1-h3) unless the same rule also sets the background behind them. A surface you style (card, header, item) sets its own background and `color` together and its descendants inherit; everything else inherits --m-fg from the page. All text must stay readable (>= 4.5:1 contrast).
-- CLIP-PATH SAFETY: Never use clip-path: polygon(...) with corner cuts deeper than 8px (use calc(100% - 8px) instead of percentages like 12% / 88%), or prefer borders, box-shadow, and MydesBridge.decorateUnits SVG frames so you never slice off card titles or corner ornaments.
-- No invented words in CSS `::before`/`::after` `content`. Use `MydesBridge.decorateUnits` and `MydesBridge.injectOrnament` in `customJs` for custom SVG/HTML elements instead.
+CRITICAL 60FPS PERFORMANCE & VISIBILITY LAWS:
+1. ZERO GPU LAG (NO OVERLAYS, NO CONTINUOUS KEYFRAMES, NO CARD BLUR):
+   - Do NOT create `body::before`, `body::after`, or `@keyframes` animations! Use crisp static gradients, borders, and fast `transition: border-color 0.2s, box-shadow 0.2s` on `:hover`, `:active`, and `:focus-within`.
+   - NEVER use `background-attachment: fixed` on `html, body` or `backdrop-filter: blur()` on `[data-mydes="card"]` (they cause severe scroll lag on mid-tier mobile GPUs).
+2. MULTI-LAYER `background-*` ARRAY ALIGNMENT:
+   - Never put `background` shorthand position/size/repeat tokens (like `0 0/100% 2px no-repeat`) inside `background-image:`!
+   - Always declare `background-image`, `background-size`, `background-position`, and `background-repeat` as separate properties with `!important`, and verify that all 4 properties have the exact same number of comma-separated layers!
+   - On `[data-mydes="header"]`, `[data-mydes="bottom-bar"]`, and `[data-mydes="card"]`, the LAST layer in `background-image` must always be a full-surface `100% 100%` (`no-repeat`) base gradient, while earlier layers draw the repeating edge trims (`repeat-x`) or corner ornaments (`no-repeat`).
+3. UNCLIPPED CARD ORNAMENTS & COMPLETE `:nth-child` OVERRIDES:
+   - Offset corner gradient ornaments inward (`at 10px 10px`) or use `[data-mydes="card"]::before` (`top: 6px; left: 8px;`) so rounded corners (`border-radius`) never clip them.
+   - Whenever you style `[data-mydes="card"]:nth-child(3n+2)` or `:nth-child(3n)` (and chip `:nth-child` rules), ALWAYS set BOTH `border-color: <color> !important;` AND `box-shadow: ... !important;`.
+   - ALWAYS append `!important` to every property inside `[data-mydes="..."]` rules.
+4. PURE BMP UNICODE HEX ESCAPES & NATIVE LAYOUT PROTECTION:
+   - Write symbols as CSS backslash hex escapes (e.g. `content: "\\26A1 ";`)—never raw emojis.
+   - Never alter `display`, `flex-direction`, `width`, `height`, or `aspect-ratio` on `[data-mydes="card"]`, `[data-mydes="btn"]`, or their children. Never add `border` or `padding` to bare `a` or `button` tags.
 
 OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
 {
-  "implemented": { "signature": "...", "layout": "...", "surface": "...", "newElements": "...", "rules": "..." },
   "name": "short title",
   "dark": true or false,
   "bg": "#rrggbb", "surface": "#rrggbb", "surface2": "#rrggbb", "fg": "#rrggbb", "ink": "#rrggbb", "accent": "#rrggbb",
   "remapSurfaces": true,
-  "backdropHtml": "Vivid SVG/HTML/canvas scene realizing the SIGNATURE visual, or empty string",
-  "customJs": "JS creating NEW DOM ELEMENTS via MydesBridge.decorateUnits & injectOrnament, plus enable3DTilt",
-  "customCss": "complete CSS implementing LAYOUT, SURFACE, RULES, and TYPE, using !important where needed",
-  "concept": "one sentence summary",
-  "fingerprint": "max 6 words"
+  "customCss": "complete, lightweight, 60fps static Pure CSS faithfully implementing every element from Pass 1",
+  "concept": "one sentence summary"
 }
 """.trimIndent()
 
@@ -2287,12 +1923,7 @@ OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
         throw lastException ?: IllegalStateException("Streaming failed on model $model")
     }
 
-    /** Reasoning tokens count against max_tokens on NIM reasoning models, so this must cover thinking + the full JSON. */
-    private val NIM_MAX_TOKENS = 16384
-    /**
-     * Medium reasoning effort, per the NIM docs: extra_body={"chat_template_kwargs": {"enable_thinking": True, "medium_effort": True}}.
-     * The Python SDK merges extra_body into the top level of the HTTP body, so over raw HTTP it sits beside "messages".
-     */
+    private val NIM_MAX_TOKENS = 8192
     private fun nimReasoningKwargs(): JSONObject = JSONObject()
         .put("enable_thinking", true)
         .put("medium_effort", true)
@@ -2303,7 +1934,7 @@ OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
         apiKey: String,
         systemInstruction: String,
         userContent: String,
-        temperature: Float = 0.7f,
+        temperature: Float = 0.6f,
         topP: Float = 0.95f,
         maxTokens: Int = NIM_MAX_TOKENS,
         onThoughtChunk: ((String) -> Unit)? = null,
@@ -2393,7 +2024,6 @@ OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
             return@withContext Pair(fullText.toString(), rawThoughts.toString())
         }
 
-        // Non-streaming fallback if stream failed or returned empty
         val fallbackBody = JSONObject()
             .put("model", model)
             .put("messages", JSONArray()
@@ -2455,31 +2085,60 @@ class SiteThemeController(
     private var handler: ScriptHandler? = null
     private var script: String? = null
 
-    suspend fun setTheme(prompt: String, includeScreenshot: Boolean = false): Result<UIBlueprint> {
+    suspend fun setTheme(prompt: String, includeScreenshot: Boolean = true): Result<UIBlueprint> {
         val currentUrl = withContext(Dispatchers.Main) { webView.url ?: "*" }
         val outlineJson = webView.evaluateJsSuspend(MydesRuntime.OUTLINE_PROBE_JS)
-        val screenshot = if (includeScreenshot) {
-            withContext(Dispatchers.Main) { webView.captureJpegBase64() }
-        } else null
 
-        val blueprint = service.themeSpec(
+        // 1. Run Pass 1 + Pass 2
+        val initialBlueprint = service.themeSpec(
             context = context,
             prompt = prompt,
             websiteUrl = currentUrl,
             pageOutlineJson = outlineJson,
-            screenshotBase64 = screenshot
+            screenshotBase64 = null
         ).getOrElse { return Result.failure(it) }
 
-        val js = MydesRuntime.script(blueprint)
+        val initialJs = MydesRuntime.script(initialBlueprint)
         withContext(Dispatchers.Main) {
-            script = js
+            script = initialJs
             if (docStartOk) {
                 try { handler?.remove() } catch (_: Exception) {}
-                handler = WebViewCompat.addDocumentStartJavaScript(webView, js, setOf("*"))
+                handler = WebViewCompat.addDocumentStartJavaScript(webView, initialJs, setOf("*"))
             }
-            webView.evaluateJavascript(js, null)
+            webView.evaluateJavascript(initialJs, null)
         }
-        return Result.success(blueprint)
+
+        // 2. Run Pass 3 (Live Render Audit + Screenshot Stitch)
+        if (includeScreenshot) {
+            delay(450)
+            val auditJson = webView.evaluateJsSuspend(MydesRuntime.VISUAL_AND_DOM_AUDIT_JS)
+            val liveScreenshot = withContext(Dispatchers.Main) { webView.captureJpegBase64() }
+
+            val reviewedBlueprint = service.themeSpec(
+                context = context,
+                prompt = prompt,
+                websiteUrl = currentUrl,
+                pageOutlineJson = outlineJson,
+                screenshotBase64 = liveScreenshot,
+                auditJson = auditJson,
+                isReviewPass = true
+            ).getOrNull()
+
+            if (reviewedBlueprint != null && reviewedBlueprint.customCss != initialBlueprint.customCss) {
+                val finalJs = MydesRuntime.script(reviewedBlueprint)
+                withContext(Dispatchers.Main) {
+                    script = finalJs
+                    if (docStartOk) {
+                        try { handler?.remove() } catch (_: Exception) {}
+                        handler = WebViewCompat.addDocumentStartJavaScript(webView, finalJs, setOf("*"))
+                    }
+                    webView.evaluateJavascript(finalJs, null)
+                }
+                return Result.success(reviewedBlueprint)
+            }
+        }
+
+        return Result.success(initialBlueprint)
     }
 
     fun clearTheme() {

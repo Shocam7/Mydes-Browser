@@ -18,7 +18,9 @@ data class ApiLogEntry(
     val userPrompt: String,
     val requestPayload: String,
     val responseResult: String,
-    val isSuccess: Boolean
+    val isSuccess: Boolean,
+    val screenshotPath: String? = null,
+    val screenshotBase64: String? = null
 )
 
 object ApiRequestLogger {
@@ -42,9 +44,26 @@ object ApiRequestLogger {
         userPrompt: String,
         requestPayload: String,
         responseResult: String,
-        isSuccess: Boolean
+        isSuccess: Boolean,
+        screenshotBase64: String? = null,
+        screenshotPath: String? = null
     ) {
         try {
+            var resolvedScreenshotPath = screenshotPath
+            if (resolvedScreenshotPath == null && !screenshotBase64.isNullOrBlank()) {
+                try {
+                    val dir = File(context.filesDir, "review_screenshots")
+                    if (!dir.exists()) dir.mkdirs()
+                    val fileName = "review_${System.currentTimeMillis()}_${java.util.UUID.randomUUID().toString().take(6)}.jpg"
+                    val file = File(dir, fileName)
+                    val bytes = android.util.Base64.decode(screenshotBase64, android.util.Base64.DEFAULT)
+                    file.writeBytes(bytes)
+                    resolvedScreenshotPath = file.absolutePath
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+
             val file = getLogFile(context)
             val currentLogs = mutableListOf<ApiLogEntry>()
             if (file.exists()) {
@@ -63,7 +82,9 @@ object ApiRequestLogger {
                 userPrompt = userPrompt,
                 requestPayload = requestPayload,
                 responseResult = responseResult,
-                isSuccess = isSuccess
+                isSuccess = isSuccess,
+                screenshotPath = resolvedScreenshotPath,
+                screenshotBase64 = screenshotBase64
             )
             currentLogs.add(0, entry) // Add new logs at top
             if (currentLogs.size > 100) {

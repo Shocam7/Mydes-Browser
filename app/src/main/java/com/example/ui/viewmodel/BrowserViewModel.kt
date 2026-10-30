@@ -47,7 +47,9 @@ data class AiThinkingState(
     val currentStreamSnippet: String = "",
     val durationSeconds: Int = 0,
     val isFinished: Boolean = false,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val morphBgColor: String? = null,
+    val morphFgColor: String? = null
 )
 
 class BrowserViewModel(
@@ -100,10 +102,13 @@ class BrowserViewModel(
     }
 
     fun toggleSynthesisModel() {
-        val next = if (_synthesisModel.value == com.example.data.api.GeminiStylerService.MODEL_NVIDIA_NEMOTRON_3_ULTRA) {
-            com.example.data.api.GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE
-        } else {
-            com.example.data.api.GeminiStylerService.MODEL_NVIDIA_NEMOTRON_3_ULTRA
+        val next = when (_synthesisModel.value) {
+            com.example.data.api.GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE ->
+                com.example.data.api.GeminiStylerService.MODEL_GEMINI_38_FLASH
+            com.example.data.api.GeminiStylerService.MODEL_GEMINI_38_FLASH ->
+                com.example.data.api.GeminiStylerService.MODEL_NVIDIA_NEMOTRON_3_ULTRA
+            else ->
+                com.example.data.api.GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE
         }
         updateSynthesisModel(next)
     }
@@ -196,7 +201,8 @@ class BrowserViewModel(
         val domain: String,
         val prompt: String,
         val baseScript: String,
-        val pageScripts: Map<String, String> = emptyMap()
+        val pageScripts: Map<String, String> = emptyMap(),
+        val isImported: Boolean = false
     )
 
     private val _websiteThemes = MutableStateFlow<Map<String, WebsiteTheme>>(emptyMap())
@@ -308,7 +314,8 @@ class BrowserViewModel(
             domain = domain,
             prompt = promptName,
             baseScript = script,
-            pageScripts = mapOf(tab.url to script)
+            pageScripts = mapOf(tab.url to script),
+            isImported = true
         )
         _websiteThemes.value = _websiteThemes.value + (domain to websiteTheme)
         _pendingUserScriptToInject.value = script
@@ -392,7 +399,7 @@ class BrowserViewModel(
             val thoughtBuffer = StringBuilder()
             val onThinkingProgress: (phase: String, chunk: String, isComplete: Boolean) -> Unit = { phase, chunk, isComplete ->
                 if (isComplete) {
-                    val (summarized, _) = ThoughtSummarizer.summarize(thoughtBuffer.toString())
+                    val (summarized, _) = ThoughtSummarizer.summarize(thoughtBuffer.toString(), isComplete = true)
                     _aiThinkingState.update {
                         it.copy(
                             phase = phase,
@@ -404,7 +411,7 @@ class BrowserViewModel(
                 } else {
                     if (chunk.isNotEmpty()) {
                         thoughtBuffer.append(chunk)
-                        val (summarized, pending) = ThoughtSummarizer.summarize(thoughtBuffer.toString())
+                        val (summarized, pending) = ThoughtSummarizer.summarize(thoughtBuffer.toString(), isComplete = false)
                         _aiThinkingState.update {
                             it.copy(
                                 phase = phase,
@@ -418,6 +425,16 @@ class BrowserViewModel(
                 }
             }
 
+            val onConceptReady: (bg: String, fg: String) -> Unit = { bg, fg ->
+                _aiThinkingState.update {
+                    it.copy(
+                        morphBgColor = bg,
+                        morphFgColor = fg,
+                        phase = "Morphing Canvas..."
+                    )
+                }
+            }
+
             val result = geminiStylerService.generateUserScript(
                 context = getApplication(),
                 userPrompt = prompt,
@@ -427,12 +444,13 @@ class BrowserViewModel(
                 forceFresh = true,
                 outlineJson = preOutline,
                 initialScreenshotBase64 = initialScreenshotBase64,
-                onThinkingUpdate = onThinkingProgress
+                onThinkingUpdate = onThinkingProgress,
+                onConceptReady = onConceptReady
             )
             _isAiStylerLoading.value = false
             result.onSuccess { script ->
                 thinkingTimerJob?.cancel()
-                val (finalSummaries, _) = ThoughtSummarizer.summarize(thoughtBuffer.toString())
+                val (finalSummaries, _) = ThoughtSummarizer.summarize(thoughtBuffer.toString(), isComplete = true)
                 _aiThinkingState.update {
                     it.copy(
                         isActive = false,
@@ -498,7 +516,8 @@ class BrowserViewModel(
                             screenHeight = height,
                             outlineJson = outline,
                             auditJson = audit,
-                            onThinkingUpdate = onThinkingProgress
+                            onThinkingUpdate = onThinkingProgress,
+                            screenshotPath = screenshotPath
                         )
                         optimizedResult.onSuccess { optScript ->
                             // The user may have navigated to another site while the review was running
@@ -566,40 +585,23 @@ class BrowserViewModel(
     }
 
     /**
-     * Captures what is really on screen. PixelCopy works with hardware-accelerated WebViews; View.draw() is only a
-     * fallback because it often returns a blank bitmap there. A blank bitmap is never returned (null instead), so the
-     * review never "looks" at an empty picture.
+     * Captures ONLY the rendered webpage directly from the WebView.
+     * PixelCopy on the Window is eliminated so NO application UI, brush icons,
+     * AiStylerPillBar, settings sheets, or controls ever obstruct the review agent's screenshot.
      */
-    private suspend fun captureWebViewBitmap(webView: android.webkit.WebView): android.graphics.Bitmap? {
-        val viaPixelCopy = captureViaPixelCopy(webView)
-        if (viaPixelCopy != null && !isMostlyBlank(viaPixelCopy)) return viaPixelCopy
-        val viaDraw = captureViaDraw(webView)
-        if (viaDraw != null && !isMostlyBlank(viaDraw)) return viaDraw
-        return null
-    }
-
-    private suspend fun captureViaPixelCopy(webView: android.webkit.WebView): android.graphics.Bitmap? {
-        if (android.os.Build.VERSION.SDK_INT < 26 || webView.width <= 0 || webView.height <= 0) return null
-        var ctx: android.content.Context = webView.context
-        while (ctx is android.content.ContextWrapper && ctx !is android.app.Activity) ctx = ctx.baseContext
-        val window = (ctx as? android.app.Activity)?.window ?: return null
-        val loc = IntArray(2)
-        webView.getLocationInWindow(loc)
-        val bmp = android.graphics.Bitmap.createBitmap(webView.width, webView.height, android.graphics.Bitmap.Config.ARGB_8888)
-        val rect = android.graphics.Rect(loc[0], loc[1], loc[0] + webView.width, loc[1] + webView.height)
-        return kotlinx.coroutines.suspendCancellableCoroutine { cont ->
-            try {
-                android.view.PixelCopy.request(
-                    window, rect, bmp,
-                    { result ->
-                        if (cont.isActive) cont.resumeWith(Result.success(if (result == android.view.PixelCopy.SUCCESS) bmp else null))
-                    },
-                    android.os.Handler(android.os.Looper.getMainLooper())
-                )
-            } catch (e: Exception) {
-                if (cont.isActive) cont.resumeWith(Result.success(null))
-            }
+    private suspend fun captureWebViewBitmap(webView: android.webkit.WebView): android.graphics.Bitmap? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+        val initialBmp = captureViaDraw(webView)
+        if (initialBmp != null && !isMostlyBlank(initialBmp)) {
+            return@withContext initialBmp
         }
+        // If the initial draw was blank (DOM was still repainting), give it a short 300ms pause and retry
+        kotlinx.coroutines.delay(300L)
+        val retryBmp = captureViaDraw(webView)
+        if (retryBmp != null && !isMostlyBlank(retryBmp)) {
+            initialBmp?.recycle()
+            return@withContext retryBmp
+        }
+        return@withContext retryBmp ?: initialBmp
     }
 
     private fun captureViaDraw(webView: android.webkit.WebView): android.graphics.Bitmap? {
@@ -607,7 +609,29 @@ class BrowserViewModel(
             val width = if (webView.width > 0) webView.width else 1080
             val height = if (webView.height > 0) webView.height else 1920
             val bitmap = android.graphics.Bitmap.createBitmap(width, height, android.graphics.Bitmap.Config.ARGB_8888)
-            webView.draw(android.graphics.Canvas(bitmap))
+            val canvas = android.graphics.Canvas(bitmap)
+            canvas.drawColor(android.graphics.Color.WHITE)
+
+            // Temporarily suppress scrollbars so they don't appear in the review screenshot
+            val wasVert = webView.isVerticalScrollBarEnabled
+            val wasHoriz = webView.isHorizontalScrollBarEnabled
+            try {
+                webView.isVerticalScrollBarEnabled = false
+                webView.isHorizontalScrollBarEnabled = false
+                val scrollX = webView.scrollX
+                val scrollY = webView.scrollY
+                if (scrollX != 0 || scrollY != 0) {
+                    canvas.save()
+                    canvas.translate(-scrollX.toFloat(), -scrollY.toFloat())
+                    webView.draw(canvas)
+                    canvas.restore()
+                } else {
+                    webView.draw(canvas)
+                }
+            } finally {
+                webView.isVerticalScrollBarEnabled = wasVert
+                webView.isHorizontalScrollBarEnabled = wasHoriz
+            }
             bitmap
         } catch (e: Exception) {
             null
@@ -669,6 +693,18 @@ class BrowserViewModel(
         return android.util.Base64.encodeToString(byteArray, android.util.Base64.NO_WRAP)
     }
 
+    fun dismissMorphOverlay() {
+        _aiThinkingState.update {
+            it.copy(
+                morphBgColor = null,
+                morphFgColor = null,
+                isActive = false,
+                isFinished = false,
+                currentStreamSnippet = ""
+            )
+        }
+    }
+
     fun resetCustomStyle() {
         val domain = extractDomain(activeTab.value?.url ?: "")
         if (domain.isNotBlank()) {
@@ -676,11 +712,27 @@ class BrowserViewModel(
         }
         backgroundAdaptationJob?.cancel()
         _isThemeUpdatingInBackground.value = false
+        dismissMorphOverlay()
         _pendingUserScriptToInject.value = """
             (function() {
-                if (window.__mydes && window.__mydes.clear) { try { window.__mydes.clear(); } catch (e) {} }
-                var existing = document.getElementById('mydes-ai-styler-style');
-                if (existing) existing.remove();
+                if (window.__mydes && window.__mydes.exit) {
+                    try { window.__mydes.exit(); return; } catch (e) {}
+                }
+                var exitStyle = document.createElement('style');
+                exitStyle.id = '__mydes_exit_anim';
+                exitStyle.textContent = '* { transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1), transform 0.4s cubic-bezier(0.4, 0, 0.2, 1) !important; } [data-mydes], header, footer { opacity: 0.25 !important; transform: scale(0.98) translateY(4px) !important; }';
+                (document.head || document.documentElement).appendChild(exitStyle);
+                setTimeout(function() {
+                    if (window.__mydes && window.__mydes.clear) { try { window.__mydes.clear(); } catch (e) {} }
+                    var existing = document.getElementById('__mydes_style') || document.getElementById('mydes-ai-styler-style');
+                    if (existing) existing.remove();
+                    exitStyle.remove();
+                    document.querySelectorAll('[data-mydes]').forEach(function(el) {
+                        el.removeAttribute('data-mydes');
+                        el.style.opacity = '';
+                        el.style.transform = '';
+                    });
+                }, 400);
             })();
         """.trimIndent()
     }
@@ -707,7 +759,7 @@ class BrowserViewModel(
         _pendingUserScriptToInject.value = initialScript
 
         // 2. Perform background variable/DOM adaptations for the new page
-        if (cachedPageScript == null && url != lastAdaptedUrl) {
+        if (!activeTheme.isImported && cachedPageScript == null && url != lastAdaptedUrl) {
             lastAdaptedUrl = url
             backgroundAdaptationJob?.cancel()
             backgroundAdaptationJob = viewModelScope.launch {

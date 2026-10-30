@@ -25,11 +25,26 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        // Enable whole-document drawing mode for WebView so webView.draw(canvas) captures the exact rendered page
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
+            try {
+                android.webkit.WebView.enableSlowWholeDocumentDraw()
+            } catch (_: Exception) {}
+        }
+
         // Hardware acceleration flag & high refresh rate (90Hz/120Hz) matching Chrome browser
-        window.setFlags(
-            android.view.WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
-            android.view.WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
-        )
+        val hasDriNode = try {
+            val dri = java.io.File("/dev/dri")
+            dri.exists() && (dri.listFiles()?.isNotEmpty() == true)
+        } catch (_: Exception) {
+            false
+        }
+        if (hasDriNode) {
+            window.setFlags(
+                android.view.WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+                android.view.WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+            )
+        }
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
             display?.supportedModes?.maxByOrNull { it.refreshRate }?.let { maxMode ->
                 window.attributes = window.attributes.apply {

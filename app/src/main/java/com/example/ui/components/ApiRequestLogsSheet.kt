@@ -32,7 +32,9 @@ import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -53,6 +55,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -62,6 +66,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import com.example.data.api.ApiLogEntry
 import com.example.data.api.ApiRequestLogger
 
@@ -74,6 +79,7 @@ fun ApiRequestLogsSheet(
     val clipboardManager = LocalClipboardManager.current
     var logs by remember { mutableStateOf(emptyList<ApiLogEntry>()) }
     var selectedLog by remember { mutableStateOf<ApiLogEntry?>(null) }
+    var fullScreenScreenshotLog by remember { mutableStateOf<ApiLogEntry?>(null) }
 
     LaunchedEffect(Unit) {
         logs = ApiRequestLogger.getLogs(context)
@@ -297,6 +303,52 @@ fun ApiRequestLogsSheet(
                                         overflow = TextOverflow.Ellipsis
                                     )
 
+                                    if (!log.screenshotPath.isNullOrBlank() || !log.screenshotBase64.isNullOrBlank()) {
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            val thumbFile = remember(log.screenshotPath) {
+                                                if (!log.screenshotPath.isNullOrBlank()) java.io.File(log.screenshotPath) else null
+                                            }
+                                            if (thumbFile != null && thumbFile.exists()) {
+                                                AsyncImage(
+                                                    model = thumbFile,
+                                                    contentDescription = "Sent rendered page thumbnail",
+                                                    modifier = Modifier
+                                                        .size(40.dp)
+                                                        .clip(RoundedCornerShape(6.dp))
+                                                        .background(Color.Black),
+                                                    contentScale = ContentScale.Crop
+                                                )
+                                            }
+                                            Surface(
+                                                color = Color(0x264CAF50),
+                                                shape = RoundedCornerShape(6.dp)
+                                            ) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Image,
+                                                        contentDescription = null,
+                                                        tint = Color(0xFF81C784),
+                                                        modifier = Modifier.size(13.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text(
+                                                        text = "Rendered Webpage Attached",
+                                                        color = Color(0xFF81C784),
+                                                        fontSize = 11.sp,
+                                                        fontWeight = FontWeight.Medium
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+
                                     Spacer(modifier = Modifier.height(8.dp))
 
                                     // Action bar on each card: shows payload size + 1-tap Copy Payload button
@@ -377,6 +429,136 @@ fun ApiRequestLogsSheet(
                         Text(text = "Website: ${log.websiteName}", color = Color(0xFFB0BEC5), fontSize = 12.sp)
                         Text(text = "URL: ${log.websiteUrl}", color = Color(0xFF90A4AE), fontSize = 12.sp)
                         Text(text = "Prompt: \"${log.userPrompt}\"", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+
+                        val screenshotFile = remember(log.screenshotPath) {
+                            if (!log.screenshotPath.isNullOrBlank()) java.io.File(log.screenshotPath) else null
+                        }
+                        if ((screenshotFile != null && screenshotFile.exists()) || !log.screenshotBase64.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(Color(0xFF14171A))
+                                    .padding(12.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.Default.Image,
+                                            contentDescription = null,
+                                            tint = Color(0xFFFFD54F),
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "Rendered Webpage Screenshot (Sent to Review Agent)",
+                                            color = Color(0xFFFFD54F),
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp
+                                        )
+                                    }
+                                    Surface(
+                                        color = Color(0x334CAF50),
+                                        shape = RoundedCornerShape(4.dp)
+                                    ) {
+                                        Text(
+                                            text = "CLEAN RENDER",
+                                            color = Color(0xFF81C784),
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Text(
+                                    text = "Clean webpage viewport only • No obstruction from brush icons, pills, or sheets.",
+                                    color = Color(0xFFB0BEC5),
+                                    fontSize = 11.sp
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 220.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(Color.Black)
+                                        .clickable { fullScreenScreenshotLog = log },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (screenshotFile != null && screenshotFile.exists()) {
+                                        AsyncImage(
+                                            model = screenshotFile,
+                                            contentDescription = "Review Agent Sent Screenshot",
+                                            modifier = Modifier.fillMaxWidth(),
+                                            contentScale = ContentScale.Fit
+                                        )
+                                    } else if (!log.screenshotBase64.isNullOrBlank()) {
+                                        val bitmap = remember(log.screenshotBase64) {
+                                            try {
+                                                val decoded = android.util.Base64.decode(log.screenshotBase64, android.util.Base64.DEFAULT)
+                                                android.graphics.BitmapFactory.decodeByteArray(decoded, 0, decoded.size)
+                                            } catch (_: Exception) { null }
+                                        }
+                                        if (bitmap != null) {
+                                            androidx.compose.foundation.Image(
+                                                bitmap = bitmap.asImageBitmap(),
+                                                contentDescription = "Review Agent Sent Screenshot",
+                                                modifier = Modifier.fillMaxWidth(),
+                                                contentScale = ContentScale.Fit
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Tap image to inspect full size",
+                                        color = Color(0xFF81D4FA),
+                                        fontSize = 11.sp
+                                    )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Button(
+                                            onClick = { fullScreenScreenshotLog = log },
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF37474F)),
+                                            shape = RoundedCornerShape(8.dp),
+                                            modifier = Modifier.height(28.dp)
+                                        ) {
+                                            Icon(Icons.Default.ZoomIn, contentDescription = null, modifier = Modifier.size(12.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Enlarge", fontSize = 11.sp)
+                                        }
+
+                                        if (!log.screenshotBase64.isNullOrBlank()) {
+                                            Button(
+                                                onClick = {
+                                                    clipboardManager.setText(AnnotatedString(log.screenshotBase64))
+                                                    Toast.makeText(context, "Screenshot base64 copied to clipboard!", Toast.LENGTH_SHORT).show()
+                                                },
+                                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF37474F)),
+                                                shape = RoundedCornerShape(8.dp),
+                                                modifier = Modifier.height(28.dp)
+                                            ) {
+                                                Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(12.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("Base64", fontSize = 11.sp)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
 
                         Spacer(modifier = Modifier.height(12.dp))
 
@@ -513,6 +695,114 @@ fun ApiRequestLogsSheet(
                             ) {
                                 Text("Close", fontSize = 12.sp)
                             }
+                        }
+                    }
+                }
+            )
+        }
+
+        // Fullscreen Screenshot Inspection Dialog
+        fullScreenScreenshotLog?.let { log ->
+            val fsFile = remember(log.screenshotPath) {
+                if (!log.screenshotPath.isNullOrBlank()) java.io.File(log.screenshotPath) else null
+            }
+            AlertDialog(
+                onDismissRequest = { fullScreenScreenshotLog = null },
+                containerColor = Color(0xFF141619),
+                title = {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                text = "Sent Review Screenshot",
+                                color = Color.White,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Clean rendered webpage analyzed by the review agent (no UI icons/sheets)",
+                                color = Color(0xFF81C784),
+                                fontSize = 11.sp
+                            )
+                        }
+                        IconButton(onClick = { fullScreenScreenshotLog = null }) {
+                            Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+                        }
+                    }
+                },
+                text = {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 480.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color.Black)
+                            .padding(4.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (fsFile != null && fsFile.exists()) {
+                            AsyncImage(
+                                model = fsFile,
+                                contentDescription = "Full Rendered Webpage Screenshot",
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .verticalScroll(rememberScrollState()),
+                                contentScale = ContentScale.FillWidth
+                            )
+                        } else if (!log.screenshotBase64.isNullOrBlank()) {
+                            val bitmap = remember(log.screenshotBase64) {
+                                try {
+                                    val decoded = android.util.Base64.decode(log.screenshotBase64, android.util.Base64.DEFAULT)
+                                    android.graphics.BitmapFactory.decodeByteArray(decoded, 0, decoded.size)
+                                } catch (_: Exception) { null }
+                            }
+                            if (bitmap != null) {
+                                androidx.compose.foundation.Image(
+                                    bitmap = bitmap.asImageBitmap(),
+                                    contentDescription = "Full Rendered Webpage Screenshot",
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .verticalScroll(rememberScrollState()),
+                                    contentScale = ContentScale.FillWidth
+                                )
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (fsFile != null && fsFile.exists()) {
+                            Button(
+                                onClick = {
+                                    val sendIntent = Intent().apply {
+                                        action = Intent.ACTION_SEND
+                                        putExtra(Intent.EXTRA_TEXT, "Mydes Review Agent Screenshot for ${log.websiteName}")
+                                        type = "text/plain"
+                                    }
+                                    context.startActivity(Intent.createChooser(sendIntent, "Share Screenshot Info"))
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF37474F))
+                            ) {
+                                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Share", fontSize = 12.sp)
+                            }
+                        } else {
+                            Spacer(modifier = Modifier.width(1.dp))
+                        }
+
+                        Button(
+                            onClick = { fullScreenScreenshotLog = null },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3F51B5))
+                        ) {
+                            Text("Done", fontSize = 12.sp)
                         }
                     }
                 }

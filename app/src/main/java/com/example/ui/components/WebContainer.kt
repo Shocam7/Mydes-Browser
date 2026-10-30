@@ -95,10 +95,21 @@ fun WebContainer(
                 WebView(context).apply {
                     webViewRef = this
                     onWebViewCreated(this)
-                    // LAYER_TYPE_NONE allows WebView's internal Chromium GPU compositor to draw
-                    // directly into the window surface without an expensive intermediate Android HardwareLayer,
-                    // achieving 60/120fps Chrome browser parity for 3D CSS transforms and WebGL.
-                    setLayerType(View.LAYER_TYPE_NONE, null)
+                    val hasDriNode = try {
+                        val dri = java.io.File("/dev/dri")
+                        dri.exists() && (dri.listFiles()?.isNotEmpty() == true)
+                    } catch (_: Exception) {
+                        false
+                    }
+                    if (hasDriNode) {
+                        // LAYER_TYPE_NONE allows WebView's internal Chromium GPU compositor to draw
+                        // directly into the window surface when hardware render nodes are available.
+                        setLayerType(View.LAYER_TYPE_NONE, null)
+                    } else {
+                        // In virtualized/headless environments without DRM rendernodes (/dev/dri),
+                        // use software layer to prevent "Failed to open rendernode: No such file or directory" error.
+                        setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+                    }
 
                 settings.apply {
                     javaScriptEnabled = isJavaScriptEnabled

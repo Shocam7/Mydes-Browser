@@ -273,13 +273,18 @@ fun TopHeaderPill(
                         .size(40.dp)
                         .clip(CircleShape)
                         .background(if (isCustomStyleApplied) Color(0xFF1E2024) else buttonBgColor)
+                        .border(
+                            width = if (isCustomStyleApplied) 1.5.dp else 0.dp,
+                            color = if (isCustomStyleApplied) Color(0xFFF6C343) else Color.Transparent,
+                            shape = CircleShape
+                        )
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = ripple(bounded = true),
                             onClick = onOpenBrush
                         )
                         .testTag("brush_button")
-                        .semantics { contentDescription = "AI Website Styler brush" },
+                        .semantics { contentDescription = if (isCustomStyleApplied) "AI Website Styler brush (Theme active)" else "AI Website Styler brush" },
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
