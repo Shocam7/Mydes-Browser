@@ -1,0 +1,9 @@
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <set name="CachedParams" />
+    <int name="lastVersionCodeUsed" value="807804703" />
+    <set name="CachedFlagsEnabled">
+        <string>EnablePerfettoSystemTracing</string>
+    </set>
+    <set name="CachedFlagsDisabled" />
+</map>
