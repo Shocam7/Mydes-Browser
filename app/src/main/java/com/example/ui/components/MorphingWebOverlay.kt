@@ -46,7 +46,6 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -64,9 +63,6 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -77,17 +73,15 @@ import com.example.ui.viewmodel.AiThinkingState
 import kotlinx.coroutines.delay
 
 /**
- * Morphing Web Overlay:
- *
- * Translucent overlay with extracted theme 'bg' rising from the bottom of the screen,
- * positioned behind browser navigation/controls and over the WebView.
- *
- * Acts as an interactive Chat Panel:
- * 1. Shows user requests as messages sent by the user.
- * 2. Agent replies with "Building <concept field from concept pass>".
- * 3. Another agent reply contains the live thinking drop-down (streaming tokens / summarized steps).
- * 4. Persists and displays the specific chat history for the currently applied design.
- * 5. Subsequent messages sent in AiStylerPillBar appear as continuations in this chat.
+ * Redesigned MorphingWebOverlay (AiThinkingPanel):
+ * 1. After the Concept Pass finishes and extracts `background` and `fg`, a translucent overlay
+ *    with `background` color rises from the bottom of the screen behind all application buttons.
+ * 2. Once the overlay has completely covered the website behind (`isCovered == true`), text in
+ *    `fg` color begins typing on this overlay inside a scrollable, expandable/collapsible drop-down.
+ * 3. Acts as a persistent Chat Panel for the active theme:
+ *    - User request bubble
+ *    - Agent reply: "Building <concept field from concept pass>"
+ *    - Agent reply: Live thinking drop-down that auto-minimizes on completion.
  */
 @Composable
 fun MorphingWebOverlay(
@@ -96,14 +90,13 @@ fun MorphingWebOverlay(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val rawBg = state.morphBgColor
-    if (rawBg == null && !state.isActive && state.chatHistory.isEmpty()) return
+    // Only rise once the concept pass has provided morphBgColor (or when viewing saved chat history)
+    val rawBg = state.morphBgColor ?: return
 
     val parsedBg = remember(rawBg) {
         try {
-            val c = rawBg ?: "#10141D"
-            val parsed = android.graphics.Color.parseColor(if (c.startsWith("#")) c else "#$c")
-            Color(parsed)
+            val c = if (rawBg.startsWith("#")) rawBg else "#$rawBg"
+            Color(android.graphics.Color.parseColor(c))
         } catch (_: Exception) {
             Color(0xFF10141D)
         }
@@ -111,30 +104,25 @@ fun MorphingWebOverlay(
 
     val parsedFg = remember(state.morphFgColor) {
         try {
-            val c = state.morphFgColor ?: "#E6EDF3"
-            val parsed = android.graphics.Color.parseColor(if (c.startsWith("#")) c else "#$c")
-            Color(parsed)
+            val rawFg = state.morphFgColor ?: "#E6EDF3"
+            val c = if (rawFg.startsWith("#")) rawFg else "#$rawFg"
+            Color(android.graphics.Color.parseColor(c))
         } catch (_: Exception) {
             Color(0xFFE6EDF3)
         }
     }
 
-    // Overlay height fraction rises from bottom: 0f -> 1f
     val heightFraction = remember { Animatable(0f) }
     var isCovered by remember { mutableStateOf(false) }
 
-    LaunchedEffect(rawBg, state.isActive) {
-        if (rawBg != null || state.isActive) {
+    LaunchedEffect(rawBg) {
+        if (!isCovered) {
             heightFraction.snapTo(0f)
-            isCovered = false
             heightFraction.animateTo(
                 targetValue = 1f,
-                animationSpec = tween(durationMillis = 750, easing = FastOutSlowInEasing)
+                animationSpec = tween(durationMillis = 720, easing = FastOutSlowInEasing)
             )
             isCovered = true
-        } else {
-            heightFraction.snapTo(0f)
-            isCovered = false
         }
     }
 
@@ -152,17 +140,17 @@ fun MorphingWebOverlay(
                     .background(parsedBg.copy(alpha = 0.90f))
                     .testTag("morphing_web_overlay")
             ) {
-                // Top luminous gradient edge while rising
+                // Luminous morphing wave edge while rising from the bottom
                 if (fraction < 0.99f) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(6.dp)
+                            .height(8.dp)
                             .align(Alignment.TopCenter)
                             .background(
                                 Brush.verticalGradient(
                                     colors = listOf(
-                                        parsedFg.copy(alpha = 0.65f),
+                                        parsedFg.copy(alpha = 0.75f),
                                         Color.Transparent
                                     )
                                 )
@@ -170,8 +158,14 @@ fun MorphingWebOverlay(
                     )
                 }
 
-                // Chat panel view once overlay has risen
-                if (isCovered) {
+                // Only start displaying/typing the chat and live thinking statements AFTER
+                // the overlay has completely covered the website behind
+                AnimatedVisibility(
+                    visible = isCovered,
+                    enter = fadeIn(tween(240)),
+                    exit = fadeOut(tween(150)),
+                    modifier = Modifier.fillMaxSize()
+                ) {
                     ThemeChatPanel(
                         state = state,
                         websiteName = websiteName,
@@ -186,10 +180,6 @@ fun MorphingWebOverlay(
     }
 }
 
-/**
- * Scrollable Chat Panel displaying the full conversation history for the active design:
- * User message -> Agent "Building <concept>" -> Agent live thinking dropdown.
- */
 @Composable
 private fun ThemeChatPanel(
     state: AiThinkingState,
@@ -201,7 +191,6 @@ private fun ThemeChatPanel(
 ) {
     val listState = rememberLazyListState()
 
-    // Auto-scroll to the bottom when new messages or streaming chunks arrive
     LaunchedEffect(state.chatHistory.size, state.currentStreamSnippet) {
         if (state.chatHistory.isNotEmpty()) {
             listState.animateScrollToItem(state.chatHistory.size - 1)
@@ -209,21 +198,22 @@ private fun ThemeChatPanel(
     }
 
     Column(modifier = modifier.fillMaxSize()) {
-        // Chat Panel Top Header
+        // Header positioned cleanly so standalone top-left Settings and top-right Brush stay unobstructed
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 48.dp, start = 16.dp, end = 16.dp, bottom = 8.dp),
+                .padding(top = 64.dp, start = 72.dp, end = 72.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.weight(1f)
             ) {
                 Box(
                     modifier = Modifier
-                        .size(32.dp)
+                        .size(30.dp)
                         .clip(CircleShape)
                         .background(fgColor.copy(alpha = 0.15f)),
                     contentAlignment = Alignment.Center
@@ -232,46 +222,46 @@ private fun ThemeChatPanel(
                         imageVector = Icons.Default.AutoAwesome,
                         contentDescription = "Design Studio",
                         tint = fgColor,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(16.dp)
                     )
                 }
                 Column {
                     Text(
-                        text = if (websiteName.isNotBlank()) "Design Studio • $websiteName" else "Design Studio Chat",
+                        text = if (websiteName.isNotBlank()) websiteName else "Design Studio",
                         color = fgColor,
-                        fontSize = 14.sp,
+                        fontSize = 13.5.sp,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = if (state.isActive) "Synthesizing design..." else "Active Theme Conversation",
-                        color = fgColor.copy(alpha = 0.7f),
-                        fontSize = 11.sp
+                        text = if (state.isActive) "Morphing website..." else "Theme Chat History (Tap X to view page)",
+                        color = fgColor.copy(alpha = 0.72f),
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
 
-            // Close button: allows dismissing overlay to inspect webpage underneath
             IconButton(
                 onClick = onDismiss,
                 modifier = Modifier
-                    .size(36.dp)
+                    .size(34.dp)
                     .clip(CircleShape)
-                    .background(bgColor.copy(alpha = 0.8f))
-                    .border(1.dp, fgColor.copy(alpha = 0.3f), CircleShape)
+                    .background(bgColor.copy(alpha = 0.85f))
+                    .border(1.dp, fgColor.copy(alpha = 0.35f), CircleShape)
                     .testTag("dismiss_morph_overlay_button")
             ) {
                 Icon(
                     imageVector = Icons.Default.Close,
-                    contentDescription = "Dismiss chat overlay",
+                    contentDescription = "Minimize chat overlay",
                     tint = fgColor,
-                    modifier = Modifier.size(18.dp)
+                    modifier = Modifier.size(16.dp)
                 )
             }
         }
 
-        // Horizontal subtle divider
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -279,15 +269,14 @@ private fun ThemeChatPanel(
                 .background(fgColor.copy(alpha = 0.15f))
         )
 
-        // Chat messages list
         LazyColumn(
             state = listState,
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
                 .testTag("theme_chat_messages_list"),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 140.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 190.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             items(state.chatHistory, key = { it.id }) { message ->
                 when {
@@ -319,9 +308,6 @@ private fun ThemeChatPanel(
     }
 }
 
-/**
- * Bubble 1 (User): Displays user prompt / requested design modification.
- */
 @Composable
 private fun UserChatBubble(
     message: ThemeChatMessage,
@@ -340,20 +326,18 @@ private fun UserChatBubble(
                 modifier = Modifier
                     .shadow(4.dp, RoundedCornerShape(18.dp, 18.dp, 4.dp, 18.dp))
                     .clip(RoundedCornerShape(18.dp, 18.dp, 4.dp, 18.dp))
-                    .background(fgColor.copy(alpha = 0.18f))
-                    .border(1.dp, fgColor.copy(alpha = 0.35f), RoundedCornerShape(18.dp, 18.dp, 4.dp, 18.dp))
+                    .background(fgColor.copy(alpha = 0.16f))
+                    .border(1.dp, fgColor.copy(alpha = 0.38f), RoundedCornerShape(18.dp, 18.dp, 4.dp, 18.dp))
                     .padding(horizontal = 14.dp, vertical = 10.dp)
                     .testTag("user_chat_bubble")
             ) {
-                Column {
-                    Text(
-                        text = message.text,
-                        color = Color.White,
-                        fontSize = 13.5.sp,
-                        fontWeight = FontWeight.Medium,
-                        lineHeight = 18.sp
-                    )
-                }
+                Text(
+                    text = message.text,
+                    color = fgColor,
+                    fontSize = 13.5.sp,
+                    fontWeight = FontWeight.Medium,
+                    lineHeight = 18.sp
+                )
             }
 
             if (!message.modelLabel.isNullOrBlank()) {
@@ -369,7 +353,8 @@ private fun UserChatBubble(
 }
 
 /**
- * Bubble 2 (Agent): Displays "Building <concept field from concept pass>".
+ * Agent reply showing: "Building <concept field from concept pass>"
+ * with character-by-character typewriter effect in `fg` color.
  */
 @Composable
 private fun AgentConceptReplyBubble(
@@ -378,13 +363,22 @@ private fun AgentConceptReplyBubble(
     fgColor: Color
 ) {
     val conceptDisplay = message.concept ?: message.text.removePrefix("Building ").trim()
+    val fullText = "Building $conceptDisplay"
+
+    var typedLength by remember(fullText) { mutableStateOf(0) }
+    LaunchedEffect(fullText) {
+        typedLength = 0
+        while (typedLength < fullText.length) {
+            typedLength = (typedLength + 2).coerceAtMost(fullText.length)
+            delay(16L)
+        }
+    }
 
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.Start,
         verticalAlignment = Alignment.Top
     ) {
-        // Agent Sparkle Avatar
         Box(
             modifier = Modifier
                 .padding(top = 2.dp, end = 8.dp)
@@ -407,34 +401,28 @@ private fun AgentConceptReplyBubble(
                 .widthIn(max = 310.dp)
                 .shadow(4.dp, RoundedCornerShape(4.dp, 18.dp, 18.dp, 18.dp))
                 .clip(RoundedCornerShape(4.dp, 18.dp, 18.dp, 18.dp))
-                .background(bgColor.copy(alpha = 0.85f))
-                .border(1.dp, fgColor.copy(alpha = 0.30f), RoundedCornerShape(4.dp, 18.dp, 18.dp, 18.dp))
+                .background(bgColor.copy(alpha = 0.88f))
+                .border(1.dp, fgColor.copy(alpha = 0.32f), RoundedCornerShape(4.dp, 18.dp, 18.dp, 18.dp))
                 .padding(horizontal = 14.dp, vertical = 10.dp)
                 .testTag("agent_concept_reply_bubble")
         ) {
-            Column {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "Building ",
-                        color = fgColor.copy(alpha = 0.8f),
-                        fontSize = 13.5.sp,
-                        fontWeight = FontWeight.Normal
-                    )
-                    Text(
-                        text = conceptDisplay,
-                        color = fgColor,
-                        fontSize = 13.5.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
+            Text(
+                text = fullText.take(typedLength),
+                color = fgColor,
+                fontSize = 13.5.sp,
+                fontWeight = FontWeight.Bold,
+                lineHeight = 18.sp
+            )
         }
     }
 }
 
 /**
- * Bubble 3 (Agent Dropdown): Live thinking drop-down with expand/collapse,
- * scrollable steps, and streaming tokens typed in real time.
+ * Live Streaming Thinking Drop-Down Bubble:
+ * - Types live streaming thinking statements in `fg` color.
+ * - User can minimize/expand at any time.
+ * - Scrollable to inspect previous steps.
+ * - Automatically minimizes when thinking completes.
  */
 @Composable
 private fun AgentThinkingDropdownBubble(
@@ -443,20 +431,41 @@ private fun AgentThinkingDropdownBubble(
     bgColor: Color,
     fgColor: Color
 ) {
-    var isExpanded by remember { mutableStateOf(message.isThinkingActive) }
+    var isExpanded by remember(message.id) { mutableStateOf(message.isThinkingActive) }
 
-    // Auto-minimize when thinking completes
+    // Automatically minimize when thinking finishes
     LaunchedEffect(message.isThinkingFinished) {
         if (message.isThinkingFinished) {
-            delay(500L)
+            delay(350L)
             isExpanded = false
         }
     }
 
-    // Auto-expand when active
+    // Automatically expand when thinking becomes active
     LaunchedEffect(message.isThinkingActive) {
         if (message.isThinkingActive) {
             isExpanded = true
+        }
+    }
+
+    // Smooth typewriter reveal for active streaming snippet
+    var typedSnippet by remember { mutableStateOf("") }
+    LaunchedEffect(activeSnippet) {
+        if (activeSnippet.isEmpty()) {
+            typedSnippet = ""
+        } else if (activeSnippet.startsWith(typedSnippet)) {
+            while (typedSnippet.length < activeSnippet.length) {
+                val nextLen = (typedSnippet.length + 3).coerceAtMost(activeSnippet.length)
+                typedSnippet = activeSnippet.substring(0, nextLen)
+                delay(14L)
+            }
+        } else {
+            typedSnippet = ""
+            while (typedSnippet.length < activeSnippet.length) {
+                val nextLen = (typedSnippet.length + 4).coerceAtMost(activeSnippet.length)
+                typedSnippet = activeSnippet.substring(0, nextLen)
+                delay(12L)
+            }
         }
     }
 
@@ -481,7 +490,7 @@ private fun AgentThinkingDropdownBubble(
     )
 
     val scrollState = rememberScrollState()
-    LaunchedEffect(message.thinkingSteps.size, activeSnippet) {
+    LaunchedEffect(message.thinkingSteps.size, typedSnippet, isExpanded) {
         if (isExpanded) {
             scrollState.animateScrollTo(scrollState.maxValue)
         }
@@ -491,7 +500,6 @@ private fun AgentThinkingDropdownBubble(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.Start
     ) {
-        // Indented below agent message
         Spacer(modifier = Modifier.width(38.dp))
 
         Box(
@@ -499,17 +507,17 @@ private fun AgentThinkingDropdownBubble(
                 .widthIn(max = 310.dp)
                 .shadow(6.dp, RoundedCornerShape(18.dp))
                 .clip(RoundedCornerShape(18.dp))
-                .background(bgColor.copy(alpha = 0.92f))
+                .background(bgColor.copy(alpha = 0.94f))
                 .border(
                     width = 1.dp,
-                    color = if (message.isThinkingActive) fgColor.copy(alpha = 0.5f) else fgColor.copy(alpha = 0.22f),
+                    color = if (message.isThinkingActive) fgColor.copy(alpha = 0.55f) else fgColor.copy(alpha = 0.25f),
                     shape = RoundedCornerShape(18.dp)
                 )
                 .padding(12.dp)
                 .testTag("thinking_dropdown_bubble")
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
-                // Dropdown Header (Click to toggle)
+                // Header Row: Clickable to minimize/expand live statements
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -522,7 +530,6 @@ private fun AgentThinkingDropdownBubble(
                         .padding(vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Status icon
                     Box(
                         modifier = Modifier.size(20.dp),
                         contentAlignment = Alignment.Center
@@ -562,7 +569,7 @@ private fun AgentThinkingDropdownBubble(
                     val titleText = when {
                         message.isThinkingActive -> message.thinkingPhase.ifBlank { "Reasoning & Compiling CSS..." }
                         message.errorMessage != null -> "Reasoning interrupted"
-                        else -> "Thinking complete (${message.thinkingSteps.size} steps)"
+                        else -> "Thought process (${message.thinkingSteps.size} steps)"
                     }
 
                     Text(
@@ -578,7 +585,7 @@ private fun AgentThinkingDropdownBubble(
                     if (message.durationSeconds > 0) {
                         Text(
                             text = "${message.durationSeconds}s",
-                            color = fgColor.copy(alpha = 0.7f),
+                            color = fgColor.copy(alpha = 0.72f),
                             fontSize = 11.sp,
                             modifier = Modifier.padding(horizontal = 4.dp)
                         )
@@ -586,13 +593,13 @@ private fun AgentThinkingDropdownBubble(
 
                     Icon(
                         imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                        contentDescription = if (isExpanded) "Collapse steps" else "Expand steps",
-                        tint = fgColor.copy(alpha = 0.75f),
+                        contentDescription = if (isExpanded) "Minimize thinking statements" else "Expand thinking statements",
+                        tint = fgColor.copy(alpha = 0.8f),
                         modifier = Modifier.size(18.dp)
                     )
                 }
 
-                // Expanded steps body
+                // Expandable & Scrollable Body with `fg` colored typed statements
                 AnimatedVisibility(
                     visible = isExpanded,
                     enter = fadeIn(tween(180)) + slideInVertically(tween(180)),
@@ -607,7 +614,7 @@ private fun AgentThinkingDropdownBubble(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(1.dp)
-                                .background(fgColor.copy(alpha = 0.15f))
+                                .background(fgColor.copy(alpha = 0.16f))
                         )
 
                         Spacer(modifier = Modifier.height(8.dp))
@@ -620,42 +627,42 @@ private fun AgentThinkingDropdownBubble(
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             message.thinkingSteps.forEachIndexed { idx, step ->
-                                val isLatest = idx == message.thinkingSteps.lastIndex && message.isThinkingActive && activeSnippet.isBlank()
+                                val isLatest = idx == message.thinkingSteps.lastIndex && message.isThinkingActive && typedSnippet.isBlank()
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     verticalAlignment = Alignment.Top
                                 ) {
                                     Box(
                                         modifier = Modifier
-                                            .padding(top = 5.dp, end = 6.dp)
+                                            .padding(top = 6.dp, end = 7.dp)
                                             .size(5.dp)
                                             .clip(CircleShape)
-                                            .background(if (isLatest) fgColor else fgColor.copy(alpha = 0.45f))
+                                            .background(if (isLatest) fgColor else fgColor.copy(alpha = 0.5f))
                                     )
                                     Text(
                                         text = step,
-                                        color = if (isLatest) fgColor else fgColor.copy(alpha = 0.85f),
+                                        color = if (isLatest) fgColor else fgColor.copy(alpha = 0.86f),
                                         fontSize = 12.sp,
+                                        fontWeight = if (isLatest) FontWeight.Medium else FontWeight.Normal,
                                         lineHeight = 16.sp
                                     )
                                 }
                             }
 
-                            // Active streaming typed tokens
-                            if (message.isThinkingActive && activeSnippet.isNotBlank()) {
+                            if (message.isThinkingActive && typedSnippet.isNotBlank()) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     verticalAlignment = Alignment.Top
                                 ) {
                                     Box(
                                         modifier = Modifier
-                                            .padding(top = 5.dp, end = 6.dp)
+                                            .padding(top = 6.dp, end = 7.dp)
                                             .size(5.dp)
                                             .clip(CircleShape)
                                             .background(fgColor.copy(alpha = pulseAlpha))
                                     )
                                     Text(
-                                        text = "$activeSnippet ▋",
+                                        text = "$typedSnippet ▋",
                                         color = fgColor,
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.Medium,
@@ -664,10 +671,10 @@ private fun AgentThinkingDropdownBubble(
                                 }
                             }
 
-                            if (message.isThinkingActive && message.thinkingSteps.isEmpty() && activeSnippet.isBlank()) {
+                            if (message.isThinkingActive && message.thinkingSteps.isEmpty() && typedSnippet.isBlank()) {
                                 Text(
-                                    text = "Analyzing CSS architecture ▋",
-                                    color = fgColor.copy(alpha = 0.8f),
+                                    text = "Synthesizing CSS rules ▋",
+                                    color = fgColor.copy(alpha = 0.85f),
                                     fontSize = 12.sp
                                 )
                             }
