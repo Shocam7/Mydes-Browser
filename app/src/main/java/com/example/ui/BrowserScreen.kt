@@ -4,9 +4,6 @@ import android.app.Activity
 import android.content.ContextWrapper
 import android.webkit.WebView
 import androidx.activity.compose.BackHandler
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
@@ -23,7 +20,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -55,6 +51,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.example.ui.components.AiStylerPillBar
 import com.example.ui.components.ApiRequestLogsSheet
 import com.example.ui.components.BookmarksSheet
@@ -133,11 +132,12 @@ fun BrowserScreen(
     val previousGenerations by viewModel.previousGenerationsForCurrentDomain.collectAsState()
     val websiteThemes by viewModel.websiteThemes.collectAsState()
     val synthesisModel by viewModel.synthesisModel.collectAsState()
+    val reasoningLevel by viewModel.reasoningLevel.collectAsState()
     val customNvidiaApiKey by viewModel.customNvidiaApiKey.collectAsState()
 
     var activeWebView by remember { mutableStateOf<WebView?>(null) }
 
-    // Execute generated user-script on the active WebView
+    // Execute generated or exit user-script on the active WebView
     LaunchedEffect(pendingUserScriptToInject) {
         val script = pendingUserScriptToInject
         if (script != null && activeWebView != null) {
@@ -152,10 +152,6 @@ fun BrowserScreen(
     val primaryColor = currentTab.primaryColor
     val isNearWhite = viewModel.isNearWhite(primaryColor)
 
-    // Sliding visibility state for buttons:
-    // Only an upward scroll will reveal the buttons.
-    // Hides on downwards scroll or after >10 seconds without upward scrolling on web pages.
-    // Buttons always stay visible on the start page or when AI styler is active.
     var controlsVisible by remember { mutableStateOf(true) }
     var scrollUpKey by remember { mutableLongStateOf(0L) }
 
@@ -166,14 +162,13 @@ fun BrowserScreen(
 
     LaunchedEffect(scrollUpKey, isOptionsMenuExpanded, isStartPage, isAiStylerPillVisible) {
         if (!isOptionsMenuExpanded && !isStartPage && !isAiStylerPillVisible) {
-            delay(10_000L) // 10 seconds of inactivity without upward scroll
+            delay(10_000L)
             controlsVisible = false
         } else {
             controlsVisible = true
         }
     }
 
-    // Buttons always stay visible on the start page, or when options menu or AI styler is expanded
     val shouldShowButtons = isStartPage || controlsVisible || isOptionsMenuExpanded || isAiStylerPillVisible
 
     val settingsOffsetX by animateDpAsState(
@@ -203,7 +198,6 @@ fun BrowserScreen(
         label = "optionsOffsetX"
     )
 
-    // Back handler: pop modals first, then navigate back in WebView
     BackHandler {
         when {
             isImportRedesignDialogOpen -> viewModel.closeImportRedesignDialog()
@@ -264,9 +258,9 @@ fun BrowserScreen(
             }
         }
 
-        // 1.5. Morphing Web Overlay:
-        // Translucent overlay with extracted theme 'bg' rising from bottom behind all app controls,
-        // displaying live streaming thinking statements in 'fg' color inside an expandable dropdown.
+        // 1.5. Morphing Web Overlay (AiThinkingPanel):
+        // Translucent overlay with extracted theme 'background' color rising from the bottom
+        // behind all application buttons and elements, acting as the live thinking & chat panel.
         MorphingWebOverlay(
             state = aiThinkingState,
             websiteName = currentTab.title,
@@ -293,10 +287,8 @@ fun BrowserScreen(
         )
 
         // 4. Top Header Controls:
-        // When options menu is collapsed: Standalone Top-Left Settings & Top-Right Column (Brush + Plus button)
-        // When options menu is expanded: Unified Encapsulated Top Header Pill with website's primary color
+        // Brush icon reflects active state (`isCustomStyleApplied == true`) vs inactive state (`false`)
         if (!isOptionsMenuExpanded) {
-            // Standalone top-left Settings (slides out left on inactivity/scroll down on web pages)
             Box(
                 modifier = Modifier
                     .align(Alignment.TopStart)
@@ -324,7 +316,6 @@ fun BrowserScreen(
                 )
             }
 
-            // Top-right Column: Brush button & Plus button below it (slides out right)
             Column(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -334,7 +325,7 @@ fun BrowserScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Standalone top-right Brush (Click to open AI Website Styler)
+                // Standalone top-right Brush (Active state when theme is applied, Inactive otherwise)
                 Box(
                     modifier = Modifier.size(44.dp),
                     contentAlignment = Alignment.Center
@@ -350,7 +341,7 @@ fun BrowserScreen(
                     Box(
                         modifier = Modifier
                             .size(44.dp)
-                            .shadow(if (isBrushActive) 5.dp else 2.dp, CircleShape)
+                            .shadow(if (isBrushActive) 6.dp else 2.dp, CircleShape)
                             .clip(CircleShape)
                             .background(if (isBrushActive) Color(0xFF1E2024) else Color(0xFFE4E6EA))
                             .border(
@@ -364,7 +355,13 @@ fun BrowserScreen(
                                 onClick = { viewModel.toggleAiStylerPill() }
                             )
                             .testTag("standalone_brush_button")
-                            .semantics { contentDescription = if (isBrushActive) "AI Website Styler brush (Theme active)" else "AI Website Styler brush" },
+                            .semantics {
+                                contentDescription = if (isBrushActive) {
+                                    "AI Website Styler brush (Theme active)"
+                                } else {
+                                    "AI Website Styler brush (Inactive)"
+                                }
+                            },
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
@@ -376,14 +373,12 @@ fun BrowserScreen(
                     }
                 }
 
-                // Plus button below the brush icon (Tap: new tab; Long-press: pulls out incognito button)
                 NewTabPlusButton(
                     onNewTab = { viewModel.openNewTab(isIncognito = false) },
                     onNewIncognitoTab = { viewModel.openNewTab(isIncognito = true) }
                 )
             }
         } else {
-            // Encapsulated Top Header Pill
             TopHeaderPill(
                 title = currentTab.title,
                 currentUrl = currentTab.url,
@@ -425,7 +420,7 @@ fun BrowserScreen(
             )
         }
 
-        // 6. Expandable Options Pill Menu (above the options button)
+        // 6. Expandable Options Pill Menu
         OptionsPillMenu(
             expanded = isOptionsMenuExpanded,
             isIncognito = isIncognito,
@@ -454,7 +449,7 @@ fun BrowserScreen(
                 .padding(end = 16.dp, bottom = 68.dp)
         )
 
-        // 7. Geometric Options Button (Bottom-Right, slides out right on inactivity/scroll down on web pages)
+        // 7. Geometric Options Button (Bottom-Right)
         MorphingOptionsButton(
             isActive = isOptionsMenuExpanded,
             onClick = { viewModel.toggleOptionsMenu() },
@@ -465,7 +460,7 @@ fun BrowserScreen(
                 .padding(end = 16.dp, bottom = 10.dp)
         )
 
-        // 8. AI Website Styler Pill Bar (swifts out at bottom on clicking brush icon)
+        // 8. AI Website Styler Pill Bar (with Deactivation Cross Button, Model Switcher & Reasoning Modulator)
         val currentDomain = remember(currentTab.url) { viewModel.extractDomain(currentTab.url) }
         val currentAppliedPrompt = websiteThemes[currentDomain]?.prompt
 
@@ -485,6 +480,9 @@ fun BrowserScreen(
             onOpenImportRedesign = { viewModel.openImportRedesignDialog() },
             selectedSynthesisModel = synthesisModel,
             onToggleSynthesisModel = { viewModel.toggleSynthesisModel() },
+            selectedReasoningLevel = reasoningLevel,
+            onCycleReasoningLevel = { viewModel.cycleReasoningLevel() },
+            onSelectReasoningLevel = { viewModel.updateReasoningLevel(it) },
             onDismiss = { viewModel.closeAiStylerPill() },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -583,4 +581,3 @@ private fun android.content.Context.findActivity(): Activity? = when (this) {
     is ContextWrapper -> baseContext.findActivity()
     else -> null
 }
-
