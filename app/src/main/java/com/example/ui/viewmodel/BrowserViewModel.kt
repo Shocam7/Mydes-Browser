@@ -16,6 +16,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.api.ApiRequestLogger
 import com.example.data.api.GeminiStylerService
 import com.example.data.api.MydesRuntime
+import com.example.data.api.ReasoningModulatorConfig
 import com.example.data.api.ThoughtSummarizer
 import com.example.data.api.UIBlueprint
 import com.example.data.api.evaluateJsSuspend
@@ -24,23 +25,20 @@ import com.example.data.model.GeneratedThemeEntity
 import com.example.data.model.HistoryEntity
 import com.example.data.repository.BrowserRepository
 import com.example.data.repository.WebsiteColorRepository
+import com.example.ui.model.MessageSender
 import com.example.ui.model.TabItem
-import kotlinx.coroutines.ExperimentalCoroutinesApi
+import com.example.ui.model.ThemeChatMessage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import com.example.ui.model.ThemeChatMessage
-import com.example.ui.model.MessageSender
 
 data class AiThinkingState(
     val isActive: Boolean = false,
@@ -68,15 +66,22 @@ class BrowserViewModel(
     private val _customNvidiaApiKey = MutableStateFlow("")
     val customNvidiaApiKey: StateFlow<String> = _customNvidiaApiKey.asStateFlow()
 
-    private val _synthesisModel = MutableStateFlow(com.example.data.api.GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE)
+    private val _synthesisModel = MutableStateFlow(GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE)
     val synthesisModel: StateFlow<String> = _synthesisModel.asStateFlow()
+
+    private val _reasoningLevel = MutableStateFlow(
+        ReasoningModulatorConfig.getDefaultModeForModel(GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE)
+    )
+    val reasoningLevel: StateFlow<String> = _reasoningLevel.asStateFlow()
 
     init {
         val prefs = application.getSharedPreferences("mydes_prefs", Context.MODE_PRIVATE)
         _customApiKey.value = prefs.getString("custom_api_key", "") ?: ""
         _customNvidiaApiKey.value = prefs.getString("custom_nvidia_api_key", "") ?: ""
-        _synthesisModel.value = prefs.getString("synthesis_model", com.example.data.api.GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE)
-            ?: com.example.data.api.GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE
+        val savedModel = prefs.getString("synthesis_model", GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE)
+            ?: GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE
+        _synthesisModel.value = savedModel
+        _reasoningLevel.value = GeminiStylerService.getReasoningLevel(application, savedModel)
     }
 
     fun updateCustomApiKey(key: String) {
@@ -97,9 +102,10 @@ class BrowserViewModel(
         _synthesisModel.value = model
         val prefs = getApplication<Application>().getSharedPreferences("mydes_prefs", Context.MODE_PRIVATE)
         prefs.edit().putString("synthesis_model", model).apply()
+        _reasoningLevel.value = GeminiStylerService.getReasoningLevel(getApplication(), model)
         val displayName = when (model) {
-            com.example.data.api.GeminiStylerService.MODEL_NVIDIA_NEMOTRON_3_ULTRA -> "Nemotron 3 Ultra 550B (NIM)"
-            com.example.data.api.GeminiStylerService.MODEL_GEMINI_38_FLASH -> "Gemini 3.8 Flash"
+            GeminiStylerService.MODEL_NVIDIA_NEMOTRON_3_ULTRA -> "Nemotron 3 Ultra 550B (NIM)"
+            GeminiStylerService.MODEL_GEMINI_38_FLASH -> "Gemini 3.8 Flash"
             else -> "Gemini 3.5 Flash Lite"
         }
         Toast.makeText(getApplication(), "Synthesis Model: $displayName", Toast.LENGTH_SHORT).show()
@@ -107,14 +113,32 @@ class BrowserViewModel(
 
     fun toggleSynthesisModel() {
         val next = when (_synthesisModel.value) {
-            com.example.data.api.GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE ->
-                com.example.data.api.GeminiStylerService.MODEL_GEMINI_38_FLASH
-            com.example.data.api.GeminiStylerService.MODEL_GEMINI_38_FLASH ->
-                com.example.data.api.GeminiStylerService.MODEL_NVIDIA_NEMOTRON_3_ULTRA
+            GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE ->
+                GeminiStylerService.MODEL_GEMINI_38_FLASH
+            GeminiStylerService.MODEL_GEMINI_38_FLASH ->
+                GeminiStylerService.MODEL_NVIDIA_NEMOTRON_3_ULTRA
             else ->
-                com.example.data.api.GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE
+                GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE
         }
         updateSynthesisModel(next)
+    }
+
+    fun updateReasoningLevel(level: String) {
+        val model = _synthesisModel.value
+        val validModes = ReasoningModulatorConfig.getAvailableModesForModel(model)
+        val normalized = if (level.lowercase().trim() in validModes) {
+            level.lowercase().trim()
+        } else {
+            ReasoningModulatorConfig.getDefaultModeForModel(model)
+        }
+        _reasoningLevel.value = normalized
+        GeminiStylerService.setReasoningLevel(getApplication(), model, normalized)
+    }
+
+    fun cycleReasoningLevel() {
+        val model = _synthesisModel.value
+        val next = ReasoningModulatorConfig.nextMode(model, _reasoningLevel.value)
+        updateReasoningLevel(next)
     }
 
     private val _tabs = MutableStateFlow<List<TabItem>>(listOf(TabItem()))
@@ -214,8 +238,8 @@ class BrowserViewModel(
         val fg: String = "#E6EDF3"
     )
 
-    private val _websiteThemes = MutableStateFlow<Map<String, WebsiteTheme>>(emptyMap())
-    val websiteThemes: StateFlow<Map<String, WebsiteTheme>> = _websiteThemes.asStateFlow()
+    private val _websiteThemes = MutableStateFlow>(emptyMap())
+    val websiteThemes: StateFlow> = _websiteThemes.asStateFlow()
 
     private val _isAiStylerPillVisible = MutableStateFlow(false)
     val isAiStylerPillVisible: StateFlow<Boolean> = _isAiStylerPillVisible.asStateFlow()
@@ -237,6 +261,10 @@ class BrowserViewModel(
     private val _pendingUserScriptToInject = MutableStateFlow<String?>(null)
     val pendingUserScriptToInject: StateFlow<String?> = _pendingUserScriptToInject.asStateFlow()
 
+    /**
+     * Requirement 2: As long as a theme is applied and active on the current domain,
+     * the brush icon is in active state. When removed or not yet applied, it is inactive.
+     */
     val isCustomStyleApplied: StateFlow<Boolean> = combine(activeTab, _websiteThemes) { tab, themes ->
         val domain = extractDomain(tab?.url ?: "")
         domain.isNotBlank() && themes.containsKey(domain)
@@ -290,13 +318,27 @@ class BrowserViewModel(
         val domain = theme.domain
         if (domain.isBlank()) return
 
-        // Restore chat history for this specific design
+        // Restore specific chat history for this saved design
         val restoredHistory = ThemeChatMessage.listFromJson(theme.chatHistoryJson).ifEmpty {
             val conceptName = theme.concept?.ifBlank { theme.themeName } ?: theme.themeName
             listOf(
-                ThemeChatMessage(sender = MessageSender.USER, text = theme.prompt, modelLabel = getModelDisplayName(_synthesisModel.value)),
-                ThemeChatMessage(sender = MessageSender.AGENT, text = "Building $conceptName", concept = conceptName),
-                ThemeChatMessage(sender = MessageSender.AGENT, isThinkingBubble = true, thinkingPhase = "Theme Restored", isThinkingFinished = true, thinkingSteps = listOf("Design applied from saved themes"))
+                ThemeChatMessage(
+                    sender = MessageSender.USER,
+                    text = theme.prompt,
+                    modelLabel = getModelDisplayName(_synthesisModel.value)
+                ),
+                ThemeChatMessage(
+                    sender = MessageSender.AGENT,
+                    text = "Building $conceptName",
+                    concept = conceptName
+                ),
+                ThemeChatMessage(
+                    sender = MessageSender.AGENT,
+                    isThinkingBubble = true,
+                    thinkingPhase = "Theme Restored",
+                    isThinkingFinished = true,
+                    thinkingSteps = listOf("Design applied from saved themes")
+                )
             )
         }
 
@@ -314,9 +356,8 @@ class BrowserViewModel(
         _websiteThemes.value = _websiteThemes.value + (domain to websiteTheme)
         _pendingUserScriptToInject.value = theme.script
 
-        // Default model for continued chats is gemini-3.5-flash-lite
-        _synthesisModel.value = GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE
-        GeminiStylerService.setSynthesisModel(getApplication(), GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE)
+        // Requirement 5: Default model for continued chats is gemini-3.5-flash-lite
+        setDefaultModelForContinuedChat()
 
         _aiThinkingState.value = AiThinkingState(
             isActive = false,
@@ -330,6 +371,15 @@ class BrowserViewModel(
         Toast.makeText(getApplication(), "Applied: ${theme.prompt}", Toast.LENGTH_SHORT).show()
     }
 
+    private fun setDefaultModelForContinuedChat() {
+        _synthesisModel.value = GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE
+        GeminiStylerService.setSynthesisModel(getApplication(), GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE)
+        _reasoningLevel.value = GeminiStylerService.getReasoningLevel(
+            getApplication(),
+            GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE
+        )
+    }
+
     fun deleteSavedTheme(theme: GeneratedThemeEntity) {
         viewModelScope.launch {
             theme.screenshotPath?.let { path ->
@@ -341,8 +391,8 @@ class BrowserViewModel(
     }
 
     /**
-     * Imports an externally generated UIBlueprint (e.g. from a frontier model like Claude 3.7 or GPT-4.5)
-     * from a file or pasted string, and applies it immediately to the active webpage.
+     * Imports an externally generated UIBlueprint from a JSON file or pasted string,
+     * applies it immediately to the active webpage, and initializes its chat history.
      */
     fun importAndApplyRedesign(jsonContent: String, sourceName: String = "External File"): Result<UIBlueprint> {
         val tab = activeTab.value ?: return Result.failure(IllegalStateException("No active tab open"))
@@ -358,16 +408,44 @@ class BrowserViewModel(
 
         val script = MydesRuntime.script(parsedBlueprint)
         val promptName = parsedBlueprint.name.ifBlank { parsedBlueprint.concept }.ifBlank { "Imported Frontier Redesign" }
+        val conceptName = parsedBlueprint.concept.ifBlank { promptName }
+
+        val importedHistory = listOf(
+            ThemeChatMessage(
+                sender = MessageSender.USER,
+                text = "Import: $promptName",
+                modelLabel = sourceName
+            ),
+            ThemeChatMessage(
+                sender = MessageSender.AGENT,
+                text = "Building $conceptName",
+                concept = conceptName
+            ),
+            ThemeChatMessage(
+                sender = MessageSender.AGENT,
+                isThinkingBubble = true,
+                thinkingPhase = "Imported Blueprint Applied",
+                isThinkingFinished = true,
+                thinkingSteps = listOf("Parsed external UIBlueprint JSON", "Compiled and injected 60fps stylesheet")
+            )
+        )
 
         val websiteTheme = WebsiteTheme(
             domain = domain,
             prompt = promptName,
             baseScript = script,
             pageScripts = mapOf(tab.url to script),
-            isImported = true
+            isImported = true,
+            activeCss = parsedBlueprint.customCss,
+            activeConcept = conceptName,
+            chatHistory = importedHistory,
+            bg = parsedBlueprint.bg,
+            fg = parsedBlueprint.fg
         )
         _websiteThemes.value = _websiteThemes.value + (domain to websiteTheme)
         _pendingUserScriptToInject.value = script
+
+        setDefaultModelForContinuedChat()
 
         val siteName = if (tab.title.isNotBlank()) tab.title else tab.url
 
@@ -379,14 +457,18 @@ class BrowserViewModel(
                 prompt = "Imported: $promptName",
                 themeName = parsedBlueprint.name,
                 script = script,
-                screenshotPath = null
+                screenshotPath = null,
+                activeCss = parsedBlueprint.customCss,
+                concept = conceptName,
+                chatHistoryJson = ThemeChatMessage.listToJson(importedHistory),
+                bg = parsedBlueprint.bg,
+                fg = parsedBlueprint.fg
             )
             val insertedId = browserRepository.saveGeneratedTheme(initialThemeEntity)
 
-            // Capture screenshot after DOM stabilizes
             val wv = activeWebViewRef
             if (wv != null) {
-                kotlinx.coroutines.delay(4000L)
+                delay(4000L)
                 val bitmap = captureWebViewBitmap(wv)
                 val screenshotPath = if (bitmap != null) saveScreenshotToFile(bitmap) else null
                 if (screenshotPath != null) {
@@ -396,7 +478,6 @@ class BrowserViewModel(
                 }
             }
 
-            // Log import in ApiRequestLogger
             ApiRequestLogger.logRequest(
                 context = getApplication(),
                 type = "importedRedesign (frontier)",
@@ -419,6 +500,17 @@ class BrowserViewModel(
         else -> "Gemini 3.5 Flash Lite"
     }
 
+    /**
+     * Requirements 4 & 5:
+     * - Runs the Concept Pass first.
+     * - Once Concept Pass returns `background` (`bg`), `fg`, and `concept`, `onConceptReady` triggers
+     *   the rising translucent `MorphingWebOverlay` with `bg` color and adds:
+     *   1) User message bubble
+     *   2) Agent reply: "Building <concept field from concept pass>"
+     *   3) Agent reply: Live streaming thinking drop-down in `fg` color.
+     * - If a theme is already active for this domain, treats the request as a continued chat
+     *   modification with the currently active CSS included in the system prompt.
+     */
     fun applyAiStyle(prompt: String) {
         val tab = activeTab.value ?: return
         val domain = extractDomain(tab.url)
@@ -427,7 +519,15 @@ class BrowserViewModel(
 
         val activeTheme = _websiteThemes.value[domain]
         val isModification = activeTheme != null
-        val modelDisplayName = getModelDisplayName(_synthesisModel.value)
+        val currentModel = _synthesisModel.value
+        val isNemotron = GeminiStylerService.isNvidiaModel(currentModel)
+
+        val effectiveReasoningLabel = if (isModification && isNemotron) {
+            "OFF"
+        } else {
+            ReasoningModulatorConfig.getDisplayLabel(currentModel, _reasoningLevel.value)
+        }
+        val modelDisplayName = "${getModelDisplayName(currentModel)} • $effectiveReasoningLabel"
 
         val userMsg = ThemeChatMessage(
             sender = MessageSender.USER,
@@ -435,34 +535,28 @@ class BrowserViewModel(
             modelLabel = modelDisplayName
         )
         val agentConceptMsgId = java.util.UUID.randomUUID().toString()
-        val initialAgentText = if (isModification) "Analyzing modification..." else "Directing visual concept..."
-        val agentConceptMsg = ThemeChatMessage(
-            id = agentConceptMsgId,
-            sender = MessageSender.AGENT,
-            text = initialAgentText,
-            concept = initialAgentText
-        )
         val agentThinkingMsgId = java.util.UUID.randomUUID().toString()
-        val initialPhase = if (isModification) "Pass 1: Directing modification concept..." else "Pass 1: Visual Architecture..."
-        val agentThinkingMsg = ThemeChatMessage(
-            id = agentThinkingMsgId,
-            sender = MessageSender.AGENT,
-            isThinkingBubble = true,
-            thinkingPhase = initialPhase,
-            isThinkingActive = true
-        )
-
-        val startingHistory = if (isModification) {
-            activeTheme!!.chatHistory + listOf(userMsg, agentConceptMsg, agentThinkingMsg)
+        val initialPhase = if (isModification) {
+            "Pass 1: Directing modification concept..."
         } else {
-            listOf(userMsg, agentConceptMsg, agentThinkingMsg)
+            "Pass 1: Visual Architecture..."
+        }
+
+        // Before Concept Pass finishes on a brand-new theme, morphBgColor is null so the overlay
+        // waits to rise until `background` and `fg` are extracted from the concept result.
+        val startingHistory = if (isModification) {
+            activeTheme!!.chatHistory + listOf(userMsg)
+        } else {
+            listOf(userMsg)
         }
 
         thinkingTimerJob?.cancel()
         _aiThinkingState.value = AiThinkingState(
             isActive = true,
             phase = initialPhase,
-            summarizedStatements = listOf(if (isModification) "Analyzing modification request" else "Analyzing webpage layout and user prompt"),
+            summarizedStatements = listOf(
+                if (isModification) "Analyzing modification request" else "Running concept pass..."
+            ),
             durationSeconds = 0,
             isFinished = false,
             morphBgColor = activeTheme?.bg,
@@ -544,25 +638,50 @@ class BrowserViewModel(
                 }
             }
 
+            // Called as soon as Pass 1 (Concept Pass) finishes and extracts `background` (bg), `fg`, and `concept`
             val onConceptReady: (bg: String, fg: String, concept: String) -> Unit = { bg, fg, concept ->
+                val agentConceptMsg = ThemeChatMessage(
+                    id = agentConceptMsgId,
+                    sender = MessageSender.AGENT,
+                    text = "Building $concept",
+                    concept = concept
+                )
+                val (currentSummaries, currentPending) = ThoughtSummarizer.summarize(
+                    thoughtBuffer.toString(),
+                    isComplete = false
+                )
+                val agentThinkingMsg = ThemeChatMessage(
+                    id = agentThinkingMsgId,
+                    sender = MessageSender.AGENT,
+                    isThinkingBubble = true,
+                    thinkingPhase = "Pass 2: Compiling 60fps Pure CSS...",
+                    thinkingSteps = if (currentSummaries.isNotEmpty()) {
+                        currentSummaries
+                    } else {
+                        listOf("Extracted palette (bg $bg, fg $fg)", "Synthesizing CSS rules...")
+                    },
+                    activeStreamSnippet = currentPending,
+                    durationSeconds = _aiThinkingState.value.durationSeconds,
+                    isThinkingActive = true,
+                    isThinkingFinished = false
+                )
+
                 _aiThinkingState.update { current ->
-                    val updatedChat = current.chatHistory.map { msg ->
-                        if (msg.id == agentConceptMsgId) {
-                            msg.copy(text = "Building $concept", concept = concept)
-                        } else msg
+                    val withoutDuplicates = current.chatHistory.filterNot {
+                        it.id == agentConceptMsgId || it.id == agentThinkingMsgId
                     }
                     current.copy(
                         morphBgColor = bg,
                         morphFgColor = fg,
                         activeConcept = concept,
-                        phase = "Morphing Canvas...",
-                        chatHistory = updatedChat
+                        phase = "Pass 2: Compiling 60fps Pure CSS...",
+                        chatHistory = withoutDuplicates + listOf(agentConceptMsg, agentThinkingMsg)
                     )
                 }
             }
 
             if (isModification) {
-                // Continuation and modification of active design
+                // Continued chat modification of active design
                 val currentCss = activeTheme!!.activeCss.ifBlank { activeTheme.baseScript }
                 val currentConcept = activeTheme.activeConcept.ifBlank { activeTheme.prompt }
 
@@ -618,7 +737,6 @@ class BrowserViewModel(
                     _websiteThemes.value = _websiteThemes.value + (domain to updatedTheme)
                     _pendingUserScriptToInject.value = script
 
-                    // Persist updated theme and chat history in database
                     val entity = GeneratedThemeEntity(
                         domain = domain,
                         websiteUrl = tab.url,
@@ -659,7 +777,7 @@ class BrowserViewModel(
                     }
                 }
             } else {
-                // New initial design creation
+                // Brand-new theme creation
                 val preOutline = try {
                     activeWebViewRef?.evaluateJsSuspend(MydesRuntime.OUTLINE_PROBE_JS)
                 } catch (_: Exception) {
@@ -724,14 +842,12 @@ class BrowserViewModel(
                     }
                     _pendingUserScriptToInject.value = script
 
-                    // Default model for subsequent continued chats is gemini-3.5-flash-lite
-                    _synthesisModel.value = GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE
-                    GeminiStylerService.setSynthesisModel(getApplication(), GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE)
+                    // Requirement 5: Default model for subsequent continued chats is gemini-3.5-flash-lite
+                    setDefaultModelForContinuedChat()
 
-                    // Save generated theme along with rendered screenshot to Room database
                     val wv = activeWebViewRef
                     if (wv != null && domain.isNotBlank()) {
-                        kotlinx.coroutines.delay(5000L)
+                        delay(5000L)
                         val bitmap = captureWebViewBitmap(wv)
                         val screenshotPath = if (bitmap != null) saveScreenshotToFile(bitmap) else null
 
@@ -802,18 +918,12 @@ class BrowserViewModel(
         activeWebViewRef = webView
     }
 
-    /**
-     * Captures ONLY the rendered webpage directly from the WebView.
-     * PixelCopy on the Window is eliminated so NO application UI, brush icons,
-     * AiStylerPillBar, settings sheets, or controls ever obstruct the review agent's screenshot.
-     */
     private suspend fun captureWebViewBitmap(webView: android.webkit.WebView): android.graphics.Bitmap? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
         val initialBmp = captureViaDraw(webView)
         if (initialBmp != null && !isMostlyBlank(initialBmp)) {
             return@withContext initialBmp
         }
-        // If the initial draw was blank (DOM was still repainting), give it a short 300ms pause and retry
-        kotlinx.coroutines.delay(300L)
+        delay(300L)
         val retryBmp = captureViaDraw(webView)
         if (retryBmp != null && !isMostlyBlank(retryBmp)) {
             initialBmp?.recycle()
@@ -830,7 +940,6 @@ class BrowserViewModel(
             val canvas = android.graphics.Canvas(bitmap)
             canvas.drawColor(android.graphics.Color.WHITE)
 
-            // Temporarily suppress scrollbars so they don't appear in the review screenshot
             val wasVert = webView.isVerticalScrollBarEnabled
             val wasHoriz = webView.isHorizontalScrollBarEnabled
             try {
@@ -856,7 +965,6 @@ class BrowserViewModel(
         }
     }
 
-    /** A real page has some tonal range; a failed capture is one flat colour. */
     private fun isMostlyBlank(bmp: android.graphics.Bitmap): Boolean {
         var lo = 255
         var hi = 0
@@ -892,7 +1000,6 @@ class BrowserViewModel(
         }
     }
 
-    /** Downscales to at most 720px wide before encoding: a smaller upload makes the review call faster and cheaper. */
     private fun bitmapToBase64(bitmap: android.graphics.Bitmap): String {
         val maxWidth = 720
         val toEncode = if (bitmap.width > maxWidth) {
@@ -923,6 +1030,11 @@ class BrowserViewModel(
         }
     }
 
+    /**
+     * Requirement 1 & 2:
+     * Deactivates the active theme, sets the brush icon back to inactive state,
+     * and runs a staggered exit animation on each styled element before restoring the original webpage.
+     */
     fun resetCustomStyle() {
         val domain = extractDomain(activeTab.value?.url ?: "")
         if (domain.isNotBlank()) {
@@ -936,21 +1048,33 @@ class BrowserViewModel(
                 if (window.__mydes && window.__mydes.exit) {
                     try { window.__mydes.exit(); return; } catch (e) {}
                 }
-                var exitStyle = document.createElement('style');
-                exitStyle.id = '__mydes_exit_anim';
-                exitStyle.textContent = '* { transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1), transform 0.4s cubic-bezier(0.4, 0, 0.2, 1) !important; } [data-mydes], header, footer { opacity: 0.25 !important; transform: scale(0.98) translateY(4px) !important; }';
-                (document.head || document.documentElement).appendChild(exitStyle);
+                var styledEls = document.querySelectorAll('[data-mydes], header, footer');
+                styledEls.forEach(function(el, idx) {
+                    var stagger = Math.min(idx * 18, 220);
+                    el.style.setProperty('transition', 'all 0.42s cubic-bezier(0.22, 1, 0.36, 1) ' + stagger + 'ms', 'important');
+                    el.style.setProperty('transform', 'scale(0.96) translateY(8px)', 'important');
+                    el.style.setProperty('opacity', '0.15', 'important');
+                    el.style.setProperty('filter', 'blur(2px)', 'important');
+                });
                 setTimeout(function() {
-                    if (window.__mydes && window.__mydes.clear) { try { window.__mydes.clear(); } catch (e) {} }
                     var existing = document.getElementById('__mydes_style') || document.getElementById('mydes-ai-styler-style');
                     if (existing) existing.remove();
-                    exitStyle.remove();
-                    document.querySelectorAll('[data-mydes]').forEach(function(el) {
-                        el.removeAttribute('data-mydes');
-                        el.style.opacity = '';
-                        el.style.transform = '';
+                    styledEls.forEach(function(el) {
+                        el.style.setProperty('transform', 'scale(1) translateY(0)', 'important');
+                        el.style.setProperty('opacity', '1', 'important');
+                        el.style.setProperty('filter', 'none', 'important');
                     });
-                }, 400);
+                    setTimeout(function() {
+                        if (window.__mydes && window.__mydes.clear) { try { window.__mydes.clear(); } catch (e) {} }
+                        styledEls.forEach(function(el) {
+                            el.removeAttribute('data-mydes');
+                            el.style.removeProperty('transition');
+                            el.style.removeProperty('transform');
+                            el.style.removeProperty('opacity');
+                            el.style.removeProperty('filter');
+                        });
+                    }, 320);
+                }, 380);
             })();
         """.trimIndent()
     }
@@ -959,29 +1083,20 @@ class BrowserViewModel(
         _pendingUserScriptToInject.value = null
     }
 
-    /**
-     * Called when any webpage finishes loading.
-     * If the website domain has an active theme, immediately applies the theme,
-     * and triggers asynchronous background page-variable adaptations while showing
-     * a circular loader on the border of the brush icon without blocking user access.
-     */
     fun onPageLoaded(tabId: String, url: String, title: String) {
         val domain = extractDomain(url)
         if (domain.isBlank()) return
 
         val activeTheme = _websiteThemes.value[domain] ?: return
 
-        // 1. Immediately inject the cached or base theme script for seamless visual continuity
         val cachedPageScript = activeTheme.pageScripts[url]
         val initialScript = cachedPageScript ?: activeTheme.baseScript
         _pendingUserScriptToInject.value = initialScript
 
-        // 2. Perform background variable/DOM adaptations for the new page
         if (!activeTheme.isImported && cachedPageScript == null && url != lastAdaptedUrl) {
             lastAdaptedUrl = url
             backgroundAdaptationJob?.cancel()
             backgroundAdaptationJob = viewModelScope.launch {
-                // Circular loader on the border of brush icon indicates background update
                 _isThemeUpdatingInBackground.value = true
                 try {
                     val pageName = if (title.isNotBlank()) title else url
@@ -995,7 +1110,6 @@ class BrowserViewModel(
                     )
 
                     result.onSuccess { adaptedScript ->
-                        // Cache the adapted script for this URL and update the website theme
                         val currentTheme = _websiteThemes.value[domain]
                         if (currentTheme != null) {
                             val updatedTheme = currentTheme.copy(
@@ -1005,7 +1119,6 @@ class BrowserViewModel(
                             _websiteThemes.value = _websiteThemes.value + (domain to updatedTheme)
                         }
 
-                        // Load live asynchronously if user is on this domain/URL
                         val currentUrl = activeTab.value?.url ?: ""
                         if (extractDomain(currentUrl) == domain) {
                             _pendingUserScriptToInject.value = adaptedScript
@@ -1036,7 +1149,6 @@ class BrowserViewModel(
     fun closeTab(tabId: String) {
         val currentTabs = _tabs.value
         if (currentTabs.size <= 1) {
-            // Keep at least one tab
             val freshTab = TabItem()
             _tabs.value = listOf(freshTab)
             _activeTabId.value = freshTab.id
@@ -1088,7 +1200,6 @@ class BrowserViewModel(
     fun onTitleChanged(tabId: String, title: String) {
         _tabs.value = _tabs.value.map { tab ->
             if (tab.id == tabId) {
-                // Record history if title and URL are present
                 if (!tab.isIncognito && tab.url.isNotBlank()) {
                     viewModelScope.launch {
                         browserRepository.addHistory(title, tab.url, false)
