@@ -49,7 +49,7 @@ interface MydesDao {
     suspend fun insertDomainColor(domainColor: DomainColorEntity)
 
     // Generated Themes & Screenshots
-    @Query("SELECT * FROM generated_themes WHERE domain = :domain ORDER BY createdAt DESC")
+    @Query("SELECT * FROM generated_themes WHERE domain = :domain OR domain = '*' OR :domain LIKE '%' || domain || '%' OR domain LIKE '%' || :domain || '%' ORDER BY createdAt DESC")
     fun getGeneratedThemesForDomain(domain: String): Flow<List<com.example.data.model.GeneratedThemeEntity>>
 
     @Query("SELECT * FROM generated_themes ORDER BY createdAt DESC")

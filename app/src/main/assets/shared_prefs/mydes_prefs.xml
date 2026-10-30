@@ -1,0 +1,6 @@
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="custom_api_key">AQ.Ab8RN6LvtBR3AAC7xIgBFaZtkbGXfcq1UA8JT-dhsDWdEATe5Q</string>
+    <string name="synthesis_model">nvidia/nemotron-3-ultra-550b-a55b</string>
+    <boolean name="fullscreen_mode" value="true" />
+</map>

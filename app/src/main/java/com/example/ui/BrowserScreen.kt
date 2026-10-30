@@ -269,6 +269,7 @@ fun BrowserScreen(
         // displaying live streaming thinking statements in 'fg' color inside an expandable dropdown.
         MorphingWebOverlay(
             state = aiThinkingState,
+            websiteName = currentTab.title,
             onDismiss = { viewModel.dismissMorphOverlay() },
             modifier = Modifier.fillMaxSize()
         )

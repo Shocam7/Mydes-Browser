@@ -39,6 +39,8 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import com.example.ui.model.ThemeChatMessage
+import com.example.ui.model.MessageSender
 
 data class AiThinkingState(
     val isActive: Boolean = false,
@@ -49,7 +51,9 @@ data class AiThinkingState(
     val isFinished: Boolean = false,
     val errorMessage: String? = null,
     val morphBgColor: String? = null,
-    val morphFgColor: String? = null
+    val morphFgColor: String? = null,
+    val activeConcept: String? = null,
+    val chatHistory: List<ThemeChatMessage> = emptyList()
 )
 
 class BrowserViewModel(
@@ -202,7 +206,12 @@ class BrowserViewModel(
         val prompt: String,
         val baseScript: String,
         val pageScripts: Map<String, String> = emptyMap(),
-        val isImported: Boolean = false
+        val isImported: Boolean = false,
+        val activeCss: String = "",
+        val activeConcept: String = "",
+        val chatHistory: List<ThemeChatMessage> = emptyList(),
+        val bg: String = "#10141D",
+        val fg: String = "#E6EDF3"
     )
 
     private val _websiteThemes = MutableStateFlow<Map<String, WebsiteTheme>>(emptyMap())
@@ -233,13 +242,7 @@ class BrowserViewModel(
         domain.isNotBlank() && themes.containsKey(domain)
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
-    @OptIn(ExperimentalCoroutinesApi::class)
-    val previousGenerationsForCurrentDomain: StateFlow<List<GeneratedThemeEntity>> = activeTab
-        .map { extractDomain(it?.url ?: "") }
-        .flatMapLatest { domain ->
-            if (domain.isBlank()) flowOf(emptyList())
-            else browserRepository.getGeneratedThemesForDomain(domain)
-        }
+    val previousGenerationsForCurrentDomain: StateFlow<List<GeneratedThemeEntity>> = browserRepository.getAllGeneratedThemes()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     private var backgroundAdaptationJob: kotlinx.coroutines.Job? = null
@@ -250,15 +253,32 @@ class BrowserViewModel(
         return try {
             val uri = android.net.Uri.parse(url)
             val host = uri.host?.lowercase() ?: ""
-            if (host.startsWith("www.")) host.removePrefix("www.") else host
+            var clean = if (host.startsWith("www.")) host.removePrefix("www.") else host
+            if (clean.startsWith("m.")) clean = clean.removePrefix("m.")
+            clean
         } catch (_: Exception) {
             ""
         }
     }
 
     fun toggleAiStylerPill() {
-        _isAiStylerPillVisible.value = !_isAiStylerPillVisible.value
+        val nextVisible = !_isAiStylerPillVisible.value
+        _isAiStylerPillVisible.value = nextVisible
         _aiStylerErrorMessage.value = null
+        if (nextVisible) {
+            val domain = extractDomain(activeTab.value?.url ?: "")
+            val activeTheme = _websiteThemes.value[domain]
+            if (activeTheme != null) {
+                _aiThinkingState.update {
+                    it.copy(
+                        morphBgColor = activeTheme.bg,
+                        morphFgColor = activeTheme.fg,
+                        activeConcept = activeTheme.activeConcept,
+                        chatHistory = activeTheme.chatHistory
+                    )
+                }
+            }
+        }
     }
 
     fun closeAiStylerPill() {
@@ -270,14 +290,43 @@ class BrowserViewModel(
         val domain = theme.domain
         if (domain.isBlank()) return
 
+        // Restore chat history for this specific design
+        val restoredHistory = ThemeChatMessage.listFromJson(theme.chatHistoryJson).ifEmpty {
+            val conceptName = theme.concept?.ifBlank { theme.themeName } ?: theme.themeName
+            listOf(
+                ThemeChatMessage(sender = MessageSender.USER, text = theme.prompt, modelLabel = getModelDisplayName(_synthesisModel.value)),
+                ThemeChatMessage(sender = MessageSender.AGENT, text = "Building $conceptName", concept = conceptName),
+                ThemeChatMessage(sender = MessageSender.AGENT, isThinkingBubble = true, thinkingPhase = "Theme Restored", isThinkingFinished = true, thinkingSteps = listOf("Design applied from saved themes"))
+            )
+        }
+
         val websiteTheme = WebsiteTheme(
             domain = domain,
             prompt = theme.prompt,
             baseScript = theme.script,
-            pageScripts = mapOf(tab.url to theme.script)
+            pageScripts = mapOf(tab.url to theme.script),
+            activeCss = theme.activeCss ?: "",
+            activeConcept = theme.concept ?: theme.themeName,
+            chatHistory = restoredHistory,
+            bg = theme.bg ?: "#10141D",
+            fg = theme.fg ?: "#E6EDF3"
         )
         _websiteThemes.value = _websiteThemes.value + (domain to websiteTheme)
         _pendingUserScriptToInject.value = theme.script
+
+        // Default model for continued chats is gemini-3.5-flash-lite
+        _synthesisModel.value = GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE
+        GeminiStylerService.setSynthesisModel(getApplication(), GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE)
+
+        _aiThinkingState.value = AiThinkingState(
+            isActive = false,
+            isFinished = true,
+            morphBgColor = theme.bg ?: "#10141D",
+            morphFgColor = theme.fg ?: "#E6EDF3",
+            activeConcept = theme.concept ?: theme.themeName,
+            chatHistory = restoredHistory
+        )
+
         Toast.makeText(getApplication(), "Applied: ${theme.prompt}", Toast.LENGTH_SHORT).show()
     }
 
@@ -364,215 +413,384 @@ class BrowserViewModel(
         return Result.success(parsedBlueprint)
     }
 
+    private fun getModelDisplayName(model: String): String = when {
+        GeminiStylerService.isNvidiaModel(model) -> "Nemotron 3 Ultra (NIM)"
+        model == GeminiStylerService.MODEL_GEMINI_38_FLASH -> "Gemini 3.8 Flash"
+        else -> "Gemini 3.5 Flash Lite"
+    }
+
     fun applyAiStyle(prompt: String) {
         val tab = activeTab.value ?: return
         val domain = extractDomain(tab.url)
         _isAiStylerLoading.value = true
         _aiStylerErrorMessage.value = null
 
+        val activeTheme = _websiteThemes.value[domain]
+        val isModification = activeTheme != null
+        val modelDisplayName = getModelDisplayName(_synthesisModel.value)
+
+        val userMsg = ThemeChatMessage(
+            sender = MessageSender.USER,
+            text = prompt,
+            modelLabel = modelDisplayName
+        )
+        val agentConceptMsgId = java.util.UUID.randomUUID().toString()
+        val initialAgentText = if (isModification) "Analyzing modification..." else "Directing visual concept..."
+        val agentConceptMsg = ThemeChatMessage(
+            id = agentConceptMsgId,
+            sender = MessageSender.AGENT,
+            text = initialAgentText,
+            concept = initialAgentText
+        )
+        val agentThinkingMsgId = java.util.UUID.randomUUID().toString()
+        val initialPhase = if (isModification) "Pass 1: Directing modification concept..." else "Pass 1: Visual Architecture..."
+        val agentThinkingMsg = ThemeChatMessage(
+            id = agentThinkingMsgId,
+            sender = MessageSender.AGENT,
+            isThinkingBubble = true,
+            thinkingPhase = initialPhase,
+            isThinkingActive = true
+        )
+
+        val startingHistory = if (isModification) {
+            activeTheme!!.chatHistory + listOf(userMsg, agentConceptMsg, agentThinkingMsg)
+        } else {
+            listOf(userMsg, agentConceptMsg, agentThinkingMsg)
+        }
+
         thinkingTimerJob?.cancel()
         _aiThinkingState.value = AiThinkingState(
             isActive = true,
-            phase = "Directing visual concept...",
-            summarizedStatements = listOf("Analyzing webpage layout and user prompt"),
+            phase = initialPhase,
+            summarizedStatements = listOf(if (isModification) "Analyzing modification request" else "Analyzing webpage layout and user prompt"),
             durationSeconds = 0,
-            isFinished = false
+            isFinished = false,
+            morphBgColor = activeTheme?.bg,
+            morphFgColor = activeTheme?.fg,
+            activeConcept = activeTheme?.activeConcept,
+            chatHistory = startingHistory
         )
+
         thinkingTimerJob = viewModelScope.launch {
             while (isActive && _aiThinkingState.value.isActive && !_aiThinkingState.value.isFinished) {
                 delay(1000L)
-                _aiThinkingState.update { it.copy(durationSeconds = it.durationSeconds + 1) }
+                _aiThinkingState.update { current ->
+                    val updatedSec = current.durationSeconds + 1
+                    val updatedChat = current.chatHistory.map { msg ->
+                        if (msg.id == agentThinkingMsgId) msg.copy(durationSeconds = updatedSec) else msg
+                    }
+                    current.copy(durationSeconds = updatedSec, chatHistory = updatedChat)
+                }
             }
         }
 
         viewModelScope.launch {
             val siteName = if (tab.title.isNotBlank()) tab.title else tab.url
-            // Live DOM outline so the art-director pass designs around what the page is actually made of
-            val preOutline = try {
-                activeWebViewRef?.evaluateJsSuspend(MydesRuntime.OUTLINE_PROBE_JS)
-            } catch (_: Exception) {
-                null
-            }
-            val initialBitmap = activeWebViewRef?.let { captureWebViewBitmap(it) }
-            val initialScreenshotBase64 = if (initialBitmap != null) bitmapToBase64(initialBitmap) else null
-
             val thoughtBuffer = StringBuilder()
+
             val onThinkingProgress: (phase: String, chunk: String, isComplete: Boolean) -> Unit = { phase, chunk, isComplete ->
                 if (isComplete) {
                     val (summarized, _) = ThoughtSummarizer.summarize(thoughtBuffer.toString(), isComplete = true)
-                    _aiThinkingState.update {
-                        it.copy(
+                    _aiThinkingState.update { current ->
+                        val updatedChat = current.chatHistory.map { msg ->
+                            if (msg.id == agentThinkingMsgId) {
+                                msg.copy(
+                                    thinkingPhase = phase,
+                                    thinkingSteps = if (summarized.isNotEmpty()) summarized else msg.thinkingSteps,
+                                    activeStreamSnippet = "",
+                                    isThinkingFinished = true,
+                                    isThinkingActive = false
+                                )
+                            } else msg
+                        }
+                        current.copy(
                             phase = phase,
-                            summarizedStatements = if (summarized.isNotEmpty()) summarized else it.summarizedStatements,
+                            summarizedStatements = if (summarized.isNotEmpty()) summarized else current.summarizedStatements,
                             currentStreamSnippet = "",
-                            isFinished = true
+                            isFinished = true,
+                            chatHistory = updatedChat
                         )
                     }
                 } else {
                     if (chunk.isNotEmpty()) {
                         thoughtBuffer.append(chunk)
                         val (summarized, pending) = ThoughtSummarizer.summarize(thoughtBuffer.toString(), isComplete = false)
-                        _aiThinkingState.update {
-                            it.copy(
+                        _aiThinkingState.update { current ->
+                            val updatedChat = current.chatHistory.map { msg ->
+                                if (msg.id == agentThinkingMsgId) {
+                                    msg.copy(
+                                        thinkingPhase = phase,
+                                        thinkingSteps = if (summarized.isNotEmpty()) summarized else msg.thinkingSteps,
+                                        activeStreamSnippet = pending,
+                                        isThinkingActive = true
+                                    )
+                                } else msg
+                            }
+                            current.copy(
                                 phase = phase,
-                                summarizedStatements = if (summarized.isNotEmpty()) summarized else it.summarizedStatements,
-                                currentStreamSnippet = pending
+                                summarizedStatements = if (summarized.isNotEmpty()) summarized else current.summarizedStatements,
+                                currentStreamSnippet = pending,
+                                chatHistory = updatedChat
                             )
                         }
                     } else {
-                        _aiThinkingState.update { it.copy(phase = phase) }
+                        _aiThinkingState.update { current ->
+                            val updatedChat = current.chatHistory.map { msg ->
+                                if (msg.id == agentThinkingMsgId) msg.copy(thinkingPhase = phase) else msg
+                            }
+                            current.copy(phase = phase, chatHistory = updatedChat)
+                        }
                     }
                 }
             }
 
-            val onConceptReady: (bg: String, fg: String) -> Unit = { bg, fg ->
-                _aiThinkingState.update {
-                    it.copy(
+            val onConceptReady: (bg: String, fg: String, concept: String) -> Unit = { bg, fg, concept ->
+                _aiThinkingState.update { current ->
+                    val updatedChat = current.chatHistory.map { msg ->
+                        if (msg.id == agentConceptMsgId) {
+                            msg.copy(text = "Building $concept", concept = concept)
+                        } else msg
+                    }
+                    current.copy(
                         morphBgColor = bg,
                         morphFgColor = fg,
-                        phase = "Morphing Canvas..."
+                        activeConcept = concept,
+                        phase = "Morphing Canvas...",
+                        chatHistory = updatedChat
                     )
                 }
             }
 
-            val result = geminiStylerService.generateUserScript(
-                context = getApplication(),
-                userPrompt = prompt,
-                websiteName = siteName,
-                websiteUrl = tab.url,
-                // The user pressed "apply": always design something new instead of replaying the cached design
-                forceFresh = true,
-                outlineJson = preOutline,
-                initialScreenshotBase64 = initialScreenshotBase64,
-                onThinkingUpdate = onThinkingProgress,
-                onConceptReady = onConceptReady
-            )
-            _isAiStylerLoading.value = false
-            result.onSuccess { script ->
-                thinkingTimerJob?.cancel()
-                val (finalSummaries, _) = ThoughtSummarizer.summarize(thoughtBuffer.toString(), isComplete = true)
-                _aiThinkingState.update {
-                    it.copy(
-                        isActive = false,
-                        isFinished = true,
-                        phase = "Theme Synthesized & Applied",
-                        summarizedStatements = if (finalSummaries.isNotEmpty()) finalSummaries else it.summarizedStatements,
-                        currentStreamSnippet = ""
-                    )
-                }
+            if (isModification) {
+                // Continuation and modification of active design
+                val currentCss = activeTheme!!.activeCss.ifBlank { activeTheme.baseScript }
+                val currentConcept = activeTheme.activeConcept.ifBlank { activeTheme.prompt }
 
-                if (domain.isNotBlank()) {
-                    val theme = WebsiteTheme(
-                        domain = domain,
+                val result = geminiStylerService.modifyUserScript(
+                    context = getApplication(),
+                    userModificationPrompt = prompt,
+                    activeCss = currentCss,
+                    activeConcept = currentConcept,
+                    websiteName = siteName,
+                    websiteUrl = tab.url,
+                    onThinkingUpdate = onThinkingProgress,
+                    onConceptReady = onConceptReady
+                )
+                _isAiStylerLoading.value = false
+                result.onSuccess { blueprint ->
+                    thinkingTimerJob?.cancel()
+                    val (finalSummaries, _) = ThoughtSummarizer.summarize(thoughtBuffer.toString(), isComplete = true)
+                    val script = MydesRuntime.script(blueprint)
+
+                    _aiThinkingState.update { current ->
+                        val updatedChat = current.chatHistory.map { msg ->
+                            if (msg.id == agentThinkingMsgId) {
+                                msg.copy(
+                                    isThinkingActive = false,
+                                    isThinkingFinished = true,
+                                    thinkingPhase = "Modification Applied",
+                                    thinkingSteps = if (finalSummaries.isNotEmpty()) finalSummaries else msg.thinkingSteps,
+                                    activeStreamSnippet = ""
+                                )
+                            } else msg
+                        }
+                        current.copy(
+                            isActive = false,
+                            isFinished = true,
+                            phase = "Modification Applied",
+                            summarizedStatements = if (finalSummaries.isNotEmpty()) finalSummaries else current.summarizedStatements,
+                            currentStreamSnippet = "",
+                            chatHistory = updatedChat
+                        )
+                    }
+
+                    val finalHistory = _aiThinkingState.value.chatHistory
+                    val updatedTheme = activeTheme.copy(
                         prompt = prompt,
                         baseScript = script,
-                        pageScripts = mapOf(tab.url to script)
+                        pageScripts = activeTheme.pageScripts + (tab.url to script),
+                        activeCss = blueprint.customCss,
+                        activeConcept = blueprint.concept,
+                        chatHistory = finalHistory,
+                        bg = blueprint.bg,
+                        fg = blueprint.fg
                     )
-                    _websiteThemes.value = _websiteThemes.value + (domain to theme)
-                }
-                _pendingUserScriptToInject.value = script
+                    _websiteThemes.value = _websiteThemes.value + (domain to updatedTheme)
+                    _pendingUserScriptToInject.value = script
 
-                // Save generated theme along with rendered screenshot to Room database
-                val wv = activeWebViewRef
-                if (wv != null && domain.isNotBlank()) {
-                    kotlinx.coroutines.delay(5000L)
-                    val bitmap = captureWebViewBitmap(wv)
-                    val screenshotPath = if (bitmap != null) saveScreenshotToFile(bitmap) else null
-                    val screenshotBase64 = if (bitmap != null) bitmapToBase64(bitmap) else null
-
-                    val initialThemeEntity = GeneratedThemeEntity(
+                    // Persist updated theme and chat history in database
+                    val entity = GeneratedThemeEntity(
                         domain = domain,
                         websiteUrl = tab.url,
                         websiteTitle = siteName,
                         prompt = prompt,
-                        themeName = prompt,
+                        themeName = blueprint.name,
                         script = script,
-                        screenshotPath = screenshotPath
+                        activeCss = blueprint.customCss,
+                        concept = blueprint.concept,
+                        chatHistoryJson = ThemeChatMessage.listToJson(finalHistory),
+                        bg = blueprint.bg,
+                        fg = blueprint.fg
                     )
-                    val insertedId = browserRepository.saveGeneratedTheme(initialThemeEntity)
-
-                    // Review pass: measured contrast/overflow audit + screenshot (when the capture is real).
-                    // The service can only APPEND fix CSS, so the design itself is never removed or simplified.
-                    val audit = try {
-                        wv.evaluateJsSuspend(MydesRuntime.CONTRAST_AUDIT_JS)
-                    } catch (_: Exception) {
-                        null
-                    }
-                    if (!screenshotBase64.isNullOrBlank() || !audit.isNullOrBlank()) {
-                        val width = wv.width.coerceAtLeast(1080)
-                        val height = wv.height.coerceAtLeast(1920)
-                        val outline = try {
-                            wv.evaluateJsSuspend(MydesRuntime.OUTLINE_PROBE_JS)
-                        } catch (_: Exception) {
-                            null
+                    browserRepository.saveGeneratedTheme(entity)
+                }.onFailure { err ->
+                    thinkingTimerJob?.cancel()
+                    val errMsg = err.message ?: "Failed to apply modification."
+                    _aiStylerErrorMessage.value = errMsg
+                    _aiThinkingState.update { current ->
+                        val updatedChat = current.chatHistory.map { msg ->
+                            if (msg.id == agentThinkingMsgId) {
+                                msg.copy(
+                                    isThinkingActive = false,
+                                    isThinkingFinished = true,
+                                    errorMessage = errMsg,
+                                    thinkingPhase = "Modification issue"
+                                )
+                            } else msg
                         }
-                        val optimizedResult = geminiStylerService.generateUserScriptWithFeedback(
-                            context = getApplication(),
-                            userPrompt = prompt,
-                            websiteName = siteName,
-                            websiteUrl = tab.url,
-                            screenshotBase64 = screenshotBase64,
-                            screenWidth = width,
-                            screenHeight = height,
-                            outlineJson = outline,
-                            auditJson = audit,
-                            onThinkingUpdate = onThinkingProgress,
-                            screenshotPath = screenshotPath
+                        current.copy(
+                            isActive = false,
+                            isFinished = true,
+                            phase = "Modification Encountered an Issue",
+                            currentStreamSnippet = "",
+                            errorMessage = errMsg,
+                            chatHistory = updatedChat
                         )
-                        optimizedResult.onSuccess { optScript ->
-                            // The user may have navigated to another site while the review was running
-                            if (extractDomain(activeTab.value?.url ?: "") != domain) return@onSuccess
-                            // Nothing needed fixing: keep what the user already sees (no re-inject, no flicker)
-                            if (optScript == script) return@onSuccess
-
-                            val currentTheme = _websiteThemes.value[domain]
-                            if (currentTheme != null) {
-                                val updatedTheme = currentTheme.copy(
-                                    baseScript = optScript,
-                                    pageScripts = currentTheme.pageScripts + (tab.url to optScript)
-                                )
-                                _websiteThemes.value = _websiteThemes.value + (domain to updatedTheme)
-                            }
-                            _pendingUserScriptToInject.value = optScript
-
-                            // Update persisted theme record with optimized script and updated screenshot
-                            kotlinx.coroutines.delay(5000L)
-                            val updatedBitmap = captureWebViewBitmap(wv)
-                            val updatedPath = if (updatedBitmap != null) saveScreenshotToFile(updatedBitmap) else screenshotPath
-                            browserRepository.updateGeneratedTheme(
-                                initialThemeEntity.copy(
-                                    id = insertedId,
-                                    script = optScript,
-                                    screenshotPath = updatedPath
-                                )
-                            )
-                        }
                     }
-                } else if (domain.isNotBlank()) {
-                    // Fallback save even if WebView reference wasn't ready
-                    val fallbackTheme = GeneratedThemeEntity(
-                        domain = domain,
-                        websiteUrl = tab.url,
-                        websiteTitle = siteName,
-                        prompt = prompt,
-                        themeName = prompt,
-                        script = script,
-                        screenshotPath = null
-                    )
-                    browserRepository.saveGeneratedTheme(fallbackTheme)
                 }
-            }.onFailure { err ->
-                thinkingTimerJob?.cancel()
-                val errMsg = err.message ?: "Failed to generate styling."
-                _aiStylerErrorMessage.value = errMsg
-                _aiThinkingState.update {
-                    it.copy(
-                        isActive = false,
-                        isFinished = true,
-                        phase = "Synthesis Encountered an Issue",
-                        currentStreamSnippet = "",
-                        errorMessage = errMsg
-                    )
+            } else {
+                // New initial design creation
+                val preOutline = try {
+                    activeWebViewRef?.evaluateJsSuspend(MydesRuntime.OUTLINE_PROBE_JS)
+                } catch (_: Exception) {
+                    null
+                }
+                val initialBitmap = activeWebViewRef?.let { captureWebViewBitmap(it) }
+                val initialScreenshotBase64 = if (initialBitmap != null) bitmapToBase64(initialBitmap) else null
+
+                val result = geminiStylerService.themeSpec(
+                    context = getApplication(),
+                    prompt = prompt,
+                    websiteUrl = tab.url,
+                    pageOutlineJson = preOutline,
+                    screenshotBase64 = initialScreenshotBase64,
+                    forceFresh = true,
+                    onThinkingUpdate = onThinkingProgress,
+                    onConceptReady = onConceptReady
+                )
+                _isAiStylerLoading.value = false
+                result.onSuccess { blueprint ->
+                    thinkingTimerJob?.cancel()
+                    val (finalSummaries, _) = ThoughtSummarizer.summarize(thoughtBuffer.toString(), isComplete = true)
+                    val script = MydesRuntime.script(blueprint)
+
+                    _aiThinkingState.update { current ->
+                        val updatedChat = current.chatHistory.map { msg ->
+                            if (msg.id == agentThinkingMsgId) {
+                                msg.copy(
+                                    isThinkingActive = false,
+                                    isThinkingFinished = true,
+                                    thinkingPhase = "Theme Synthesized & Applied",
+                                    thinkingSteps = if (finalSummaries.isNotEmpty()) finalSummaries else msg.thinkingSteps,
+                                    activeStreamSnippet = ""
+                                )
+                            } else msg
+                        }
+                        current.copy(
+                            isActive = false,
+                            isFinished = true,
+                            phase = "Theme Synthesized & Applied",
+                            summarizedStatements = if (finalSummaries.isNotEmpty()) finalSummaries else current.summarizedStatements,
+                            currentStreamSnippet = "",
+                            chatHistory = updatedChat
+                        )
+                    }
+
+                    val finalHistory = _aiThinkingState.value.chatHistory
+
+                    if (domain.isNotBlank()) {
+                        val theme = WebsiteTheme(
+                            domain = domain,
+                            prompt = prompt,
+                            baseScript = script,
+                            pageScripts = mapOf(tab.url to script),
+                            activeCss = blueprint.customCss,
+                            activeConcept = blueprint.concept,
+                            chatHistory = finalHistory,
+                            bg = blueprint.bg,
+                            fg = blueprint.fg
+                        )
+                        _websiteThemes.value = _websiteThemes.value + (domain to theme)
+                    }
+                    _pendingUserScriptToInject.value = script
+
+                    // Default model for subsequent continued chats is gemini-3.5-flash-lite
+                    _synthesisModel.value = GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE
+                    GeminiStylerService.setSynthesisModel(getApplication(), GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE)
+
+                    // Save generated theme along with rendered screenshot to Room database
+                    val wv = activeWebViewRef
+                    if (wv != null && domain.isNotBlank()) {
+                        kotlinx.coroutines.delay(5000L)
+                        val bitmap = captureWebViewBitmap(wv)
+                        val screenshotPath = if (bitmap != null) saveScreenshotToFile(bitmap) else null
+
+                        val initialThemeEntity = GeneratedThemeEntity(
+                            domain = domain,
+                            websiteUrl = tab.url,
+                            websiteTitle = siteName,
+                            prompt = prompt,
+                            themeName = blueprint.name,
+                            script = script,
+                            screenshotPath = screenshotPath,
+                            activeCss = blueprint.customCss,
+                            concept = blueprint.concept,
+                            chatHistoryJson = ThemeChatMessage.listToJson(finalHistory),
+                            bg = blueprint.bg,
+                            fg = blueprint.fg
+                        )
+                        browserRepository.saveGeneratedTheme(initialThemeEntity)
+                    } else if (domain.isNotBlank()) {
+                        val fallbackTheme = GeneratedThemeEntity(
+                            domain = domain,
+                            websiteUrl = tab.url,
+                            websiteTitle = siteName,
+                            prompt = prompt,
+                            themeName = blueprint.name,
+                            script = script,
+                            screenshotPath = null,
+                            activeCss = blueprint.customCss,
+                            concept = blueprint.concept,
+                            chatHistoryJson = ThemeChatMessage.listToJson(finalHistory),
+                            bg = blueprint.bg,
+                            fg = blueprint.fg
+                        )
+                        browserRepository.saveGeneratedTheme(fallbackTheme)
+                    }
+                }.onFailure { err ->
+                    thinkingTimerJob?.cancel()
+                    val errMsg = err.message ?: "Failed to generate styling."
+                    _aiStylerErrorMessage.value = errMsg
+                    _aiThinkingState.update { current ->
+                        val updatedChat = current.chatHistory.map { msg ->
+                            if (msg.id == agentThinkingMsgId) {
+                                msg.copy(
+                                    isThinkingActive = false,
+                                    isThinkingFinished = true,
+                                    errorMessage = errMsg,
+                                    thinkingPhase = "Synthesis issue"
+                                )
+                            } else msg
+                        }
+                        current.copy(
+                            isActive = false,
+                            isFinished = true,
+                            phase = "Synthesis Encountered an Issue",
+                            currentStreamSnippet = "",
+                            errorMessage = errMsg,
+                            chatHistory = updatedChat
+                        )
+                    }
                 }
             }
         }

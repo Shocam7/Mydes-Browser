@@ -10,6 +10,7 @@ import androidx.webkit.ScriptHandler
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.example.BuildConfig
+import com.squareup.moshi.Json
 import com.squareup.moshi.JsonClass
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
@@ -91,13 +92,14 @@ data class GenerationConfig(
     val maxOutputTokens: Int? = null,
     val responseMimeType: String? = null,
     val topP: Float? = null,
-    val thinkingConfig: ThinkingConfig? = null
+    @Json(name = "thinking_level") val thinkingLevel: String? = null,
+    @Json(name = "thinking_config") val thinkingConfig: ThinkingConfig? = null
 )
 
 @JsonClass(generateAdapter = true)
 data class ThinkingConfig(
-    val thinkingBudget: Int? = null,
-    val thinkingLevel: String? = null
+    @Json(name = "thinking_budget") val thinkingBudget: Int? = null,
+    @Json(name = "thinking_level") val thinkingLevel: String? = null
 )
 
 @JsonClass(generateAdapter = true)
@@ -1173,6 +1175,17 @@ class GeminiStylerService {
             prefs.edit().putString("synthesis_model", model).apply()
         }
 
+        fun getReasoningLevel(context: Context, model: String): String {
+            val prefs = context.getSharedPreferences("mydes_prefs", Context.MODE_PRIVATE)
+            val default = ReasoningModulatorConfig.getDefaultModeForModel(model)
+            return prefs.getString("reasoning_level_$model", default) ?: default
+        }
+
+        fun setReasoningLevel(context: Context, model: String, level: String) {
+            val prefs = context.getSharedPreferences("mydes_prefs", Context.MODE_PRIVATE)
+            prefs.edit().putString("reasoning_level_$model", level.lowercase().trim()).apply()
+        }
+
         fun getNvidiaApiKey(context: Context): String {
             val prefs = context.getSharedPreferences("mydes_prefs", Context.MODE_PRIVATE)
             val customKey = prefs.getString("custom_nvidia_api_key", "") ?: ""
@@ -1234,7 +1247,7 @@ class GeminiStylerService {
         outlineJson: String? = null,
         initialScreenshotBase64: String? = null,
         onThinkingUpdate: ((phase: String, chunk: String, isComplete: Boolean) -> Unit)? = null,
-        onConceptReady: ((bg: String, fg: String) -> Unit)? = null
+        onConceptReady: ((bg: String, fg: String, concept: String) -> Unit)? = null
     ): Result<String> = synthesizeBlueprint(
         context = context,
         prompt = userPrompt,
@@ -1260,7 +1273,7 @@ class GeminiStylerService {
         auditJson: String? = null,
         onThinkingUpdate: ((phase: String, chunk: String, isComplete: Boolean) -> Unit)? = null,
         screenshotPath: String? = null,
-        onConceptReady: ((bg: String, fg: String) -> Unit)? = null
+        onConceptReady: ((bg: String, fg: String, concept: String) -> Unit)? = null
     ): Result<String> = synthesizeBlueprint(
         context = context,
         prompt = userPrompt,
@@ -1307,7 +1320,7 @@ class GeminiStylerService {
         isReviewPass: Boolean = false,
         onThinkingUpdate: ((phase: String, chunk: String, isComplete: Boolean) -> Unit)? = null,
         screenshotPath: String? = null,
-        onConceptReady: ((bg: String, fg: String) -> Unit)? = null
+        onConceptReady: ((bg: String, fg: String, concept: String) -> Unit)? = null
     ): Result<UIBlueprint> = synthesizeBlueprint(
         context = context,
         prompt = prompt,
@@ -1322,6 +1335,203 @@ class GeminiStylerService {
         screenshotPath = screenshotPath,
         onConceptReady = onConceptReady
     )
+
+    /**
+     * Iteratively modifies the currently active design.
+     * The currently active CSS design is injected into the system prompt so the model
+     * understands the exact existing styling and applies the requested modifications.
+     */
+    suspend fun modifyUserScript(
+        context: Context,
+        userModificationPrompt: String,
+        activeCss: String,
+        activeConcept: String,
+        websiteName: String,
+        websiteUrl: String,
+        onThinkingUpdate: ((phase: String, chunk: String, isComplete: Boolean) -> Unit)? = null,
+        onConceptReady: ((bg: String, fg: String, concept: String) -> Unit)? = null
+    ): Result<UIBlueprint> = withContext(Dispatchers.IO) {
+        val cleanPrompt = userModificationPrompt.trim()
+        if (cleanPrompt.isEmpty()) return@withContext Result.failure(IllegalArgumentException("Empty prompt"))
+
+        val geminiApiKey = getApiKey(context)
+        val nvidiaApiKey = getNvidiaApiKey(context)
+
+        val synthesisModel = getSynthesisModel(context)
+        val isNemotronSynthesis = isNvidiaModel(synthesisModel)
+        val activeModel = synthesisModel
+
+        if (isNemotronSynthesis && nvidiaApiKey.isBlank()) {
+            return@withContext Result.failure(IllegalStateException("NVIDIA NIM API key is not set. Please enter your NVIDIA API key in Settings."))
+        }
+        if (!isNemotronSynthesis && geminiApiKey.isBlank()) {
+            return@withContext Result.failure(IllegalStateException("GEMINI_API_KEY is not set. Please set your Gemini API key in Settings."))
+        }
+
+        // Pass 1: Quick Concept Direction for the modification
+        onThinkingUpdate?.invoke("Pass 1: Visual Architecture ($CONCEPT_MODEL)", "Directing modification concept...", false)
+        val conceptInput = buildString {
+            appendLine("USER MODIFICATION REQUEST: \"$cleanPrompt\"")
+            appendLine("ACTIVE DESIGN CONCEPT: \"$activeConcept\"")
+            appendLine("TARGET WEBSITE: $websiteName ($websiteUrl)")
+            appendLine("Specify the modification concept and color tweaks in JSON.")
+        }
+
+        val conceptSystem = """
+            You are the Master Visual Architect modifying an existing website theme.
+            Given the user's requested modification and the current design concept, specify:
+            1. "concept": What modification is being built in one concise phrase (e.g. "Neon pink button accents with glowing borders")
+            2. "bg": background color hex
+            3. "fg": readable foreground text hex
+            Output valid JSON only:
+            {
+              "concept": "concise phrase describing the modification being built",
+              "bg": "#rrggbb",
+              "fg": "#rrggbb"
+            }
+        """.trimIndent()
+
+        var conceptText = cleanPrompt
+        var bg = "#10141D"
+        var fg = "#E6EDF3"
+
+        if (geminiApiKey.isNotBlank()) {
+            try {
+                val rawConcept = callForText(
+                    CONCEPT_MODEL,
+                    geminiApiKey,
+                    conceptSystem,
+                    listOf(Part(text = conceptInput)),
+                    0.8f,
+                    0.9f,
+                    512,
+                    onThoughtChunk = { chunk ->
+                        onThinkingUpdate?.invoke("Pass 1: Visual Architecture", chunk, false)
+                    }
+                )
+                val json = JSONObject(extractJsonObject(rawConcept) ?: "{}")
+                conceptText = (json.optString("concept", "").ifBlank { json.optString("idea", "") }).ifBlank { cleanPrompt }.take(200)
+                val rawBg = json.optString("bg", "#10141D")
+                val rawFg = json.optString("fg", "#E6EDF3")
+                bg = Hex.norm(rawBg, "#10141D")
+                fg = Hex.norm(rawFg, "#E6EDF3")
+                if (Hex.contrast(fg, bg) < 4.0) {
+                    fg = if (Hex.lum(bg) < 0.4) "#f8fafc" else "#0f172a"
+                }
+            } catch (_: Exception) {
+                conceptText = cleanPrompt
+            }
+        }
+
+        onConceptReady?.invoke(bg, fg, conceptText)
+
+        // Pass 2: Consequent CSS Modification Pass
+        // Injects currently active CSS in system prompt per requirement
+        val modelLabel = if (isNemotronSynthesis) "Nemotron 3 Ultra 550B (NVIDIA NIM)" else activeModel
+        onThinkingUpdate?.invoke("Pass 2: 60fps CSS Modification ($modelLabel)", "Compiling modified CSS...", false)
+
+        val modificationSystemPrompt = """
+            You are an expert Pure-CSS Compiler modifying an active website theme.
+            The user wants to iteratively tweak, mold, and update the active design.
+            
+            === CURRENTLY ACTIVE CSS DESIGN ===
+            $activeCss
+            
+            === TASK ===
+            Incorporate the user's requested modifications on top of the active CSS design.
+            Keep what already works in the active design, and update or add the CSS rules requested by the user.
+            
+            CRITICAL PERFORMANCE RULES:
+            - Output ONLY one valid JSON object.
+            - 100% static and GPU-friendly: NO moving particle overlays, NO full-viewport looping animations, NO background-attachment: fixed.
+            - Return valid JSON:
+            {
+              "name": "${conceptText.take(40)}",
+              "dark": true,
+              "bg": "$bg",
+              "surface": "${Hex.mix(bg, "#ffffff", 0.08)}",
+              "surface2": "${Hex.mix(bg, "#ffffff", 0.15)}",
+              "fg": "$fg",
+              "ink": "$fg",
+              "accent": "#00ff88",
+              "concept": "$conceptText",
+              "customCss": "/* Complete modified CSS incorporating the changes cleanly on top of the active CSS */"
+            }
+        """.trimIndent()
+
+        val userContext = buildString {
+            appendLine("MODIFICATION REQUEST: \"$cleanPrompt\"")
+            appendLine("MODIFICATION CONCEPT: \"$conceptText\"")
+            appendLine("TARGET WEBSITE: $websiteName ($websiteUrl)")
+            appendLine("Compile the complete updated CSS with the requested modifications applied on the active design.")
+        }
+
+        val (raw, rawThoughts) = if (isNemotronSynthesis) {
+            callNvidiaNimStream(
+                model = activeModel,
+                apiKey = nvidiaApiKey,
+                systemInstruction = modificationSystemPrompt,
+                userContent = userContext,
+                temperature = 0.5f,
+                topP = 0.95f,
+                maxTokens = NIM_MAX_TOKENS,
+                reasoningLevel = getReasoningLevel(context, activeModel),
+                onThoughtChunk = { chunk ->
+                    onThinkingUpdate?.invoke("Pass 2: CSS Modification", chunk, false)
+                },
+                onOutputChunk = { _ ->
+                    onThinkingUpdate?.invoke("Pass 2: CSS Modification ($activeModel)", "", false)
+                }
+            )
+        } else {
+            val req = GeminiRequest(
+                contents = listOf(Content(parts = listOf(Part(text = userContext)))),
+                systemInstruction = Content(listOf(Part(text = modificationSystemPrompt))),
+                generationConfig = GenerationConfig(
+                    temperature = 0.7f,
+                    topP = 0.95f,
+                    maxOutputTokens = 8192,
+                    responseMimeType = "application/json",
+                    thinkingConfig = ThinkingConfig(thinkingBudget = 2048)
+                )
+            )
+            callGeminiStream(
+                activeModel,
+                req,
+                geminiApiKey,
+                onThoughtChunk = { chunk ->
+                    onThinkingUpdate?.invoke("Pass 2: CSS Modification", chunk, false)
+                }
+            )
+        }
+
+        onThinkingUpdate?.invoke("Theme Modified & Applied", "", true)
+
+        val parsed = UIBlueprint.parse(raw, cleanPrompt)
+            ?: return@withContext Result.failure(IllegalStateException("Failed to parse modified blueprint JSON: ${raw.take(200)}"))
+
+        val finalizedBlueprint = parsed.copy(
+            concept = conceptText,
+            bg = bg,
+            fg = fg
+        )
+
+        val domain = extractSafeDomain(websiteUrl, websiteName)
+        storeFor(context).put(cleanPrompt, finalizedBlueprint, domain, remember = true)
+
+        ApiRequestLogger.logRequest(
+            context = context,
+            type = if (isNemotronSynthesis) "modification (nemotron)" else "modification (gemini)",
+            websiteName = websiteName,
+            websiteUrl = websiteUrl,
+            userPrompt = cleanPrompt,
+            requestPayload = "=== SYSTEM INSTRUCTION ===\n$modificationSystemPrompt\n\n=== USER CONTENT ===\n$userContext",
+            responseResult = raw,
+            isSuccess = true
+        )
+
+        Result.success(finalizedBlueprint)
+    }
 
     // ───── Pass 1: Static Visual Architect (Fast, Token-Efficient, Zero-Lag Design) ─────
 
@@ -1473,7 +1683,7 @@ class GeminiStylerService {
         isReviewPass: Boolean = false,
         onThinkingUpdate: ((phase: String, chunk: String, isComplete: Boolean) -> Unit)? = null,
         screenshotPath: String? = null,
-        onConceptReady: ((bg: String, fg: String) -> Unit)? = null
+        onConceptReady: ((bg: String, fg: String, concept: String) -> Unit)? = null
     ): Result<UIBlueprint> = withContext(Dispatchers.IO) {
         val cleanPrompt = prompt.trim()
         if (cleanPrompt.isEmpty()) return@withContext Result.failure(IllegalArgumentException("Empty prompt"))
@@ -1482,7 +1692,7 @@ class GeminiStylerService {
 
         if (!isReviewPass && screenshotBase64 == null && auditJson == null && !forceFresh) {
             storeFor(context).get(cleanPrompt, domain)?.let {
-                onConceptReady?.invoke(it.bg, it.fg)
+                onConceptReady?.invoke(it.bg, it.fg, it.concept.ifBlank { it.name })
                 return@withContext Result.success(it)
             }
         }
@@ -1520,7 +1730,7 @@ class GeminiStylerService {
         }
 
         if (brief != null) {
-            onConceptReady?.invoke(brief.bg, brief.fg)
+            onConceptReady?.invoke(brief.bg, brief.fg, brief.idea)
         }
 
         if (!isReview) {
@@ -1848,8 +2058,9 @@ OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
                 responseBody.byteStream().bufferedReader().use { reader ->
                     var line = reader.readLine()
                     while (line != null) {
-                        if (line.startsWith("data: ")) {
-                            val jsonStr = line.removePrefix("data: ").trim()
+                        val trimmed = line.trim()
+                        if (trimmed.startsWith("data:")) {
+                            val jsonStr = trimmed.removePrefix("data:").trim()
                             if (jsonStr.isNotEmpty() && jsonStr != "[DONE]") {
                                 try {
                                     val chunk = JSONObject(jsonStr)
@@ -1899,9 +2110,9 @@ OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
                 lastException = e
                 if (e is HttpException && e.code() == 400 && currentRequest.generationConfig != null) {
                     val gc = currentRequest.generationConfig!!
-                    if (gc.thinkingConfig != null) {
+                    if (gc.thinkingConfig != null || gc.thinkingLevel != null) {
                         currentRequest = currentRequest.copy(
-                            generationConfig = gc.copy(thinkingConfig = null)
+                            generationConfig = gc.copy(thinkingConfig = null, thinkingLevel = null)
                         )
                         continue
                     } else if (gc.responseMimeType != null) {
@@ -1924,9 +2135,14 @@ OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
     }
 
     private val NIM_MAX_TOKENS = 8192
-    private fun nimReasoningKwargs(): JSONObject = JSONObject()
-        .put("enable_thinking", true)
-        .put("medium_effort", true)
+    private fun nimReasoningKwargs(reasoningLevel: String = "medium"): JSONObject {
+        return when (reasoningLevel.lowercase()) {
+            "off" -> JSONObject().put("enable_thinking", false)
+            "full" -> JSONObject().put("enable_thinking", true)
+            "medium" -> JSONObject().put("enable_thinking", true).put("medium_effort", true)
+            else -> JSONObject().put("enable_thinking", true).put("medium_effort", true)
+        }
+    }
     @Volatile private var lastNimFinishReason: String? = null
 
     private suspend fun callNvidiaNimStream(
@@ -1937,6 +2153,7 @@ OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
         temperature: Float = 0.6f,
         topP: Float = 0.95f,
         maxTokens: Int = NIM_MAX_TOKENS,
+        reasoningLevel: String = "medium",
         onThoughtChunk: ((String) -> Unit)? = null,
         onOutputChunk: ((String) -> Unit)? = null
     ): Pair<String, String> = withContext(Dispatchers.IO) {
@@ -1953,7 +2170,7 @@ OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
             .put("temperature", temperature)
             .put("top_p", topP)
             .put("max_tokens", maxTokens)
-            .put("chat_template_kwargs", nimReasoningKwargs())
+            .put("chat_template_kwargs", nimReasoningKwargs(reasoningLevel))
             .put("stream", true)
 
         val mediaType = "application/json; charset=utf-8".toMediaType()
@@ -2033,7 +2250,7 @@ OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
             .put("temperature", temperature)
             .put("top_p", topP)
             .put("max_tokens", maxTokens)
-            .put("chat_template_kwargs", nimReasoningKwargs())
+            .put("chat_template_kwargs", nimReasoningKwargs(reasoningLevel))
             .put("stream", false)
 
         val nonStreamReq = Request.Builder()

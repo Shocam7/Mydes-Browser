@@ -53,6 +53,8 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        com.example.data.PrepackageDataSeeder.seedIfNeeded(applicationContext)
+
         val database = MydesDatabase.getInstance(applicationContext)
         val browserRepository = BrowserRepository(database.mydesDao())
         val websiteColorRepository = WebsiteColorRepository(database.mydesDao(), lifecycleScope)

@@ -13,7 +13,7 @@ import com.example.data.model.GeneratedThemeEntity
 
 @Database(
     entities = [BookmarkEntity::class, HistoryEntity::class, DomainColorEntity::class, GeneratedThemeEntity::class],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class MydesDatabase : RoomDatabase() {
@@ -23,13 +23,26 @@ abstract class MydesDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: MydesDatabase? = null
 
+        val MIGRATION_2_3 = object : androidx.room.migration.Migration(2, 3) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `generated_themes` ADD COLUMN `activeCss` TEXT")
+                db.execSQL("ALTER TABLE `generated_themes` ADD COLUMN `concept` TEXT")
+                db.execSQL("ALTER TABLE `generated_themes` ADD COLUMN `chatHistoryJson` TEXT")
+                db.execSQL("ALTER TABLE `generated_themes` ADD COLUMN `bg` TEXT")
+                db.execSQL("ALTER TABLE `generated_themes` ADD COLUMN `fg` TEXT")
+            }
+        }
+
         fun getInstance(context: Context): MydesDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
                     context.applicationContext,
                     MydesDatabase::class.java,
                     "mydes_browser.db"
-                ).fallbackToDestructiveMigration(dropAllTables = true)
+                )
+                    .addMigrations(MIGRATION_2_3)
+                    .createFromAsset("databases/mydes_browser.db")
+                    .fallbackToDestructiveMigration(dropAllTables = false)
                     .build()
                 INSTANCE = instance
                 instance

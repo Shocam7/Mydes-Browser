@@ -18,5 +18,10 @@ data class GeneratedThemeEntity(
     val themeName: String,
     val script: String,
     val screenshotPath: String? = null,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val activeCss: String? = null,
+    val concept: String? = null,
+    val chatHistoryJson: String? = null,
+    val bg: String? = null,
+    val fg: String? = null
 )

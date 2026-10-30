@@ -34,6 +34,9 @@ class BrowserRepository(private val mydesDao: MydesDao) {
     }
 
     // Generated Themes
+    fun getAllGeneratedThemes(): Flow<List<com.example.data.model.GeneratedThemeEntity>> =
+        mydesDao.getAllGeneratedThemes()
+
     fun getGeneratedThemesForDomain(domain: String): Flow<List<com.example.data.model.GeneratedThemeEntity>> =
         mydesDao.getGeneratedThemesForDomain(domain)
 

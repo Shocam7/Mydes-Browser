@@ -133,14 +133,23 @@ fun AiStylerPillBar(
         }
     }
 
-    // Dynamic rotating placeholder examples
-    val placeholders = remember(cleanSiteName) {
-        listOf(
-            "Make my $cleanSiteName look like a masonry art wall",
-            "Make my $cleanSiteName look like the solar system",
-            "Make my $cleanSiteName look like a cyberpunk terminal",
-            "Make my $cleanSiteName look like a vintage newspaper"
-        )
+    // Dynamic rotating placeholder examples (adapts for new creation vs. continued modification)
+    val placeholders = remember(cleanSiteName, isStyleApplied) {
+        if (isStyleApplied) {
+            listOf(
+                "Tweak this style (e.g., make buttons neon pink)",
+                "Modify active design (e.g., darker headers, rounded cards)",
+                "Mold current theme (e.g., glassmorphic cards, gold trims)",
+                "Adjust colors or typography for $cleanSiteName"
+            )
+        } else {
+            listOf(
+                "Make my $cleanSiteName look like a masonry art wall",
+                "Make my $cleanSiteName look like the solar system",
+                "Make my $cleanSiteName look like a cyberpunk terminal",
+                "Make my $cleanSiteName look like a vintage newspaper"
+            )
+        }
     }
 
     var placeholderIndex by remember { mutableIntStateOf(0) }
@@ -299,49 +308,81 @@ fun AiStylerPillBar(
                     }
                 }
 
-                StylerSuggestionChip(
-                    text = "Import Redesign (.json)",
-                    isHighlight = true,
-                    onClick = onOpenImportRedesign
-                )
-                StylerSuggestionChip(
-                    text = "Masonry art wall",
-                    onClick = {
-                        promptInput = "Make my $cleanSiteName look like a masonry art wall"
-                        keyboardController?.hide()
-                        onApplyStyle(promptInput)
-                    }
-                )
-                StylerSuggestionChip(
-                    text = "Solar system",
-                    onClick = {
-                        promptInput = "Make my $cleanSiteName look like the solar system"
-                        keyboardController?.hide()
-                        onApplyStyle(promptInput)
-                    }
-                )
-                StylerSuggestionChip(
-                    text = "Cyberpunk terminal",
-                    onClick = {
-                        promptInput = "Make my $cleanSiteName look like a cyberpunk terminal"
-                        keyboardController?.hide()
-                        onApplyStyle(promptInput)
-                    }
-                )
-                StylerSuggestionChip(
-                    text = "Vintage newspaper",
-                    onClick = {
-                        promptInput = "Make my $cleanSiteName look like a vintage newspaper"
-                        keyboardController?.hide()
-                        onApplyStyle(promptInput)
-                    }
-                )
-
                 if (isStyleApplied) {
+                    StylerSuggestionChip(
+                        text = "Neon pink buttons",
+                        onClick = {
+                            promptInput = "Make all buttons neon pink with glowing hover effect"
+                            keyboardController?.hide()
+                            onApplyStyle(promptInput)
+                        }
+                    )
+                    StylerSuggestionChip(
+                        text = "Frosted glass header",
+                        onClick = {
+                            promptInput = "Make the header frosted glass backdrop with subtle border"
+                            keyboardController?.hide()
+                            onApplyStyle(promptInput)
+                        }
+                    )
+                    StylerSuggestionChip(
+                        text = "Thinner borders",
+                        onClick = {
+                            promptInput = "Refine cards with ultra-thin 1px borders and sleek shadows"
+                            keyboardController?.hide()
+                            onApplyStyle(promptInput)
+                        }
+                    )
+                    StylerSuggestionChip(
+                        text = "Gold accents",
+                        onClick = {
+                            promptInput = "Add metallic gold accents to badges and highlights"
+                            keyboardController?.hide()
+                            onApplyStyle(promptInput)
+                        }
+                    )
                     StylerSuggestionChip(
                         text = "Reset style",
                         isHighlight = true,
                         onClick = onResetStyle
+                    )
+                } else {
+                    StylerSuggestionChip(
+                        text = "Import Redesign (.json)",
+                        isHighlight = true,
+                        onClick = onOpenImportRedesign
+                    )
+                    StylerSuggestionChip(
+                        text = "Masonry art wall",
+                        onClick = {
+                            promptInput = "Make my $cleanSiteName look like a masonry art wall"
+                            keyboardController?.hide()
+                            onApplyStyle(promptInput)
+                        }
+                    )
+                    StylerSuggestionChip(
+                        text = "Solar system",
+                        onClick = {
+                            promptInput = "Make my $cleanSiteName look like the solar system"
+                            keyboardController?.hide()
+                            onApplyStyle(promptInput)
+                        }
+                    )
+                    StylerSuggestionChip(
+                        text = "Cyberpunk terminal",
+                        onClick = {
+                            promptInput = "Make my $cleanSiteName look like a cyberpunk terminal"
+                            keyboardController?.hide()
+                            onApplyStyle(promptInput)
+                        }
+                    )
+                    StylerSuggestionChip(
+                        text = "Vintage newspaper",
+                        onClick = {
+                            promptInput = "Make my $cleanSiteName look like a vintage newspaper"
+                            keyboardController?.hide()
+                            onApplyStyle(promptInput)
+                        }
                     )
                 }
             }
