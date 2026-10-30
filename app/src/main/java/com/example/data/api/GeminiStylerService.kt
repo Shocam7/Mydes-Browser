@@ -50,31 +50,13 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.math.roundToInt
 
-/*
- * v19 - "Zero-Lag 60fps Static Artistry Engine"
- *
- * Designed for Mid-to-High Tier Mobile Devices:
- * 1. Zero GPU Lag & Zero Full-Screen Overdraw:
- *    - Eliminates full-viewport `body::before`/`body::after` particle/blend overlays, continuous
- *      `@keyframes` loops, `background-attachment: fixed`, and per-card `backdrop-filter: blur()`.
- *    - Guarantees native 60fps scrolling performance on mid-tier mobile GPUs.
- * 2. Token-Efficient, High-Craftsmanship Pipeline:
- *    - Pass 1 (Visual Architect) focuses 100% on static visual artistry: rich color harmony,
- *      tactile surface gradients, crisp geometric corner/edge trims, polychromatic :nth-child
- *      rhythms, and expressive typography.
- *    - Pass 2 (Pure CSS Compiler) compiles clean, lightweight, conflict-free CSS with instant
- *      `:active` / `:focus-within` tactile transitions instead of heavy infinite animations.
- *    - Pass 3 (Telemetry & Visual Reviewer) stitches any un-themed host containers (`clashingSurfaces`)
- *      and low-contrast text (`lowContrastText`) without adding heavy overlays.
- */
-
 // ───────────────────────── Gemini wire models ─────────────────────────
 
 @JsonClass(generateAdapter = true)
 data class GeminiRequest(
     val contents: List<Content>,
-    val systemInstruction: Content? = null,
-    val generationConfig: GenerationConfig? = null
+    @Json(name = "system_instruction") val systemInstruction: Content? = null,
+    @Json(name = "generation_config") val generationConfig: GenerationConfig? = null
 )
 
 @JsonClass(generateAdapter = true)
@@ -92,13 +74,6 @@ data class GenerationConfig(
     val maxOutputTokens: Int? = null,
     val responseMimeType: String? = null,
     val topP: Float? = null,
-    @Json(name = "thinking_level") val thinkingLevel: String? = null,
-    @Json(name = "thinking_config") val thinkingConfig: ThinkingConfig? = null
-)
-
-@JsonClass(generateAdapter = true)
-data class ThinkingConfig(
-    @Json(name = "thinking_budget") val thinkingBudget: Int? = null,
     @Json(name = "thinking_level") val thinkingLevel: String? = null
 )
 
@@ -191,19 +166,10 @@ internal fun stripInventedLabels(css: String): String =
         ""
     )
 
-/**
- * 60fps Mobile GPU & Layout Firewall:
- * 1. Strips full-screen `body::before` and `body::after` overlays (eliminates full-screen blend-mode overdraw).
- * 2. Strips `background-attachment: fixed` (which disables hardware-accelerated scrolling on mobile WebViews).
- * 3. Strips `backdrop-filter` on repeating `[data-mydes="card"]` elements (prevents per-card Gaussian blur lag).
- * 4. Repairs mojibake in `content: "..."` and illegal shorthand tokens inside `background-image:`.
- * 5. Protects native Flexbox/Grid layouts and prevents bare `a`/`button` tags from breaking containers.
- */
 internal fun sanitizeGeneratedCss(css: String): String {
     var out = stripInventedLabels(css)
     out = out.replace(Regex("""@import\s+url\([^)]+\)\s*;?""", RegexOption.IGNORE_CASE), "")
 
-    // 1. Strip full-screen body::before and body::after rules & @keyframes to guarantee 60fps scrolling
     out = out.replace(
         Regex("""(?:html\s+)?body::?(?:before|after)\s*\{[^{}]*\}""", RegexOption.IGNORE_CASE),
         ""
@@ -216,22 +182,16 @@ internal fun sanitizeGeneratedCss(css: String): String {
         Regex("""animation(?:-name|-duration|-timing-function|-iteration-count|-direction)?\s*:[^;!}]+(?:!important)?\s*;?""", RegexOption.IGNORE_CASE),
         ""
     )
-
-    // 2. Strip `background-attachment: fixed` (causes severe repaint lag during touch scrolling on Android WebView)
     out = out.replace(
         Regex("""background-attachment\s*:\s*fixed\s*(?:!important)?\s*;?""", RegexOption.IGNORE_CASE),
         ""
     )
-
-    // 3. Strip `backdrop-filter` from repeating `[data-mydes="card"]` rules (major GPU bottleneck on mid-tier phones)
     out = out.replace(Regex("""(\[data-mydes=['"]card['"]\][^{]*\{)([^}]+)\}""", RegexOption.IGNORE_CASE)) { match ->
         val sel = match.groupValues[1]
         val body = match.groupValues[2]
             .replace(Regex("""(?:-webkit-)?backdrop-filter\s*:[^;!}]+(?:!important)?\s*;?""", RegexOption.IGNORE_CASE), "")
         "$sel$body}"
     }
-
-    // 4. Fix corrupted UTF-8 / mojibake inside ::before/::after `content: "..."`
     out = out.replace(Regex("""content\s*:\s*(["'])([^"']*)\1""")) { match ->
         val quote = match.groupValues[1]
         val inner = match.groupValues[2]
@@ -245,8 +205,6 @@ internal fun sanitizeGeneratedCss(css: String): String {
             if (hasMojibake) "content: ${quote}\\2726 ${quote}" else match.value
         }
     }
-
-    // 5. Strip layout-breaking flex-direction overrides & negative margins
     out = out.replace(
         Regex("""flex-direction\s*:\s*column\s*(?:!important)?\s*;?""", RegexOption.IGNORE_CASE),
         ""
@@ -255,14 +213,10 @@ internal fun sanitizeGeneratedCss(css: String): String {
         Regex("""margin(?:-bottom|-top)?\s*:\s*-\d+(?:\.\d+)?(?:px|rem|em|%)\s*(?:!important)?\s*;?""", RegexOption.IGNORE_CASE),
         "margin-bottom: 12px;"
     )
-
-    // 6. Strip unreferenced external SVG url(#id) masks
     out = out.replace(
         Regex("""(?:-webkit-)?mask(?:-image)?\s*:\s*url\([^)]+\)\s*(?:!important)?\s*;?""", RegexOption.IGNORE_CASE),
         ""
     )
-
-    // 7. Syntax Auto-Healer: Clean illegal shorthand placement inside background-image declarations
     out = out.replace(Regex("""background-image\s*:\s*([^;!}]+)""", RegexOption.IGNORE_CASE)) { match ->
         val propVal = match.groupValues[1]
         val cleaned = propVal.replace(
@@ -271,16 +225,12 @@ internal fun sanitizeGeneratedCss(css: String): String {
         )
         "background-image: $cleaned"
     }
-
-    // 8. Prevent [data-mydes="btn"] from forcing fixed square/circle width & height
     out = out.replace(Regex("""(\[data-mydes=['"]btn['"]\][^{]*\{)([^}]+)\}""", RegexOption.IGNORE_CASE)) { match ->
         val sel = match.groupValues[1]
         val body = match.groupValues[2]
             .replace(Regex("""\b(?:width|height)\s*:\s*\d+(?:px|rem|em)\s*(?:!important)?\s*;?""", RegexOption.IGNORE_CASE), "")
         "$sel$body}"
     }
-
-    // 9. Isolate broad 'a' and 'button' tags from box-model mutations
     out = out.replace(Regex("""([^{}@]+)\{([^{}]+)\}""")) { match ->
         val rawSelectors = match.groupValues[1]
         val body = match.groupValues[2]
@@ -672,7 +622,7 @@ function applySheets() {
     '}\n';
 
   var universalBaseCss =
-    'html, body { background-color: var(--m-bg) !important; color: var(--m-fg) !important; }\n' +
+    'html, body { background-color: var(--m-bg) !important; color: var(--m-fg) !important; transition: background-color 0.35s ease, color 0.35s ease; }\n' +
     'main, [role="main"], [data-mydes="main"], [data-mydes="grid"], lazy-list, ytm-rich-grid-renderer, ytm-section-list-renderer, ytm-item-section-renderer, ytm-single-column-browse-results-renderer, #page-manager, #content { background-color: transparent !important; }\n' +
     '[data-mydes="header"], header, .mobile-topbar-header { background-color: var(--m-surface); border-bottom: 2px solid var(--m-accent); }\n' +
     '[data-mydes="search"], yt-searchbox, input[type="search"], input[name="q"], input[name="k"] { background-color: var(--m-surface2); color: var(--m-fg); border: 1px solid var(--m-accent); border-radius: 18px; }\n' +
@@ -747,7 +697,6 @@ function retag(){
   if(!document.body)return;
   var vw = window.innerWidth || 400;
 
-  // 1. Header, Bottom Bar, Search, Chips
   each('header,[role="banner"],#navbar,#nav-main,#navbar-main,.mobile-topbar-header',function(e){if(!inContent(e))put(e,'header');});
   each('footer,[role="contentinfo"],#navFooter,ytm-pivot-bar-renderer',function(e){
     put(e,'bottom-bar');
@@ -768,7 +717,6 @@ function retag(){
     put(e,'chip');
   });
 
-  // 2. Universal & Platform Card Archetypes
   var cardSel = [
     '[data-component-type="s-search-result"]',
     '[data-asin]:not([data-asin=""])',
@@ -794,7 +742,6 @@ function retag(){
     }
   });
 
-  // 3. Geometric Repeating Feed Detector
   var containers = document.querySelectorAll('main, [role="main"], section, ul, ol, lazy-list, [id*="feed" i], [class*="feed" i], [class*="list" i], [class*="results" i], [class*="grid" i]');
   for(var c=0; c<containers.length && c<80; c++) {
     var parent = containers[c];
@@ -822,7 +769,6 @@ function retag(){
 
   each('h1',function(e){putNew(e,'title');});
   each('h2,h3,h4,[class*="media-item-headline"]',function(e){
-    // Only tag headings that are NOT inside channel sub-metadata
     if(e.closest('[class*="byline"],[class*="channel-name"],[class*="metadata-row"]')) return;
     putNew(e,'heading');
   });
@@ -887,22 +833,34 @@ window.__mydes={
   outline:summary,
   exit:function(done){
     if(mo)mo.disconnect();
-    var exitStyle = document.createElement('style');
-    exitStyle.id = '__mydes_exit_anim';
-    exitStyle.textContent = '* { transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1), transform 0.4s cubic-bezier(0.4, 0, 0.2, 1) !important; } [data-mydes], header, footer { opacity: 0.25 !important; transform: scale(0.98) translateY(4px) !important; }';
-    (document.head || document.documentElement).appendChild(exitStyle);
+    var styledEls = document.querySelectorAll('[data-mydes], header, footer');
+    styledEls.forEach(function(el, idx) {
+      var stagger = Math.min(idx * 18, 220);
+      el.style.setProperty('transition', 'all 0.42s cubic-bezier(0.22, 1, 0.36, 1) ' + stagger + 'ms', 'important');
+      el.style.setProperty('transform', 'scale(0.96) translateY(8px)', 'important');
+      el.style.setProperty('opacity', '0.15', 'important');
+      el.style.setProperty('filter', 'blur(2px)', 'important');
+    });
     setTimeout(function() {
       var s = document.getElementById('__mydes_style'); if(s) s.remove();
       var sOld = document.getElementById('mydes-ai-styler-style'); if(sOld) sOld.remove();
-      exitStyle.remove();
-      document.querySelectorAll('[data-mydes]').forEach(function(el) {
-        el.removeAttribute('data-mydes');
-        el.style.opacity = '';
-        el.style.transform = '';
+      styledEls.forEach(function(el) {
+        el.style.setProperty('transform', 'scale(1) translateY(0)', 'important');
+        el.style.setProperty('opacity', '1', 'important');
+        el.style.setProperty('filter', 'none', 'important');
       });
-      document.querySelectorAll('link[id^="__mydes_font_"]').forEach(function(l) { l.remove(); });
-      if(typeof done === 'function') done();
-    }, 400);
+      setTimeout(function() {
+        styledEls.forEach(function(el) {
+          el.removeAttribute('data-mydes');
+          el.style.removeProperty('transition');
+          el.style.removeProperty('transform');
+          el.style.removeProperty('opacity');
+          el.style.removeProperty('filter');
+        });
+        document.querySelectorAll('link[id^="__mydes_font_"]').forEach(function(l) { l.remove(); });
+        if(typeof done === 'function') done();
+      }, 320);
+    }, 380);
   },
   clear:function(){
     if(mo)mo.disconnect();
@@ -911,8 +869,10 @@ window.__mydes={
     var exitS=document.getElementById('__mydes_exit_anim');if(exitS)exitS.remove();
     document.querySelectorAll('[data-mydes]').forEach(function(el){
       el.removeAttribute('data-mydes');
-      el.style.opacity = '';
-      el.style.transform = '';
+      el.style.removeProperty('transition');
+      el.style.removeProperty('transform');
+      el.style.removeProperty('opacity');
+      el.style.removeProperty('filter');
     });
     document.querySelectorAll('link[id^="__mydes_font_"]').forEach(function(l){l.remove();});
   }
@@ -957,10 +917,6 @@ start();
         })();
     """
 
-    /**
-     * Lightweight Computed-DOM Telemetry Probe (~600 tokens):
-     * Inspects `clashingSurfaces`, `lowContrastText`, and `squishedColumns` on the painted page.
-     */
     const val VISUAL_AND_DOM_AUDIT_JS = """
         (function(){
           try {
@@ -1337,9 +1293,12 @@ class GeminiStylerService {
     )
 
     /**
-     * Iteratively modifies the currently active design.
-     * The currently active CSS design is injected into the system prompt so the model
-     * understands the exact existing styling and applies the requested modifications.
+     * Iteratively modifies the currently active design in continued chat.
+     * Injects the currently active CSS design into the system prompt so the model knows
+     * the exact latest design and replies with the modifications applied on it.
+     *
+     * If Nemotron is chosen for continued chat modifications, `enable_thinking` is forced to `false`
+     * with no reasoning effort in `chat_template_kwargs` for rapid CSS responses.
      */
     suspend fun modifyUserScript(
         context: Context,
@@ -1381,12 +1340,12 @@ class GeminiStylerService {
             You are the Master Visual Architect modifying an existing website theme.
             Given the user's requested modification and the current design concept, specify:
             1. "concept": What modification is being built in one concise phrase (e.g. "Neon pink button accents with glowing borders")
-            2. "bg": background color hex
+            2. "background": background color hex
             3. "fg": readable foreground text hex
             Output valid JSON only:
             {
               "concept": "concise phrase describing the modification being built",
-              "bg": "#rrggbb",
+              "background": "#rrggbb",
               "fg": "#rrggbb"
             }
         """.trimIndent()
@@ -1398,21 +1357,25 @@ class GeminiStylerService {
         if (geminiApiKey.isNotBlank()) {
             try {
                 val rawConcept = callForText(
-                    CONCEPT_MODEL,
-                    geminiApiKey,
-                    conceptSystem,
-                    listOf(Part(text = conceptInput)),
-                    0.8f,
-                    0.9f,
-                    512,
+                    model = CONCEPT_MODEL,
+                    apiKey = geminiApiKey,
+                    system = conceptSystem,
+                    parts = listOf(Part(text = conceptInput)),
+                    temperature = 0.8f,
+                    topP = 0.9f,
+                    maxTokens = 512,
+                    thinkingLevel = ReasoningModulatorConfig.resolveGeminiThinkingLevel(
+                        CONCEPT_MODEL,
+                        getReasoningLevel(context, CONCEPT_MODEL)
+                    ),
                     onThoughtChunk = { chunk ->
                         onThinkingUpdate?.invoke("Pass 1: Visual Architecture", chunk, false)
                     }
                 )
                 val json = JSONObject(extractJsonObject(rawConcept) ?: "{}")
                 conceptText = (json.optString("concept", "").ifBlank { json.optString("idea", "") }).ifBlank { cleanPrompt }.take(200)
-                val rawBg = json.optString("bg", "#10141D")
-                val rawFg = json.optString("fg", "#E6EDF3")
+                val rawBg = json.optString("background", "").ifBlank { json.optString("bg", "#10141D") }
+                val rawFg = json.optString("fg", "").ifBlank { json.optString("foreground", "#E6EDF3") }
                 bg = Hex.norm(rawBg, "#10141D")
                 fg = Hex.norm(rawFg, "#E6EDF3")
                 if (Hex.contrast(fg, bg) < 4.0) {
@@ -1427,8 +1390,8 @@ class GeminiStylerService {
 
         // Pass 2: Consequent CSS Modification Pass
         // Injects currently active CSS in system prompt per requirement
-        val modelLabel = if (isNemotronSynthesis) "Nemotron 3 Ultra 550B (NVIDIA NIM)" else activeModel
-        onThinkingUpdate?.invoke("Pass 2: 60fps CSS Modification ($modelLabel)", "Compiling modified CSS...", false)
+        val modelLabel = if (isNemotronSynthesis) "Nemotron 3 Ultra 550B (NVIDIA NIM • Fast Mode)" else activeModel
+        onThinkingUpdate?.invoke("Pass 2: 60fps CSS Modification ($modelLabel)", "Applying modification to active CSS...", false)
 
         val modificationSystemPrompt = """
             You are an expert Pure-CSS Compiler modifying an active website theme.
@@ -1467,6 +1430,7 @@ class GeminiStylerService {
         }
 
         val (raw, rawThoughts) = if (isNemotronSynthesis) {
+            // Requirement 5: In continued chat, Nemotron has no reasoning effort and enable_thinking = false
             callNvidiaNimStream(
                 model = activeModel,
                 apiKey = nvidiaApiKey,
@@ -1475,7 +1439,8 @@ class GeminiStylerService {
                 temperature = 0.5f,
                 topP = 0.95f,
                 maxTokens = NIM_MAX_TOKENS,
-                reasoningLevel = getReasoningLevel(context, activeModel),
+                reasoningLevel = ReasoningModulatorConfig.MODE_OFF,
+                forceNoReasoningForContinuation = true,
                 onThoughtChunk = { chunk ->
                     onThinkingUpdate?.invoke("Pass 2: CSS Modification", chunk, false)
                 },
@@ -1484,6 +1449,10 @@ class GeminiStylerService {
                 }
             )
         } else {
+            val geminiThinkingLevel = ReasoningModulatorConfig.resolveGeminiThinkingLevel(
+                activeModel,
+                getReasoningLevel(context, activeModel)
+            )
             val req = GeminiRequest(
                 contents = listOf(Content(parts = listOf(Part(text = userContext)))),
                 systemInstruction = Content(listOf(Part(text = modificationSystemPrompt))),
@@ -1492,7 +1461,7 @@ class GeminiStylerService {
                     topP = 0.95f,
                     maxOutputTokens = 8192,
                     responseMimeType = "application/json",
-                    thinkingConfig = ThinkingConfig(thinkingBudget = 2048)
+                    thinkingLevel = geminiThinkingLevel
                 )
             )
             callGeminiStream(
@@ -1521,7 +1490,7 @@ class GeminiStylerService {
 
         ApiRequestLogger.logRequest(
             context = context,
-            type = if (isNemotronSynthesis) "modification (nemotron)" else "modification (gemini)",
+            type = if (isNemotronSynthesis) "modification (nemotron-fast)" else "modification ($activeModel)",
             websiteName = websiteName,
             websiteUrl = websiteUrl,
             userPrompt = cleanPrompt,
@@ -1533,7 +1502,7 @@ class GeminiStylerService {
         Result.success(finalizedBlueprint)
     }
 
-    // ───── Pass 1: Static Visual Architect (Fast, Token-Efficient, Zero-Lag Design) ─────
+    // ───── Pass 1: Static Visual Architect ─────
 
     private class ConceptBrief(
         val raw: String,
@@ -1557,6 +1526,7 @@ class GeminiStylerService {
         temperature: Float,
         topP: Float,
         maxTokens: Int,
+        thinkingLevel: String? = null,
         onThoughtChunk: ((String) -> Unit)? = null
     ): String {
         val req = GeminiRequest(
@@ -1566,7 +1536,8 @@ class GeminiStylerService {
                 temperature = temperature,
                 topP = topP,
                 maxOutputTokens = maxTokens,
-                responseMimeType = "application/json"
+                responseMimeType = "application/json",
+                thinkingLevel = thinkingLevel
             )
         )
         return callGeminiStream(model, req, apiKey, onThoughtChunk).first
@@ -1607,25 +1578,30 @@ class GeminiStylerService {
         }
 
         return try {
-            val raw = callForText(
+            val conceptThinkingLevel = ReasoningModulatorConfig.resolveGeminiThinkingLevel(
                 CONCEPT_MODEL,
-                apiKey,
-                UI_CONCEPT_SYSTEM_PROMPT,
-                listOf(Part(text = input)),
-                1.05f,
-                0.95f,
-                1536,
+                getReasoningLevel(context, CONCEPT_MODEL)
+            )
+            val raw = callForText(
+                model = CONCEPT_MODEL,
+                apiKey = apiKey,
+                system = UI_CONCEPT_SYSTEM_PROMPT,
+                parts = listOf(Part(text = input)),
+                temperature = 1.05f,
+                topP = 0.95f,
+                maxTokens = 1536,
+                thinkingLevel = conceptThinkingLevel,
                 onThoughtChunk = { chunk ->
                     onThinkingUpdate?.invoke("Pass 1: Visual Architecture", chunk, false)
                 }
             )
             val json = JSONObject(extractJsonObject(raw) ?: throw IllegalStateException("no JSON in brief: ${raw.take(200)}"))
-            val idea = json.optString("idea", "").trim()
-            if (idea.isBlank()) throw IllegalStateException("brief has no idea: ${raw.take(200)}")
+            val idea = json.optString("concept", "").ifBlank { json.optString("idea", "") }.trim()
+            if (idea.isBlank()) throw IllegalStateException("brief has no concept/idea: ${raw.take(200)}")
 
             val bgRaw = when {
-                json.has("bg") && json.optString("bg").isNotBlank() -> json.optString("bg")
                 json.has("background") && json.optString("background").isNotBlank() -> json.optString("background")
+                json.has("bg") && json.optString("bg").isNotBlank() -> json.optString("bg")
                 else -> Hex.extractFirstHex(json.optString("palette", ""), "#0a0c0e")
             }
             val fgRaw = when {
@@ -1717,6 +1693,7 @@ class GeminiStylerService {
         val synthesisModel = getSynthesisModel(context)
         val isNemotronSynthesis = !isReview && isNvidiaModel(synthesisModel)
         val activeModel = if (isReview) REVIEW_MODEL else synthesisModel
+        val activeReasoningLevel = getReasoningLevel(context, activeModel)
 
         if (isNemotronSynthesis && nvidiaApiKey.isBlank()) {
             return@withContext Result.failure(IllegalStateException("NVIDIA NIM API key is not set. Please enter your NVIDIA API key (nvapi-...) in Settings."))
@@ -1734,7 +1711,7 @@ class GeminiStylerService {
         }
 
         if (!isReview) {
-            val modelLabel = if (isNemotronSynthesis) "Nemotron 3 Ultra 550B (NVIDIA NIM)" else activeModel
+            val modelLabel = if (isNemotronSynthesis) "Nemotron 3 Ultra 550B (NVIDIA NIM • $activeReasoningLevel)" else "$activeModel ($activeReasoningLevel)"
             onThinkingUpdate?.invoke("Pass 2: 60fps Pure CSS Compilation ($modelLabel)", "Compiling lightweight, artistic Pure CSS...", false)
         } else {
             onThinkingUpdate?.invoke("Pass 3: Visual & Telemetry QA ($activeModel)", "Checking live surface contrast and compatibility...", false)
@@ -1773,6 +1750,8 @@ class GeminiStylerService {
             parts.add(Part(inlineData = InlineData(mimeType = "image/jpeg", data = screenshotBase64)))
         }
 
+        val geminiThinkingLevel = ReasoningModulatorConfig.resolveGeminiThinkingLevel(activeModel, activeReasoningLevel)
+
         fun buildReq(jsonMode: Boolean) = GeminiRequest(
             contents = listOf(Content(parts = parts)),
             systemInstruction = Content(listOf(Part(text = if (isReview) UI_REVIEW_SYSTEM_PROMPT else UI_SYNTHESIS_SYSTEM_PROMPT))),
@@ -1781,28 +1760,20 @@ class GeminiStylerService {
                 topP = 0.95f,
                 maxOutputTokens = if (isReview) 3072 else 6144,
                 responseMimeType = if (jsonMode) "application/json" else null,
-                thinkingConfig = ThinkingConfig(thinkingBudget = if (isReview) 512 else 768)
+                thinkingLevel = geminiThinkingLevel
             )
         )
 
         val logType = if (isReview) "reviewBlueprint ($activeModel)" else "buildBlueprint ($activeModel)"
         val requestJson = buildString {
             appendLine("=== TARGET MODEL ===")
-            appendLine(if (isNemotronSynthesis) "$activeModel (NVIDIA NIM)" else activeModel)
+            appendLine(if (isNemotronSynthesis) "$activeModel (NVIDIA NIM • reasoning=$activeReasoningLevel)" else "$activeModel (thinking_level=$geminiThinkingLevel)")
             appendLine()
             appendLine("=== SYSTEM INSTRUCTION ===")
             appendLine(if (isReview) UI_REVIEW_SYSTEM_PROMPT else UI_SYNTHESIS_SYSTEM_PROMPT)
             appendLine()
             appendLine("=== USER CONTENT & PROMPT ===")
             append(userContextText)
-            if (isReview && !screenshotBase64.isNullOrBlank()) {
-                appendLine()
-                appendLine("=== ATTACHED LIVE SCREENSHOT (SENT TO REVIEW AGENT) ===")
-                appendLine("Payload Size: ${screenshotBase64.length / 1024} KB base64 (image/jpeg)")
-                if (!screenshotPath.isNullOrBlank()) {
-                    appendLine("Screenshot File: $screenshotPath")
-                }
-            }
         }
 
         try {
@@ -1815,6 +1786,8 @@ class GeminiStylerService {
                     temperature = 0.6f,
                     topP = 0.95f,
                     maxTokens = NIM_MAX_TOKENS,
+                    reasoningLevel = activeReasoningLevel,
+                    forceNoReasoningForContinuation = false,
                     onThoughtChunk = { chunk ->
                         onThinkingUpdate?.invoke("Pass 2: CSS Engineering", chunk, false)
                     },
@@ -1850,7 +1823,9 @@ class GeminiStylerService {
                 parsed?.copy(
                     concept = brief!!.idea,
                     fingerprint = brief.fingerprint,
-                    designSpec = brief.raw
+                    designSpec = brief.raw,
+                    bg = brief.bg,
+                    fg = brief.fg
                 )
             }
 
@@ -1929,7 +1904,7 @@ class GeminiStylerService {
             ?: previous
     }
 
-    // ───── v19 Prompts: Simple, Artistic, Zero-Lag Static Craftsmanship ─────
+    // ───── v19 Prompts ─────
 
     private val UI_REVIEW_SYSTEM_PROMPT = """
 You are the Pure-CSS QA & Self-Healing Reviewer inside an Android mobile browser.
@@ -1941,26 +1916,25 @@ You receive:
 
 Fix any visual or compatibility defects using lightweight, 60fps static Pure CSS (`fixCss`):
 1. UN-THEMED / CLASHING HOST SURFACES (`clashingSurfaces` in Telemetry or Screenshot):
-   - Every item in `clashingSurfaces` is a visible container, header bar, search box, or card on the live website that ignored the theme (e.g. stayed bright white `#ffffff` on a dark theme).
    - For EVERY selector in `clashingSurfaces`, write an explicit rule in `fixCss` (`html body <sel> { background: var(--m-surface) !important; color: var(--m-fg) !important; border-color: var(--m-accent) !important; }`).
 2. UNREADABLE TEXT (`lowContrastText` in Telemetry or Screenshot):
    - For every selector in `lowContrastText` (contrast < 3.2:1), force readable high-contrast `color: var(--m-fg) !important;` and `text-shadow`.
 3. MISSING STATIC ORNAMENTS FROM PASS 1 SPEC:
-   - If Pass 2 forgot a requested card corner ornament, header border trim, or `:nth-child` color variation, restore it in `fixCss`.
+   - Restore any missing card corner ornament, header border trim, or `:nth-child` color variation in `fixCss`.
 4. ZERO LAG & LAYOUT PROTECTION:
-   - Do NOT add `@keyframes` animations, `body::before`/`body::after` overlays, or `backdrop-filter: blur()`. Never alter `display`, `flex-direction`, `width`, or `height`.
+   - Do NOT add `@keyframes` animations, `body::before`/`body::after` overlays, or `backdrop-filter: blur()`.
 
 OUTPUT: ONLY one valid JSON object, no markdown fences:
 {
   "problems": ["concise list of clashingSurfaces, lowContrastText, or missing ornaments found"],
   "replacedCss": "",
-  "fixCss": "high-specificity static CSS overrides (using !important) that stitch all clashingSurfaces and restore missing details"
+  "fixCss": "high-specificity static CSS overrides (using !important)"
 }
 """.trimIndent()
 
     private val UI_CONCEPT_SYSTEM_PROMPT = """
 You are the Master Visual Architect for a mobile browser that transforms any website into a deeply artistic, decorative, and cohesive thematic world using lightweight, 60fps static Pure CSS.
-You write ZERO CSS code. You decide every visual element and describe **exactly what each element looks like visually** (its colors, geometry, surface patterns, borders, corner ornaments, and lighting) so the CSS Compiler can build it cleanly.
+You write ZERO CSS code. You decide every visual element and describe **exactly what each element looks like visually**.
 
 CRITICAL RULES FOR YOUR VISUAL DECISIONS:
 - Keep it 100% static and GPU-friendly for mid-tier phones: do NOT invent moving particles, full-screen weather overlays (`body::before`/`body::after`), or continuous looping animations!
@@ -1969,18 +1943,20 @@ CRITICAL RULES FOR YOUR VISUAL DECISIONS:
 
 OUTPUT: ONLY one valid JSON object with concrete visual instructions:
 {
+  "concept": "Short, evocative title of the concept being built (e.g., 'Solar System Observatory' or 'Cyberpunk Neon Terminal')",
   "idea": "One sentence summarizing the visual world and artistic direction.",
-  "bg": "#rrggbb (exact base canvas background hex color)",
+  "background": "#rrggbb (exact base canvas background hex color)",
+  "bg": "#rrggbb (same as background)",
   "fg": "#rrggbb (exact primary high-contrast readable text hex color)",
-  "palette": "Exact hex codes and roles: bg (main canvas), surface (primary card/bar), surface2 (elevated/secondary), fg (primary text), ink (headline highlight text), accent (primary glow/trim), plus 2 or 3 distinct secondary/tertiary harmony hex colors for alternating cards and chips.",
-  "typographyAndSymbol": "Exact Google Font names for headings and body text, casing, letter-spacing, text-shadow colors, and one 4-digit CSS Unicode hex escape to prefix main video/article headlines.",
-  "backdropCanvas": "Detailed visual description of the static background canvas (`html, body`): base gradients and subtle repeating grid or texture patterns.",
-  "headerBar": "Detailed visual description of the top header (`[data-mydes=\"header\"]`): its surface gradient, repeating border-bottom decorative trim pattern, box-shadow, and icon colors.",
-  "searchBox": "Detailed visual description of the search input (`[data-mydes=\"search\"]`): its surface material, border, inner/outer glow, text/placeholder colors, and `:focus-within` highlight.",
-  "filterChips": "Detailed visual description of the filter chips (`[data-mydes=\"chip\"]`): their shape, surface gradient, how every 2nd, 3rd, and 4th chip cycles through the harmony palette colors, and how the active/selected chip lights up.",
-  "cardsAndCorners": "Detailed visual description of the content cards (`[data-mydes=\"card\"]`): their surface gradient, subtle interior texture pattern, top/left edge light-trim, 4-corner geometric ornaments or `::before` badge, and how every 2nd and 3rd card cycles through distinct border and shadow colors.",
-  "thumbnailsAndButtons": "Detailed visual description of how card thumbnails (`[data-mydes=\"card\"] img`) are framed and color-graded, and how action buttons (`[data-mydes=\"btn\"]`) are styled.",
-  "bottomBar": "Detailed visual description of the bottom navigation bar (`[data-mydes=\"bottom-bar\"]`): its surface gradient, top-edge decorative trim pattern, and icon styling."
+  "palette": "Exact hex codes and roles: bg (main canvas), surface (primary card/bar), surface2 (elevated/secondary), fg (primary text), ink (headline highlight text), accent (primary glow/trim), plus 2 or 3 distinct secondary/tertiary harmony hex colors.",
+  "typographyAndSymbol": "Exact Google Font names for headings and body text, casing, letter-spacing, text-shadow colors, and one 4-digit CSS Unicode hex escape.",
+  "backdropCanvas": "Detailed visual description of the static background canvas (`html, body`).",
+  "headerBar": "Detailed visual description of the top header (`[data-mydes=\"header\"]`).",
+  "searchBox": "Detailed visual description of the search input (`[data-mydes=\"search\"]`).",
+  "filterChips": "Detailed visual description of the filter chips (`[data-mydes=\"chip\"]`).",
+  "cardsAndCorners": "Detailed visual description of the content cards (`[data-mydes=\"card\"]`).",
+  "thumbnailsAndButtons": "Detailed visual description of how card thumbnails (`[data-mydes=\"card\"] img`) and buttons (`[data-mydes=\"btn\"]`) are styled.",
+  "bottomBar": "Detailed visual description of the bottom navigation bar (`[data-mydes=\"bottom-bar\"]`)."
 }
 """.trimIndent()
 
@@ -1999,22 +1975,6 @@ UNIVERSAL SELECTORS TO TARGET IN `customCss`:
 7. `[data-mydes="heading"], [data-mydes="title"]` (plus `[data-mydes="heading"]::before` and `[data-mydes="heading"] *`)
 8. `[data-mydes="btn"]`
 9. `[data-mydes="bottom-bar"]` (plus `::before`, `::after`) and `[data-mydes="bottom-bar"] svg`
-
-CRITICAL 60FPS PERFORMANCE & VISIBILITY LAWS:
-1. ZERO GPU LAG (NO OVERLAYS, NO CONTINUOUS KEYFRAMES, NO CARD BLUR):
-   - Do NOT create `body::before`, `body::after`, or `@keyframes` animations! Use crisp static gradients, borders, and fast `transition: border-color 0.2s, box-shadow 0.2s` on `:hover`, `:active`, and `:focus-within`.
-   - NEVER use `background-attachment: fixed` on `html, body` or `backdrop-filter: blur()` on `[data-mydes="card"]` (they cause severe scroll lag on mid-tier mobile GPUs).
-2. MULTI-LAYER `background-*` ARRAY ALIGNMENT:
-   - Never put `background` shorthand position/size/repeat tokens (like `0 0/100% 2px no-repeat`) inside `background-image:`!
-   - Always declare `background-image`, `background-size`, `background-position`, and `background-repeat` as separate properties with `!important`, and verify that all 4 properties have the exact same number of comma-separated layers!
-   - On `[data-mydes="header"]`, `[data-mydes="bottom-bar"]`, and `[data-mydes="card"]`, the LAST layer in `background-image` must always be a full-surface `100% 100%` (`no-repeat`) base gradient, while earlier layers draw the repeating edge trims (`repeat-x`) or corner ornaments (`no-repeat`).
-3. UNCLIPPED CARD ORNAMENTS & COMPLETE `:nth-child` OVERRIDES:
-   - Offset corner gradient ornaments inward (`at 10px 10px`) or use `[data-mydes="card"]::before` (`top: 6px; left: 8px;`) so rounded corners (`border-radius`) never clip them.
-   - Whenever you style `[data-mydes="card"]:nth-child(3n+2)` or `:nth-child(3n)` (and chip `:nth-child` rules), ALWAYS set BOTH `border-color: <color> !important;` AND `box-shadow: ... !important;`.
-   - ALWAYS append `!important` to every property inside `[data-mydes="..."]` rules.
-4. PURE BMP UNICODE HEX ESCAPES & NATIVE LAYOUT PROTECTION:
-   - Write symbols as CSS backslash hex escapes (e.g. `content: "\\26A1 ";`)—never raw emojis.
-   - Never alter `display`, `flex-direction`, `width`, `height`, or `aspect-ratio` on `[data-mydes="card"]`, `[data-mydes="btn"]`, or their children. Never add `border` or `padding` to bare `a` or `button` tags.
 
 OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
 {
@@ -2110,9 +2070,9 @@ OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
                 lastException = e
                 if (e is HttpException && e.code() == 400 && currentRequest.generationConfig != null) {
                     val gc = currentRequest.generationConfig!!
-                    if (gc.thinkingConfig != null || gc.thinkingLevel != null) {
+                    if (gc.thinkingLevel != null) {
                         currentRequest = currentRequest.copy(
-                            generationConfig = gc.copy(thinkingConfig = null, thinkingLevel = null)
+                            generationConfig = gc.copy(thinkingLevel = null)
                         )
                         continue
                     } else if (gc.responseMimeType != null) {
@@ -2135,14 +2095,6 @@ OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
     }
 
     private val NIM_MAX_TOKENS = 8192
-    private fun nimReasoningKwargs(reasoningLevel: String = "medium"): JSONObject {
-        return when (reasoningLevel.lowercase()) {
-            "off" -> JSONObject().put("enable_thinking", false)
-            "full" -> JSONObject().put("enable_thinking", true)
-            "medium" -> JSONObject().put("enable_thinking", true).put("medium_effort", true)
-            else -> JSONObject().put("enable_thinking", true).put("medium_effort", true)
-        }
-    }
     @Volatile private var lastNimFinishReason: String? = null
 
     private suspend fun callNvidiaNimStream(
@@ -2154,12 +2106,18 @@ OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
         topP: Float = 0.95f,
         maxTokens: Int = NIM_MAX_TOKENS,
         reasoningLevel: String = "medium",
+        forceNoReasoningForContinuation: Boolean = false,
         onThoughtChunk: ((String) -> Unit)? = null,
         onOutputChunk: ((String) -> Unit)? = null
     ): Pair<String, String> = withContext(Dispatchers.IO) {
         lastNimFinishReason = null
         val fullText = StringBuilder()
         val rawThoughts = StringBuilder()
+
+        val chatTemplateKwargs = ReasoningModulatorConfig.buildNemotronChatTemplateKwargs(
+            mode = reasoningLevel,
+            forceNoReasoningForContinuation = forceNoReasoningForContinuation
+        )
 
         val jsonBody = JSONObject()
             .put("model", model)
@@ -2170,7 +2128,7 @@ OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
             .put("temperature", temperature)
             .put("top_p", topP)
             .put("max_tokens", maxTokens)
-            .put("chat_template_kwargs", nimReasoningKwargs(reasoningLevel))
+            .put("chat_template_kwargs", chatTemplateKwargs)
             .put("stream", true)
 
         val mediaType = "application/json; charset=utf-8".toMediaType()
@@ -2250,7 +2208,7 @@ OUTPUT: ONLY one valid JSON object, no markdown fences, no commentary:
             .put("temperature", temperature)
             .put("top_p", topP)
             .put("max_tokens", maxTokens)
-            .put("chat_template_kwargs", nimReasoningKwargs(reasoningLevel))
+            .put("chat_template_kwargs", chatTemplateKwargs)
             .put("stream", false)
 
         val nonStreamReq = Request.Builder()
@@ -2306,7 +2264,6 @@ class SiteThemeController(
         val currentUrl = withContext(Dispatchers.Main) { webView.url ?: "*" }
         val outlineJson = webView.evaluateJsSuspend(MydesRuntime.OUTLINE_PROBE_JS)
 
-        // 1. Run Pass 1 + Pass 2
         val initialBlueprint = service.themeSpec(
             context = context,
             prompt = prompt,
@@ -2325,7 +2282,6 @@ class SiteThemeController(
             webView.evaluateJavascript(initialJs, null)
         }
 
-        // 2. Run Pass 3 (Live Render Audit + Screenshot Stitch)
         if (includeScreenshot) {
             delay(450)
             val auditJson = webView.evaluateJsSuspend(MydesRuntime.VISUAL_AND_DOM_AUDIT_JS)
