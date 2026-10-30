@@ -50,6 +50,7 @@ import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -82,19 +83,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.example.data.api.GeminiStylerService
+import com.example.data.api.ReasoningModulatorConfig
 import com.example.data.model.GeneratedThemeEntity
 import com.example.ui.viewmodel.AiThinkingState
 import kotlinx.coroutines.delay
 import java.io.File
 
-/**
- * Minimalistic pill-based text bar that swifts out at the bottom
- * when clicking the brush icon.
- *
- * Displays a carousel of previous theme generations for this website along with
- * their screenshots, allowing instantaneous re-application to save AI inference,
- * plus an input bar to generate new 3D/imaginative styles.
- */
 @Composable
 fun AiStylerPillBar(
     visible: Boolean,
@@ -110,8 +105,11 @@ fun AiStylerPillBar(
     onDeleteSavedTheme: (GeneratedThemeEntity) -> Unit = {},
     onResetStyle: () -> Unit,
     onOpenImportRedesign: () -> Unit = {},
-    selectedSynthesisModel: String = com.example.data.api.GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE,
+    selectedSynthesisModel: String = GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE,
     onToggleSynthesisModel: () -> Unit = {},
+    selectedReasoningLevel: String = "low",
+    onCycleReasoningLevel: () -> Unit = {},
+    onSelectReasoningLevel: (String) -> Unit = {},
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -133,7 +131,6 @@ fun AiStylerPillBar(
         }
     }
 
-    // Dynamic rotating placeholder examples (adapts for new creation vs. continued modification)
     val placeholders = remember(cleanSiteName, isStyleApplied) {
         if (isStyleApplied) {
             listOf(
@@ -185,22 +182,26 @@ fun AiStylerPillBar(
                 .padding(horizontal = 14.dp, vertical = 6.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Deactivation cross button on right side just above AiStylerPillBar
-            if (isStyleApplied) {
+            // Requirement 1: Deactivation Cross Button on the right side just above AiStylerPillBar when a theme is active
+            AnimatedVisibility(
+                visible = isStyleApplied,
+                enter = fadeIn(tween(200)) + slideInVertically(initialOffsetY = { it / 2 }),
+                exit = fadeOut(tween(150)) + slideOutVertically(targetOffsetY = { it / 2 })
+            ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 6.dp, end = 2.dp),
+                        .padding(bottom = 8.dp, end = 2.dp),
                     horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(38.dp)
-                            .shadow(4.dp, CircleShape)
+                            .size(40.dp)
+                            .shadow(6.dp, CircleShape)
                             .clip(CircleShape)
                             .background(Color(0xFF1E2024))
-                            .border(1.dp, Color(0xFFFF6B6B).copy(alpha = 0.6f), CircleShape)
+                            .border(1.5.dp, Color(0xFFFF6B6B), CircleShape)
                             .clickable(
                                 interactionSource = remember { MutableInteractionSource() },
                                 indication = ripple(bounded = true),
@@ -231,17 +232,18 @@ fun AiStylerPillBar(
                 Spacer(modifier = Modifier.height(10.dp))
             }
 
-            // 2. Suggestion chips row (with 1-tap Model Switcher)
+            // 2. Controls & Suggestion Chips Row (Model Switcher + Reasoning Modulator + Presets)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = 8.dp)
                     .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                // 1-Tap Quick Model Switcher: Gemini 3.5 Flash Lite <-> Gemini 3.8 Flash <-> Nemotron 3 Ultra (NIM)
-                val isNemotron = selectedSynthesisModel == com.example.data.api.GeminiStylerService.MODEL_NVIDIA_NEMOTRON_3_ULTRA
-                val isGemini38 = selectedSynthesisModel == com.example.data.api.GeminiStylerService.MODEL_GEMINI_38_FLASH
+                // 2A. 1-Tap Quick Model Switcher
+                val isNemotron = selectedSynthesisModel == GeminiStylerService.MODEL_NVIDIA_NEMOTRON_3_ULTRA
+                val isGemini38 = selectedSynthesisModel == GeminiStylerService.MODEL_GEMINI_38_FLASH
 
                 val modelLabel = when {
                     isNemotron -> "Nemotron 3 Ultra (NIM)"
@@ -273,11 +275,7 @@ fun AiStylerPillBar(
                     modifier = Modifier
                         .clip(RoundedCornerShape(16.dp))
                         .background(bgColor)
-                        .border(
-                            width = 1.dp,
-                            color = borderColor,
-                            shape = RoundedCornerShape(16.dp)
-                        )
+                        .border(1.dp, borderColor, RoundedCornerShape(16.dp))
                         .clickable(onClick = onToggleSynthesisModel)
                         .padding(horizontal = 10.dp, vertical = 6.dp)
                         .testTag("toggle_synthesis_model_chip"),
@@ -308,6 +306,25 @@ fun AiStylerPillBar(
                     }
                 }
 
+                // 2B. Requirement 6: Reasoning Modulator Pill
+                val availableModes = remember(selectedSynthesisModel) {
+                    ReasoningModulatorConfig.getAvailableModesForModel(selectedSynthesisModel)
+                }
+                val effectiveReasoningMode = if (isStyleApplied && isNemotron) {
+                    ReasoningModulatorConfig.MODE_OFF
+                } else {
+                    selectedReasoningLevel
+                }
+
+                ReasoningModulatorBar(
+                    model = selectedSynthesisModel,
+                    availableModes = availableModes,
+                    selectedMode = effectiveReasoningMode,
+                    isLockedFastForContinuedNemotron = isStyleApplied && isNemotron,
+                    onSelectMode = onSelectReasoningLevel,
+                    onCycleMode = onCycleReasoningLevel
+                )
+
                 if (isStyleApplied) {
                     StylerSuggestionChip(
                         text = "Neon pink buttons",
@@ -315,6 +332,7 @@ fun AiStylerPillBar(
                             promptInput = "Make all buttons neon pink with glowing hover effect"
                             keyboardController?.hide()
                             onApplyStyle(promptInput)
+                            promptInput = ""
                         }
                     )
                     StylerSuggestionChip(
@@ -323,6 +341,7 @@ fun AiStylerPillBar(
                             promptInput = "Make the header frosted glass backdrop with subtle border"
                             keyboardController?.hide()
                             onApplyStyle(promptInput)
+                            promptInput = ""
                         }
                     )
                     StylerSuggestionChip(
@@ -331,6 +350,7 @@ fun AiStylerPillBar(
                             promptInput = "Refine cards with ultra-thin 1px borders and sleek shadows"
                             keyboardController?.hide()
                             onApplyStyle(promptInput)
+                            promptInput = ""
                         }
                     )
                     StylerSuggestionChip(
@@ -339,12 +359,8 @@ fun AiStylerPillBar(
                             promptInput = "Add metallic gold accents to badges and highlights"
                             keyboardController?.hide()
                             onApplyStyle(promptInput)
+                            promptInput = ""
                         }
-                    )
-                    StylerSuggestionChip(
-                        text = "Reset style",
-                        isHighlight = true,
-                        onClick = onResetStyle
                     )
                 } else {
                     StylerSuggestionChip(
@@ -355,39 +371,39 @@ fun AiStylerPillBar(
                     StylerSuggestionChip(
                         text = "Masonry art wall",
                         onClick = {
-                            promptInput = "Make my $cleanSiteName look like a masonry art wall"
+                            val p = "Make my $cleanSiteName look like a masonry art wall"
                             keyboardController?.hide()
-                            onApplyStyle(promptInput)
+                            onApplyStyle(p)
                         }
                     )
                     StylerSuggestionChip(
                         text = "Solar system",
                         onClick = {
-                            promptInput = "Make my $cleanSiteName look like the solar system"
+                            val p = "Make my $cleanSiteName look like the solar system"
                             keyboardController?.hide()
-                            onApplyStyle(promptInput)
+                            onApplyStyle(p)
                         }
                     )
                     StylerSuggestionChip(
                         text = "Cyberpunk terminal",
                         onClick = {
-                            promptInput = "Make my $cleanSiteName look like a cyberpunk terminal"
+                            val p = "Make my $cleanSiteName look like a cyberpunk terminal"
                             keyboardController?.hide()
-                            onApplyStyle(promptInput)
+                            onApplyStyle(p)
                         }
                     )
                     StylerSuggestionChip(
                         text = "Vintage newspaper",
                         onClick = {
-                            promptInput = "Make my $cleanSiteName look like a vintage newspaper"
+                            val p = "Make my $cleanSiteName look like a vintage newspaper"
                             keyboardController?.hide()
-                            onApplyStyle(promptInput)
+                            onApplyStyle(p)
                         }
                     )
                 }
             }
 
-            // 3. Main Pill Bar for New Prompt Input
+            // 3. Main Pill Bar for Prompt / Chat Continuation Input
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -402,7 +418,6 @@ fun AiStylerPillBar(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Left Brush / Sparkle emblem
                     Box(
                         modifier = Modifier
                             .size(36.dp)
@@ -420,7 +435,6 @@ fun AiStylerPillBar(
 
                     Spacer(modifier = Modifier.width(10.dp))
 
-                    // Text Field with rotating placeholder
                     Box(
                         modifier = Modifier
                             .weight(1f)
@@ -446,6 +460,7 @@ fun AiStylerPillBar(
                                     val target = promptInput.ifBlank { currentPlaceholder }
                                     keyboardController?.hide()
                                     onApplyStyle(target)
+                                    promptInput = ""
                                 }
                             ),
                             decorationBox = { innerTextField ->
@@ -462,7 +477,6 @@ fun AiStylerPillBar(
                         )
                     }
 
-                    // Import external redesign file button
                     IconButton(
                         onClick = onOpenImportRedesign,
                         modifier = Modifier
@@ -481,7 +495,6 @@ fun AiStylerPillBar(
 
                     Spacer(modifier = Modifier.width(6.dp))
 
-                    // Action: Loading spinner OR Submit button
                     if (isLoading) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(24.dp),
@@ -494,6 +507,7 @@ fun AiStylerPillBar(
                                 val target = promptInput.ifBlank { currentPlaceholder }
                                 keyboardController?.hide()
                                 onApplyStyle(target)
+                                promptInput = ""
                             },
                             modifier = Modifier
                                 .size(36.dp)
@@ -503,14 +517,13 @@ fun AiStylerPillBar(
                         ) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.Send,
-                                contentDescription = "Redesign website with Gemini",
+                                contentDescription = "Submit prompt",
                                 tint = Color.White,
                                 modifier = Modifier.size(16.dp)
                             )
                         }
                     }
 
-                    // Close pill button
                     IconButton(
                         onClick = onDismiss,
                         modifier = Modifier
@@ -527,7 +540,6 @@ fun AiStylerPillBar(
                 }
             }
 
-            // Error notice if generation had an issue
             if (!errorMessage.isNullOrBlank() && !thinkingState.isActive) {
                 Text(
                     text = errorMessage,
@@ -541,230 +553,89 @@ fun AiStylerPillBar(
 }
 
 /**
- * Modern Chatbot-style Thinking Display Panel.
- * Shows live streaming thinking tokens parsed into readable, concise summarized statements,
- * an active typing cursor for the currently arriving reasoning sentence, elapsed duration,
- * and an expand/collapse toggle.
+ * Segmented Reasoning Modulator Pill:
+ * Displays available reasoning levels for the currently selected model:
+ * - Nemotron: OFF | Medium | Full
+ * - Gemini 3.8 Flash: Low | Medium | High
+ * - Gemini 3.5 Flash Lite: Minimal | Low | Medium | High
  */
 @Composable
-fun AiThinkingDisplayPanel(
-    state: AiThinkingState,
-    modifier: Modifier = Modifier
+private fun ReasoningModulatorBar(
+    model: String,
+    availableModes: List<String>,
+    selectedMode: String,
+    isLockedFastForContinuedNemotron: Boolean,
+    onSelectMode: (String) -> Unit,
+    onCycleMode: () -> Unit
 ) {
-    var isExpanded by remember { mutableStateOf(true) }
-
-    // Auto-expand whenever active thinking begins
-    LaunchedEffect(state.isActive) {
-        if (state.isActive) {
-            isExpanded = true
-        }
-    }
-
-    val infiniteTransition = rememberInfiniteTransition(label = "thinking_anim")
-    val pulseAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.45f,
-        targetValue = 1.0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(850, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "pulseAlpha"
-    )
-    val rotationAngle by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(2800, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "rotation"
-    )
-
-    Box(
-        modifier = modifier
-            .shadow(8.dp, RoundedCornerShape(18.dp))
-            .clip(RoundedCornerShape(18.dp))
-            .background(Color(0xFF191C22))
-            .border(
-                1.dp,
-                if (state.isActive) Color(0xFF384050).copy(alpha = pulseAlpha) else Color(0xFF2A2E38),
-                RoundedCornerShape(18.dp)
-            )
-            .padding(horizontal = 14.dp, vertical = 10.dp)
-            .testTag("ai_thinking_display_panel")
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(Color(0xFF1E2024))
+            .border(1.dp, Color(0xFF3A3F4B), RoundedCornerShape(16.dp))
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .testTag("reasoning_modulator_bar"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            // Header Row: Icon, Phase Title, Duration, Expand/Collapse
-            Row(
+        Icon(
+            imageVector = Icons.Default.Psychology,
+            contentDescription = "Reasoning Modulator",
+            tint = Color(0xFFF6C343),
+            modifier = Modifier
+                .size(15.dp)
+                .clickable(onClick = onCycleMode)
+        )
+        Text(
+            text = "Think:",
+            color = Color(0xFFCFD5DE),
+            fontSize = 10.5.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.clickable(onClick = onCycleMode)
+        )
+
+        if (isLockedFastForContinuedNemotron) {
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(
-                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                        indication = null,
-                        onClick = { isExpanded = !isExpanded }
-                    ),
-                verticalAlignment = Alignment.CenterVertically
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color(0xFF76B900).copy(alpha = 0.25f))
+                    .border(0.8.dp, Color(0xFF76B900), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 7.dp, vertical = 2.dp)
             ) {
-                // Status icon with live animation
+                Text(
+                    text = "OFF (Rapid Chat)",
+                    color = Color(0xFF9BE61D),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        } else {
+            availableModes.forEach { mode ->
+                val isSelected = selectedMode.equals(mode, ignoreCase = true)
+                val label = ReasoningModulatorConfig.getDisplayLabel(model, mode)
                 Box(
-                    modifier = Modifier.size(20.dp),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(
+                            if (isSelected) Color(0xFFF6C343) else Color(0xFF2B2F38)
+                        )
+                        .clickable { onSelectMode(mode) }
+                        .padding(horizontal = 7.dp, vertical = 2.dp)
+                        .testTag("reasoning_mode_option_$mode"),
                     contentAlignment = Alignment.Center
                 ) {
-                    when {
-                        state.isActive -> {
-                            Icon(
-                                imageVector = Icons.Default.AutoAwesome,
-                                contentDescription = "AI Thinking",
-                                tint = Color(0xFFF6C343),
-                                modifier = Modifier
-                                    .size(16.dp)
-                                    .rotate(rotationAngle)
-                            )
-                        }
-                        state.errorMessage != null -> {
-                            Icon(
-                                imageVector = Icons.Default.ErrorOutline,
-                                contentDescription = "Thinking Error",
-                                tint = Color(0xFFE57373),
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                        else -> {
-                            Icon(
-                                imageVector = Icons.Default.CheckCircle,
-                                contentDescription = "Thinking Completed",
-                                tint = Color(0xFF4CAF50),
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.width(8.dp))
-
-                // Phase Title / Status
-                val displayTitle = when {
-                    state.isActive -> state.phase.ifBlank { "Thinking & Reasoning..." }
-                    state.errorMessage != null -> "Thinking interrupted"
-                    else -> "Thought process complete (${state.summarizedStatements.size} steps)"
-                }
-
-                Text(
-                    text = displayTitle,
-                    color = if (state.isActive) Color(0xFFE8ECF2) else Color(0xFFBAC2CF),
-                    fontSize = 12.5.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-
-                // Duration badge
-                if (state.durationSeconds > 0) {
                     Text(
-                        text = "• ${state.durationSeconds}s",
-                        color = Color(0xFF8B94A3),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium,
-                        modifier = Modifier.padding(horizontal = 4.dp)
+                        text = label,
+                        color = if (isSelected) Color(0xFF141619) else Color(0xFF9EA6B4),
+                        fontSize = 10.sp,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
                     )
-                }
-
-                // Expand / Collapse Chevron
-                IconButton(
-                    onClick = { isExpanded = !isExpanded },
-                    modifier = Modifier.size(24.dp)
-                ) {
-                    Icon(
-                        imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                        contentDescription = if (isExpanded) "Collapse thoughts" else "Expand thoughts",
-                        tint = Color(0xFF8B94A3),
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-            }
-
-            // Expanded Body: Summarized Statements & Active Streaming Snippet
-            AnimatedVisibility(
-                visible = isExpanded,
-                enter = fadeIn() + slideInVertically(),
-                exit = fadeOut() + slideOutVertically()
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp)
-                ) {
-                    // Divider
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(1.dp)
-                            .background(Color(0xFF2B303B))
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Summarized Statements List
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        state.summarizedStatements.forEachIndexed { index, statement ->
-                            val isLatest = index == state.summarizedStatements.lastIndex && state.isActive && state.currentStreamSnippet.isEmpty()
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.Top
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .padding(top = 5.dp, end = 8.dp)
-                                        .size(5.dp)
-                                        .clip(CircleShape)
-                                        .background(if (isLatest) Color(0xFF00E5FF) else Color(0xFF6B7485))
-                                )
-                                Text(
-                                    text = statement,
-                                    color = if (isLatest) Color(0xFFF0F4F8) else Color(0xFFC4CBD4),
-                                    fontSize = 12.sp,
-                                    fontWeight = if (isLatest) FontWeight.Medium else FontWeight.Normal,
-                                    lineHeight = 16.sp
-                                )
-                            }
-                        }
-
-                        // Live Streaming Active Snippet with animated cursor
-                        if (state.isActive && state.currentStreamSnippet.isNotBlank()) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.Top
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .padding(top = 5.dp, end = 8.dp)
-                                        .size(5.dp)
-                                        .clip(CircleShape)
-                                        .background(Color(0xFF00E5FF).copy(alpha = pulseAlpha))
-                                )
-                                Text(
-                                    text = "${state.currentStreamSnippet} ▊",
-                                    color = Color(0xFF81D4FA),
-                                    fontSize = 12.sp,
-                                    fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
-                                    lineHeight = 16.sp
-                                )
-                            }
-                        }
-                    }
                 }
             }
         }
     }
 }
 
-/**
- * Horizontal Carousel displaying saved designs with screenshots for the current website.
- */
 @Composable
 private fun PreviousGenerationsSection(
     generations: List<GeneratedThemeEntity>,
@@ -783,7 +654,6 @@ private fun PreviousGenerationsSection(
             .testTag("previous_themes_carousel_container")
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
-            // Header Row
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -822,7 +692,7 @@ private fun PreviousGenerationsSection(
                 }
 
                 Text(
-                    text = "Tap to apply (saves AI inference)",
+                    text = "Tap to apply & view chat",
                     color = Color(0xFF9EACB9),
                     fontSize = 11.sp
                 )
@@ -830,7 +700,6 @@ private fun PreviousGenerationsSection(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Carousel List
             LazyRow(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -879,7 +748,6 @@ private fun ThemeCarouselCard(
             .clickable(onClick = onApply)
             .semantics { contentDescription = "Saved design: ${theme.prompt}" }
     ) {
-        // Screenshot Preview Image or Fallback Gradient
         if (screenshotFile != null && screenshotFile.exists()) {
             AsyncImage(
                 model = screenshotFile,
@@ -907,7 +775,6 @@ private fun ThemeCarouselCard(
             }
         }
 
-        // Dark gradient scrim overlay on bottom for high contrast readability
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -922,7 +789,6 @@ private fun ThemeCarouselCard(
                 )
         )
 
-        // Top badges row: Status (Active / Apply) & Delete button
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -970,7 +836,6 @@ private fun ThemeCarouselCard(
                 }
             }
 
-            // Delete generation button
             Box(
                 modifier = Modifier
                     .size(22.dp)
@@ -988,7 +853,6 @@ private fun ThemeCarouselCard(
             }
         }
 
-        // Bottom Title & Time
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
