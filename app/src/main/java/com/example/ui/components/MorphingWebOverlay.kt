@@ -168,10 +168,8 @@ fun MorphingWebOverlay(
                 ) {
                     ThemeChatPanel(
                         state = state,
-                        websiteName = websiteName,
                         bgColor = parsedBg,
                         fgColor = parsedFg,
-                        onDismiss = onDismiss,
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -183,10 +181,8 @@ fun MorphingWebOverlay(
 @Composable
 private fun ThemeChatPanel(
     state: AiThinkingState,
-    websiteName: String,
     bgColor: Color,
     fgColor: Color,
-    onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -198,84 +194,13 @@ private fun ThemeChatPanel(
     }
 
     Column(modifier = modifier.fillMaxSize()) {
-        // Header positioned cleanly so standalone top-left Settings and top-right Brush stay unobstructed
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 64.dp, start = 72.dp, end = 72.dp, bottom = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.weight(1f)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(30.dp)
-                        .clip(CircleShape)
-                        .background(fgColor.copy(alpha = 0.15f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.AutoAwesome,
-                        contentDescription = "Design Studio",
-                        tint = fgColor,
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
-                Column {
-                    Text(
-                        text = if (websiteName.isNotBlank()) websiteName else "Design Studio",
-                        color = fgColor,
-                        fontSize = 13.5.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = if (state.isActive) "Morphing website..." else "Theme Chat History (Tap X to view page)",
-                        color = fgColor.copy(alpha = 0.72f),
-                        fontSize = 11.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-
-            IconButton(
-                onClick = onDismiss,
-                modifier = Modifier
-                    .size(34.dp)
-                    .clip(CircleShape)
-                    .background(bgColor.copy(alpha = 0.85f))
-                    .border(1.dp, fgColor.copy(alpha = 0.35f), CircleShape)
-                    .testTag("dismiss_morph_overlay_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Close,
-                    contentDescription = "Minimize chat overlay",
-                    tint = fgColor,
-                    modifier = Modifier.size(16.dp)
-                )
-            }
-        }
-
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(1.dp)
-                .background(fgColor.copy(alpha = 0.15f))
-        )
-
         LazyColumn(
             state = listState,
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
                 .testTag("theme_chat_messages_list"),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 190.dp),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 68.dp, bottom = 220.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             items(state.chatHistory, key = { it.id }) { message ->

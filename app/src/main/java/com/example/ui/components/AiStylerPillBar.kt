@@ -58,6 +58,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -100,6 +101,7 @@ fun AiStylerPillBar(
     thinkingState: AiThinkingState = AiThinkingState(),
     previousGenerations: List<GeneratedThemeEntity> = emptyList(),
     currentAppliedPrompt: String? = null,
+    currentAppliedConcept: String? = null,
     onApplyStyle: (prompt: String) -> Unit,
     onApplySavedTheme: (GeneratedThemeEntity) -> Unit = {},
     onDeleteSavedTheme: (GeneratedThemeEntity) -> Unit = {},
@@ -176,12 +178,24 @@ fun AiStylerPillBar(
                 ),
         modifier = modifier
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 6.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            // MorphingWebOverlay is part of AiStylerPillBar: appears & exits together
+            if (thinkingState.morphBgColor != null || thinkingState.chatHistory.isNotEmpty() || thinkingState.isActive) {
+                MorphingWebOverlay(
+                    state = thinkingState,
+                    websiteName = websiteName,
+                    onDismiss = onDismiss,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
             // Requirement 1: Deactivation Cross Button on the right side just above AiStylerPillBar when a theme is active
             AnimatedVisibility(
                 visible = isStyleApplied,
@@ -226,6 +240,7 @@ fun AiStylerPillBar(
                 PreviousGenerationsSection(
                     generations = previousGenerations,
                     currentAppliedPrompt = currentAppliedPrompt,
+                    currentAppliedConcept = currentAppliedConcept,
                     onApply = onApplySavedTheme,
                     onDelete = onDeleteSavedTheme
                 )
@@ -551,6 +566,7 @@ fun AiStylerPillBar(
         }
     }
 }
+}
 
 /**
  * Segmented Reasoning Modulator Pill:
@@ -640,6 +656,7 @@ private fun ReasoningModulatorBar(
 private fun PreviousGenerationsSection(
     generations: List<GeneratedThemeEntity>,
     currentAppliedPrompt: String?,
+    currentAppliedConcept: String? = null,
     onApply: (GeneratedThemeEntity) -> Unit,
     onDelete: (GeneratedThemeEntity) -> Unit
 ) {
@@ -708,7 +725,8 @@ private fun PreviousGenerationsSection(
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp)
             ) {
                 items(generations, key = { it.id }) { theme ->
-                    val isActive = currentAppliedPrompt == theme.prompt
+                    val isActive = (currentAppliedPrompt != null && currentAppliedPrompt == theme.prompt) ||
+                        (currentAppliedConcept != null && (currentAppliedConcept == theme.concept || currentAppliedConcept == theme.themeName))
 
                     ThemeCarouselCard(
                         theme = theme,
@@ -729,8 +747,30 @@ private fun ThemeCarouselCard(
     onApply: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val context = LocalContext.current
     val screenshotFile = remember(theme.screenshotPath) {
-        if (!theme.screenshotPath.isNullOrBlank()) File(theme.screenshotPath) else null
+        val path = theme.screenshotPath
+        if (!path.isNullOrBlank()) {
+            val f = java.io.File(path)
+            if (f.exists()) {
+                f
+            } else {
+                val filename = f.name
+                val themeFilesDir = java.io.File(context.filesDir, "theme_screenshots")
+                val reviewFilesDir = java.io.File(context.filesDir, "review_screenshots")
+                val f1 = java.io.File(themeFilesDir, filename)
+                val f2 = java.io.File(reviewFilesDir, filename)
+                val f3 = java.io.File(context.filesDir, filename)
+                when {
+                    f1.exists() -> f1
+                    f2.exists() -> f2
+                    f3.exists() -> f3
+                    else -> null
+                }
+            }
+        } else {
+            null
+        }
     }
 
     Box(
@@ -812,7 +852,7 @@ private fun ThemeCarouselCard(
                         )
                         Spacer(modifier = Modifier.width(3.dp))
                         Text(
-                            text = "ACTIVE",
+                            text = "APPLIED",
                             color = Color.White,
                             fontSize = 9.sp,
                             fontWeight = FontWeight.Bold

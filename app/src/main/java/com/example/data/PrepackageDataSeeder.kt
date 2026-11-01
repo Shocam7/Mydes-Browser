@@ -35,10 +35,14 @@ object PrepackageDataSeeder {
                     dbFile.path, null, android.database.sqlite.SQLiteDatabase.OPEN_READONLY
                 )
                 db.use {
-                    val cursor = it.rawQuery("SELECT count(*) FROM generated_themes", null)
+                    val cursor = it.rawQuery("SELECT count(*), count(concept) FROM generated_themes", null)
                     cursor.use { c ->
-                        if (c.moveToFirst() && c.getInt(0) == 0) {
-                            shouldCopy = true
+                        if (c.moveToFirst()) {
+                            val total = c.getInt(0)
+                            val withConcept = c.getInt(1)
+                            if (total == 0 || withConcept < total) {
+                                shouldCopy = true
+                            }
                         }
                     }
                 }

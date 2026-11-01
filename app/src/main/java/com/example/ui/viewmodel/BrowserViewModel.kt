@@ -238,8 +238,8 @@ class BrowserViewModel(
         val fg: String = "#E6EDF3"
     )
 
-    private val _websiteThemes = MutableStateFlow>(emptyMap())
-    val websiteThemes: StateFlow> = _websiteThemes.asStateFlow()
+    private val _websiteThemes = MutableStateFlow<Map<String, WebsiteTheme>>(emptyMap())
+    val websiteThemes: StateFlow<Map<String, WebsiteTheme>> = _websiteThemes.asStateFlow()
 
     private val _isAiStylerPillVisible = MutableStateFlow(false)
     val isAiStylerPillVisible: StateFlow<Boolean> = _isAiStylerPillVisible.asStateFlow()
@@ -267,11 +267,29 @@ class BrowserViewModel(
      */
     val isCustomStyleApplied: StateFlow<Boolean> = combine(activeTab, _websiteThemes) { tab, themes ->
         val domain = extractDomain(tab?.url ?: "")
-        domain.isNotBlank() && themes.containsKey(domain)
+        if (domain.isBlank()) false
+        else {
+            themes.containsKey(domain) || themes.keys.any { extractDomain(it) == domain }
+        }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
-    val previousGenerationsForCurrentDomain: StateFlow<List<GeneratedThemeEntity>> = browserRepository.getAllGeneratedThemes()
-        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+    val previousGenerationsForCurrentDomain: StateFlow<List<GeneratedThemeEntity>> = combine(
+        browserRepository.getAllGeneratedThemes(),
+        activeTab
+    ) { themes, tab ->
+        val currentUrl = tab?.url ?: ""
+        val currentDomain = extractDomain(currentUrl)
+        if (currentDomain.isBlank()) {
+            themes
+        } else {
+            themes.filter { theme ->
+                val themeDomain = extractDomain(theme.domain.ifBlank { theme.websiteUrl })
+                themeDomain.isBlank() ||
+                currentDomain.contains(themeDomain, ignoreCase = true) ||
+                themeDomain.contains(currentDomain, ignoreCase = true)
+            }
+        }
+    }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     private var backgroundAdaptationJob: kotlinx.coroutines.Job? = null
     private var lastAdaptedUrl: String = ""
@@ -279,8 +297,11 @@ class BrowserViewModel(
     fun extractDomain(url: String): String {
         if (url.isBlank()) return ""
         return try {
-            val uri = android.net.Uri.parse(url)
-            val host = uri.host?.lowercase() ?: ""
+            val host = if (url.contains("://")) {
+                android.net.Uri.parse(url).host?.lowercase() ?: ""
+            } else {
+                url.substringBefore('/').substringBefore(':').lowercase().trim()
+            }
             var clean = if (host.startsWith("www.")) host.removePrefix("www.") else host
             if (clean.startsWith("m.")) clean = clean.removePrefix("m.")
             clean
@@ -296,6 +317,7 @@ class BrowserViewModel(
         if (nextVisible) {
             val domain = extractDomain(activeTab.value?.url ?: "")
             val activeTheme = _websiteThemes.value[domain]
+                ?: _websiteThemes.value.values.firstOrNull { extractDomain(it.domain) == domain }
             if (activeTheme != null) {
                 _aiThinkingState.update {
                     it.copy(
@@ -313,14 +335,88 @@ class BrowserViewModel(
         _isAiStylerPillVisible.value = false
     }
 
+    private fun resolveThemeMetadata(theme: GeneratedThemeEntity): Triple<String, String, String> {
+        var concept = theme.concept?.takeIf { it.isNotBlank() }
+        var bg = theme.bg?.takeIf { it.isNotBlank() }
+        var fg = theme.fg?.takeIf { it.isNotBlank() }
+
+        // 1. Try to extract from script's JSON config argument
+        if (concept == null || bg == null || fg == null) {
+            val script = theme.script
+            val idx = script.lastIndexOf("})(")
+            if (idx != -1) {
+                val arg = script.substring(idx + 3).trim().removeSuffix(";").removeSuffix(")")
+                try {
+                    val json = org.json.JSONObject(arg)
+                    if (concept == null && json.has("concept") && !json.isNull("concept")) {
+                        val c = json.optString("concept")
+                        if (c.isNotBlank()) concept = c
+                    }
+                    if (bg == null && json.has("bg") && !json.isNull("bg")) {
+                        val b = json.optString("bg")
+                        if (b.isNotBlank()) bg = b
+                    }
+                    if (fg == null && json.has("fg") && !json.isNull("fg")) {
+                        val f = json.optString("fg")
+                        if (f.isNotBlank()) fg = f
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+
+        // 2. Fallback to request_logs.json if still missing
+        if (concept == null || bg == null || fg == null) {
+            try {
+                val logsFile = java.io.File(getApplication<Application>().filesDir, "request_logs.json")
+                val logContent = if (logsFile.exists()) {
+                    logsFile.readText()
+                } else {
+                    getApplication<Application>().assets.open("files/request_logs.json").bufferedReader().use { it.readText() }
+                }
+                val array = org.json.JSONArray(logContent)
+                for (i in 0 until array.length()) {
+                    val obj = array.getJSONObject(i)
+                    val req = obj.optString("requestPayload", "")
+                    val resp = obj.optString("responseResult", "")
+                    if (req.contains(theme.prompt, ignoreCase = true) ||
+                        (theme.themeName.isNotBlank() && resp.contains(theme.themeName, ignoreCase = true))) {
+                        if (concept == null && resp.contains("\"concept\"")) {
+                            val match = Regex("\"concept\"\\s*:\\s*\"([^\"]+)\"").find(resp)
+                            if (match != null) concept = match.groupValues[1]
+                        }
+                        if (bg == null && resp.contains("\"bg\"")) {
+                            val match = Regex("\"bg\"\\s*:\\s*\"(#[0-9a-fA-F]{3,8})\"").find(resp)
+                            if (match != null) bg = match.groupValues[1]
+                        }
+                        if (fg == null && resp.contains("\"fg\"")) {
+                            val match = Regex("\"fg\"\\s*:\\s*\"(#[0-9a-fA-F]{3,8})\"").find(resp)
+                            if (match != null) fg = match.groupValues[1]
+                        }
+                        if (concept != null && bg != null && fg != null) break
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        val finalConcept = concept ?: if (theme.themeName.isNotBlank() && theme.themeName != theme.prompt) theme.themeName else theme.prompt
+        val finalBg = bg ?: "#10141D"
+        val finalFg = fg ?: "#E6EDF3"
+
+        return Triple(finalConcept, finalBg, finalFg)
+    }
+
     fun applySavedTheme(theme: GeneratedThemeEntity) {
         val tab = activeTab.value ?: return
-        val domain = theme.domain
+        val currentTabDomain = extractDomain(tab.url)
+        val themeDomain = extractDomain(theme.domain.ifBlank { theme.websiteUrl })
+        val domain = if (currentTabDomain.isNotBlank()) currentTabDomain else themeDomain
         if (domain.isBlank()) return
+
+        // Resolve true concept, bg, and fg from entity fields, script JSON blueprint, or request logs
+        val (conceptName, resolvedBg, resolvedFg) = resolveThemeMetadata(theme)
 
         // Restore specific chat history for this saved design
         val restoredHistory = ThemeChatMessage.listFromJson(theme.chatHistoryJson).ifEmpty {
-            val conceptName = theme.concept?.ifBlank { theme.themeName } ?: theme.themeName
             listOf(
                 ThemeChatMessage(
                     sender = MessageSender.USER,
@@ -348,12 +444,19 @@ class BrowserViewModel(
             baseScript = theme.script,
             pageScripts = mapOf(tab.url to theme.script),
             activeCss = theme.activeCss ?: "",
-            activeConcept = theme.concept ?: theme.themeName,
+            activeConcept = conceptName,
             chatHistory = restoredHistory,
-            bg = theme.bg ?: "#10141D",
-            fg = theme.fg ?: "#E6EDF3"
+            bg = resolvedBg,
+            fg = resolvedFg
         )
-        _websiteThemes.value = _websiteThemes.value + (domain to websiteTheme)
+
+        val updatedThemes = _websiteThemes.value.toMutableMap()
+        updatedThemes[domain] = websiteTheme
+        if (themeDomain.isNotBlank() && themeDomain != domain) {
+            updatedThemes[themeDomain] = websiteTheme
+        }
+        _websiteThemes.value = updatedThemes
+
         _pendingUserScriptToInject.value = theme.script
 
         // Requirement 5: Default model for continued chats is gemini-3.5-flash-lite
@@ -362,11 +465,14 @@ class BrowserViewModel(
         _aiThinkingState.value = AiThinkingState(
             isActive = false,
             isFinished = true,
-            morphBgColor = theme.bg ?: "#10141D",
-            morphFgColor = theme.fg ?: "#E6EDF3",
-            activeConcept = theme.concept ?: theme.themeName,
+            morphBgColor = resolvedBg,
+            morphFgColor = resolvedFg,
+            activeConcept = conceptName,
             chatHistory = restoredHistory
         )
+
+        // Keep AiStylerPillBar visible so user can see conversation overlay and controls
+        _isAiStylerPillVisible.value = true
 
         Toast.makeText(getApplication(), "Applied: ${theme.prompt}", Toast.LENGTH_SHORT).show()
     }
@@ -682,8 +788,8 @@ class BrowserViewModel(
 
             if (isModification) {
                 // Continued chat modification of active design
-                val currentCss = activeTheme!!.activeCss.ifBlank { activeTheme.baseScript }
-                val currentConcept = activeTheme.activeConcept.ifBlank { activeTheme.prompt }
+                val currentCss = (activeTheme!!.activeCss?.takeIf { it.isNotBlank() } ?: activeTheme.baseScript).ifBlank { "/* No prior CSS */" }
+                val currentConcept = (activeTheme!!.activeConcept?.takeIf { it.isNotBlank() } ?: activeTheme.prompt).ifBlank { "Website Restyle" }
 
                 val result = geminiStylerService.modifyUserScript(
                     context = getApplication(),
@@ -1038,7 +1144,7 @@ class BrowserViewModel(
     fun resetCustomStyle() {
         val domain = extractDomain(activeTab.value?.url ?: "")
         if (domain.isNotBlank()) {
-            _websiteThemes.value = _websiteThemes.value - domain
+            _websiteThemes.value = _websiteThemes.value.filterKeys { extractDomain(it) != domain }
         }
         backgroundAdaptationJob?.cancel()
         _isThemeUpdatingInBackground.value = false

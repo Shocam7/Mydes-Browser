@@ -258,15 +258,6 @@ fun BrowserScreen(
             }
         }
 
-        // 1.5. Morphing Web Overlay (AiThinkingPanel):
-        // Translucent overlay with extracted theme 'background' color rising from the bottom
-        // behind all application buttons and elements, acting as the live thinking & chat panel.
-        MorphingWebOverlay(
-            state = aiThinkingState,
-            websiteName = currentTab.title,
-            onDismiss = { viewModel.dismissMorphOverlay() },
-            modifier = Modifier.fillMaxSize()
-        )
 
         // 2. Slim Top Progress Line at the very top of screen
         SlimTopProgressBar(
@@ -460,9 +451,12 @@ fun BrowserScreen(
                 .padding(end = 16.dp, bottom = 10.dp)
         )
 
-        // 8. AI Website Styler Pill Bar (with Deactivation Cross Button, Model Switcher & Reasoning Modulator)
+        // 8. AI Website Styler Pill Bar (with integrated MorphingWebOverlay, Deactivation Cross Button, Model Switcher & Reasoning Modulator)
         val currentDomain = remember(currentTab.url) { viewModel.extractDomain(currentTab.url) }
-        val currentAppliedPrompt = websiteThemes[currentDomain]?.prompt
+        val activeWebsiteTheme = websiteThemes[currentDomain]
+            ?: websiteThemes.values.firstOrNull { viewModel.extractDomain(it.domain) == currentDomain }
+        val currentAppliedPrompt = activeWebsiteTheme?.prompt
+        val currentAppliedConcept = activeWebsiteTheme?.activeConcept
 
         AiStylerPillBar(
             visible = isAiStylerPillVisible,
@@ -473,6 +467,7 @@ fun BrowserScreen(
             thinkingState = aiThinkingState,
             previousGenerations = previousGenerations,
             currentAppliedPrompt = currentAppliedPrompt,
+            currentAppliedConcept = currentAppliedConcept,
             onApplyStyle = { viewModel.applyAiStyle(it) },
             onApplySavedTheme = { viewModel.applySavedTheme(it) },
             onDeleteSavedTheme = { viewModel.deleteSavedTheme(it) },
@@ -484,10 +479,7 @@ fun BrowserScreen(
             onCycleReasoningLevel = { viewModel.cycleReasoningLevel() },
             onSelectReasoningLevel = { viewModel.updateReasoningLevel(it) },
             onDismiss = { viewModel.closeAiStylerPill() },
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .then(bottomInsetsModifier)
-                .padding(bottom = 12.dp)
+            modifier = Modifier.fillMaxSize()
         )
 
         // 9. Fullscreen Modals and Sheets
