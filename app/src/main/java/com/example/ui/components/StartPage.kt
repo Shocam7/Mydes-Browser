@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -49,8 +51,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.SubcomposeAsyncImage
 
 data class QuickAccessShortcut(
     val name: String,
@@ -192,7 +196,7 @@ fun StartPage(
 
             Spacer(modifier = Modifier.height(36.dp))
 
-            // Surrounding randomized/curated grid of icon-only buttons
+            // Surrounding curated grid of speed dial shortcuts with real website icons
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.Center,
@@ -200,13 +204,19 @@ fun StartPage(
                 maxItemsInEachRow = 5
             ) {
                 DEFAULT_SHORTCUTS.forEach { shortcut ->
-                    Box(
+                    val domain = remember(shortcut.url) {
+                        try {
+                            android.net.Uri.parse(shortcut.url).host ?: shortcut.url.removePrefix("https://").removePrefix("http://").substringBefore("/")
+                        } catch (e: Exception) {
+                            shortcut.url
+                        }
+                    }
+                    val faviconUrl = "https://www.google.com/s2/favicons?domain=$domain&sz=128"
+
+                    Column(
                         modifier = Modifier
-                            .padding(horizontal = 8.dp)
-                            .size(52.dp)
-                            .shadow(2.dp, CircleShape)
-                            .clip(CircleShape)
-                            .background(shortcut.brandColor)
+                            .padding(horizontal = 6.dp)
+                            .width(64.dp)
                             .clickable(
                                 interactionSource = remember { MutableInteractionSource() },
                                 indication = ripple(bounded = true),
@@ -214,13 +224,72 @@ fun StartPage(
                             )
                             .testTag("shortcut_${shortcut.name.lowercase()}")
                             .semantics { contentDescription = "Open ${shortcut.name}" },
-                        contentAlignment = Alignment.Center
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
                     ) {
+                        Box(
+                            modifier = Modifier
+                                .size(52.dp)
+                                .shadow(2.dp, CircleShape)
+                                .clip(CircleShape)
+                                .background(cardBgColor)
+                                .border(
+                                    width = 1.dp,
+                                    color = if (isIncognito) Color(0xFF2D3035) else Color(0xFFE2E4E8),
+                                    shape = CircleShape
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            SubcomposeAsyncImage(
+                                model = faviconUrl,
+                                contentDescription = shortcut.name,
+                                modifier = Modifier.size(28.dp),
+                                success = { state ->
+                                    Image(
+                                        painter = state.painter,
+                                        contentDescription = shortcut.name,
+                                        modifier = Modifier.size(28.dp)
+                                    )
+                                },
+                                loading = {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .background(shortcut.brandColor),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = shortcut.initial,
+                                            color = shortcut.textColor,
+                                            fontSize = 16.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                },
+                                error = {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .background(shortcut.brandColor),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = shortcut.initial,
+                                            color = shortcut.textColor,
+                                            fontSize = 16.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = shortcut.initial,
-                            color = shortcut.textColor,
-                            fontSize = 17.sp,
-                            fontWeight = FontWeight.Bold,
+                            text = shortcut.name,
+                            color = textSecondary,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                             textAlign = TextAlign.Center
                         )
                     }
