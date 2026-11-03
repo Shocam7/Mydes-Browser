@@ -87,6 +87,7 @@ import coil.compose.AsyncImage
 import com.example.data.api.GeminiStylerService
 import com.example.data.api.ReasoningModulatorConfig
 import com.example.data.model.GeneratedThemeEntity
+import com.example.data.model.ThemeVisualIteration
 import com.example.ui.viewmodel.AiThinkingState
 import kotlinx.coroutines.delay
 import java.io.File
@@ -105,6 +106,7 @@ fun AiStylerPillBar(
     onApplyStyle: (prompt: String) -> Unit,
     onApplySavedTheme: (GeneratedThemeEntity) -> Unit = {},
     onDeleteSavedTheme: (GeneratedThemeEntity) -> Unit = {},
+    onRevertToVisualIteration: (ThemeVisualIteration) -> Unit = {},
     onResetStyle: () -> Unit,
     onOpenImportRedesign: () -> Unit = {},
     selectedSynthesisModel: String = GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE,
@@ -185,6 +187,7 @@ fun AiStylerPillBar(
                     state = thinkingState,
                     websiteName = websiteName,
                     onDismiss = onDismiss,
+                    onRevertToIteration = onRevertToVisualIteration,
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -660,6 +663,8 @@ private fun PreviousGenerationsSection(
     onApply: (GeneratedThemeEntity) -> Unit,
     onDelete: (GeneratedThemeEntity) -> Unit
 ) {
+    var isExpanded by remember { mutableStateOf(true) }
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -674,7 +679,13 @@ private fun PreviousGenerationsSection(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 2.dp),
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = ripple(bounded = true),
+                        onClick = { isExpanded = !isExpanded }
+                    )
+                    .padding(horizontal = 14.dp, vertical = 2.dp)
+                    .testTag("saved_designs_header_toggle"),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
@@ -708,32 +719,53 @@ private fun PreviousGenerationsSection(
                     }
                 }
 
-                Text(
-                    text = "Tap to apply & view chat",
-                    color = Color(0xFF9EACB9),
-                    fontSize = 11.sp
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = if (isExpanded) "Tap to apply & view chat" else "Tap to expand",
+                        color = Color(0xFF9EACB9),
+                        fontSize = 11.sp
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(28.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF2C3038)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                            contentDescription = if (isExpanded) "Minimize Saved Designs" else "Expand Saved Designs",
+                            tint = Color(0xFFF6C343),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            if (isExpanded) {
+                Spacer(modifier = Modifier.height(8.dp))
 
-            LazyRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("previous_themes_carousel"),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp)
-            ) {
-                items(generations, key = { it.id }) { theme ->
-                    val isActive = (currentAppliedPrompt != null && currentAppliedPrompt == theme.prompt) ||
-                        (currentAppliedConcept != null && (currentAppliedConcept == theme.concept || currentAppliedConcept == theme.themeName))
+                LazyRow(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("previous_themes_carousel"),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp)
+                ) {
+                    items(generations, key = { it.id }) { theme ->
+                        val isActive = (currentAppliedPrompt != null && currentAppliedPrompt == theme.prompt) ||
+                            (currentAppliedConcept != null && (currentAppliedConcept == theme.concept || currentAppliedConcept == theme.themeName))
 
-                    ThemeCarouselCard(
-                        theme = theme,
-                        isActive = isActive,
-                        onApply = { onApply(theme) },
-                        onDelete = { onDelete(theme) }
-                    )
+                        ThemeCarouselCard(
+                            theme = theme,
+                            isActive = isActive,
+                            onApply = { onApply(theme) },
+                            onDelete = { onDelete(theme) }
+                        )
+                    }
                 }
             }
         }
@@ -748,28 +780,44 @@ private fun ThemeCarouselCard(
     onDelete: () -> Unit
 ) {
     val context = LocalContext.current
-    val screenshotFile = remember(theme.screenshotPath) {
+    val screenshotModel: Any? = remember(theme.screenshotPath) {
         val path = theme.screenshotPath
-        if (!path.isNullOrBlank()) {
-            val f = java.io.File(path)
-            if (f.exists()) {
-                f
-            } else {
-                val filename = f.name
-                val themeFilesDir = java.io.File(context.filesDir, "theme_screenshots")
-                val reviewFilesDir = java.io.File(context.filesDir, "review_screenshots")
-                val f1 = java.io.File(themeFilesDir, filename)
-                val f2 = java.io.File(reviewFilesDir, filename)
-                val f3 = java.io.File(context.filesDir, filename)
-                when {
-                    f1.exists() -> f1
-                    f2.exists() -> f2
-                    f3.exists() -> f3
-                    else -> null
+        if (path.isNullOrBlank()) null
+        else {
+            val fileName = java.io.File(path).name
+            val themeFilesDir = java.io.File(context.filesDir, "theme_screenshots")
+            val reviewFilesDir = java.io.File(context.filesDir, "review_screenshots")
+            val f1 = java.io.File(themeFilesDir, fileName)
+            val f2 = java.io.File(reviewFilesDir, fileName)
+            val direct = java.io.File(path)
+            when {
+                f1.exists() && f1.length() > 0L -> f1
+                f2.exists() && f2.length() > 0L -> f2
+                direct.exists() && direct.length() > 0L -> direct
+                else -> {
+                    try {
+                        themeFilesDir.mkdirs()
+                        context.assets.open("files/theme_screenshots/$fileName").use { input ->
+                            java.io.FileOutputStream(f1).use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                        if (f1.exists() && f1.length() > 0L) f1 else "file:///android_asset/files/theme_screenshots/$fileName"
+                    } catch (_: Exception) {
+                        try {
+                            reviewFilesDir.mkdirs()
+                            context.assets.open("files/review_screenshots/$fileName").use { input ->
+                                java.io.FileOutputStream(f2).use { output ->
+                                    input.copyTo(output)
+                                }
+                            }
+                            if (f2.exists() && f2.length() > 0L) f2 else "file:///android_asset/files/review_screenshots/$fileName"
+                        } catch (_: Exception) {
+                            null
+                        }
+                    }
                 }
             }
-        } else {
-            null
         }
     }
 
@@ -788,9 +836,9 @@ private fun ThemeCarouselCard(
             .clickable(onClick = onApply)
             .semantics { contentDescription = "Saved design: ${theme.prompt}" }
     ) {
-        if (screenshotFile != null && screenshotFile.exists()) {
+        if (screenshotModel != null) {
             AsyncImage(
-                model = screenshotFile,
+                model = screenshotModel,
                 contentDescription = "Theme screenshot preview",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()

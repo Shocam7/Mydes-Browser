@@ -13,7 +13,7 @@ import com.example.data.model.GeneratedThemeEntity
 
 @Database(
     entities = [BookmarkEntity::class, HistoryEntity::class, DomainColorEntity::class, GeneratedThemeEntity::class],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class MydesDatabase : RoomDatabase() {
@@ -33,6 +33,12 @@ abstract class MydesDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_3_4 = object : androidx.room.migration.Migration(3, 4) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `generated_themes` ADD COLUMN `visualHistoryJson` TEXT")
+            }
+        }
+
         fun getInstance(context: Context): MydesDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -40,7 +46,7 @@ abstract class MydesDatabase : RoomDatabase() {
                     MydesDatabase::class.java,
                     "mydes_browser.db"
                 )
-                    .addMigrations(MIGRATION_2_3)
+                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4)
                     .createFromAsset("databases/mydes_browser.db")
                     .fallbackToDestructiveMigration(dropAllTables = false)
                     .build()

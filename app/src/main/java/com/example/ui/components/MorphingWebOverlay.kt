@@ -23,6 +23,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -44,11 +47,14 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -67,10 +73,17 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.AsyncImage
+import com.example.data.model.ThemeVisualIteration
 import com.example.ui.model.MessageSender
 import com.example.ui.model.ThemeChatMessage
 import com.example.ui.viewmodel.AiThinkingState
 import kotlinx.coroutines.delay
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * Redesigned MorphingWebOverlay (AiThinkingPanel):
@@ -88,6 +101,7 @@ fun MorphingWebOverlay(
     state: AiThinkingState,
     websiteName: String = "",
     onDismiss: () -> Unit,
+    onRevertToIteration: (ThemeVisualIteration) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     // Only rise once the concept pass has provided morphBgColor (or when viewing saved chat history)
@@ -114,6 +128,7 @@ fun MorphingWebOverlay(
 
     val heightFraction = remember { Animatable(0f) }
     var isCovered by remember { mutableStateOf(false) }
+    var isVisualHistoryOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(rawBg) {
         if (!isCovered) {
@@ -170,6 +185,48 @@ fun MorphingWebOverlay(
                         state = state,
                         bgColor = parsedBg,
                         fgColor = parsedFg,
+                        onOpenVisualHistory = { isVisualHistoryOpen = true },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+
+                // Requirement 4: Visual History Panel
+                AnimatedVisibility(
+                    visible = isVisualHistoryOpen,
+                    enter = fadeIn(tween(200)) + slideInVertically(initialOffsetY = { it }),
+                    exit = fadeOut(tween(150)) + slideOutVertically(targetOffsetY = { it }),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    val iterations = if (state.visualHistory.isNotEmpty()) {
+                        state.visualHistory
+                    } else if (!state.activeConcept.isNullOrBlank()) {
+                        listOf(
+                            ThemeVisualIteration(
+                                iterationNumber = 1,
+                                title = state.activeConcept,
+                                screenshotPath = null,
+                                script = "",
+                                activeCss = "",
+                                concept = state.activeConcept,
+                                bg = state.morphBgColor ?: "#10141D",
+                                fg = state.morphFgColor ?: "#E6EDF3",
+                                timestamp = System.currentTimeMillis()
+                            )
+                        )
+                    } else {
+                        emptyList()
+                    }
+
+                    VisualHistoryPanel(
+                        iterations = iterations,
+                        activeConcept = state.activeConcept,
+                        bgColor = parsedBg,
+                        fgColor = parsedFg,
+                        onClose = { isVisualHistoryOpen = false },
+                        onRevert = { iteration ->
+                            onRevertToIteration(iteration)
+                            isVisualHistoryOpen = false
+                        },
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -178,11 +235,15 @@ fun MorphingWebOverlay(
     }
 }
 
+// Store IDs of messages whose typewriter animation has already played to prevent replaying on re-opening
+private val playedTypewriterMessageIds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
 @Composable
 private fun ThemeChatPanel(
     state: AiThinkingState,
     bgColor: Color,
     fgColor: Color,
+    onOpenVisualHistory: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -193,14 +254,61 @@ private fun ThemeChatPanel(
         }
     }
 
+    val topInset = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val topPadding = (topInset + 76.dp).coerceAtLeast(124.dp)
+    val iterationsCount = state.visualHistory.size
+
     Column(modifier = modifier.fillMaxSize()) {
+        // Requirement 4: 'Visual History' button with 'History' icon in MorphingWebOverlay
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = topPadding - 46.dp, start = 16.dp, end = 16.dp, bottom = 4.dp),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .shadow(4.dp, RoundedCornerShape(20.dp))
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(fgColor.copy(alpha = 0.16f))
+                    .border(1.dp, fgColor.copy(alpha = 0.36f), RoundedCornerShape(20.dp))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = ripple(bounded = true),
+                        onClick = onOpenVisualHistory
+                    )
+                    .padding(horizontal = 14.dp, vertical = 7.dp)
+                    .testTag("visual_history_button"),
+                contentAlignment = Alignment.Center
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.History,
+                        contentDescription = "Visual History",
+                        tint = fgColor,
+                        modifier = Modifier.size(17.dp)
+                    )
+                    Text(
+                        text = "Visual History" + if (iterationsCount > 1) " ($iterationsCount)" else "",
+                        color = fgColor,
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+        }
+
         LazyColumn(
             state = listState,
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
                 .testTag("theme_chat_messages_list"),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 68.dp, bottom = 220.dp),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 220.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             items(state.chatHistory, key = { it.id }) { message ->
@@ -225,6 +333,326 @@ private fun ThemeChatPanel(
                             message = message,
                             bgColor = bgColor,
                             fgColor = fgColor
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Requirement 4: Panel showing all screenshots and previous iterations of this theme.
+ * Allows user to see and select any visual to revert to that previous version.
+ */
+@Composable
+private fun VisualHistoryPanel(
+    iterations: List<ThemeVisualIteration>,
+    activeConcept: String?,
+    bgColor: Color,
+    fgColor: Color,
+    onClose: () -> Unit,
+    onRevert: (ThemeVisualIteration) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val topInset = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val topPadding = (topInset + 64.dp).coerceAtLeast(110.dp)
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(bgColor.copy(alpha = 0.96f))
+            .padding(top = topPadding, bottom = 120.dp, start = 16.dp, end = 16.dp)
+            .testTag("visual_history_panel")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .shadow(12.dp, RoundedCornerShape(24.dp))
+                .clip(RoundedCornerShape(24.dp))
+                .background(bgColor.copy(alpha = 0.92f))
+                .border(1.5.dp, fgColor.copy(alpha = 0.32f), RoundedCornerShape(24.dp))
+                .padding(18.dp)
+        ) {
+            // Header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(fgColor.copy(alpha = 0.18f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.History,
+                            contentDescription = null,
+                            tint = fgColor,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Column {
+                        Text(
+                            text = "Visual History",
+                            color = fgColor,
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Select any iteration to revert",
+                            color = fgColor.copy(alpha = 0.72f),
+                            fontSize = 11.5.sp
+                        )
+                    }
+                }
+
+                IconButton(
+                    onClick = onClose,
+                    modifier = Modifier.size(32.dp).testTag("close_visual_history_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Close",
+                        tint = fgColor.copy(alpha = 0.85f),
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            if (iterations.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "No previous iterations recorded for this theme yet.",
+                        color = fgColor.copy(alpha = 0.65f),
+                        fontSize = 13.sp
+                    )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .testTag("visual_iterations_list"),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    items(iterations.reversed(), key = { it.iterationNumber }) { iteration ->
+                        val isCurrent = (!iteration.concept.isNullOrBlank() && iteration.concept == activeConcept) ||
+                                (activeConcept.isNullOrBlank() && iteration.iterationNumber == iterations.maxOf { it.iterationNumber })
+
+                        VisualIterationCard(
+                            iteration = iteration,
+                            isCurrent = isCurrent,
+                            bgColor = bgColor,
+                            fgColor = fgColor,
+                            onRevert = { onRevert(iteration) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VisualIterationCard(
+    iteration: ThemeVisualIteration,
+    isCurrent: Boolean,
+    bgColor: Color,
+    fgColor: Color,
+    onRevert: () -> Unit
+) {
+    val dateStr = remember(iteration.timestamp) {
+        try {
+            val sdf = SimpleDateFormat("MMM d, h:mm a", Locale.getDefault())
+            sdf.format(Date(iteration.timestamp))
+        } catch (_: Exception) {
+            "Previous version"
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(fgColor.copy(alpha = if (isCurrent) 0.18f else 0.09f))
+            .border(
+                width = if (isCurrent) 1.5.dp else 1.dp,
+                color = if (isCurrent) fgColor.copy(alpha = 0.60f) else fgColor.copy(alpha = 0.22f),
+                shape = RoundedCornerShape(16.dp)
+            )
+            .padding(12.dp)
+            .testTag("visual_iteration_card_${iteration.iterationNumber}")
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(fgColor.copy(alpha = 0.22f))
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                    ) {
+                        Text(
+                            text = "v${iteration.iterationNumber}",
+                            color = fgColor,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    Text(
+                        text = dateStr,
+                        color = fgColor.copy(alpha = 0.60f),
+                        fontSize = 11.sp
+                    )
+                }
+
+                if (isCurrent) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(Color(0xFF22C55E).copy(alpha = 0.22f))
+                            .border(1.dp, Color(0xFF22C55E).copy(alpha = 0.65f), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = Color(0xFF22C55E),
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Text(
+                            text = "ACTIVE",
+                            color = Color(0xFF22C55E),
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = iteration.title,
+                color = fgColor,
+                fontSize = 13.5.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Screenshot Thumbnail
+            val hasValidFile = iteration.screenshotPath != null && File(iteration.screenshotPath).exists()
+            if (hasValidFile) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(140.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .border(1.dp, fgColor.copy(alpha = 0.25f), RoundedCornerShape(10.dp))
+                ) {
+                    AsyncImage(
+                        model = File(iteration.screenshotPath!!),
+                        contentDescription = "Iteration ${iteration.iterationNumber} screenshot",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(80.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(fgColor.copy(alpha = 0.12f))
+                        .border(1.dp, fgColor.copy(alpha = 0.20f), RoundedCornerShape(10.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(16.dp)
+                                .clip(CircleShape)
+                                .background(try { Color(android.graphics.Color.parseColor(iteration.bg ?: "#10141D")) } catch (_: Exception) { Color.DarkGray })
+                        )
+                        Box(
+                            modifier = Modifier
+                                .size(16.dp)
+                                .clip(CircleShape)
+                                .background(try { Color(android.graphics.Color.parseColor(iteration.fg ?: "#E6EDF3")) } catch (_: Exception) { Color.LightGray })
+                        )
+                        Text(
+                            text = "Palette: ${iteration.bg ?: "#10141D"} / ${iteration.fg ?: "#E6EDF3"}",
+                            color = fgColor.copy(alpha = 0.70f),
+                            fontSize = 11.5.sp
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Revert Button
+            if (!isCurrent) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(fgColor.copy(alpha = 0.20f))
+                        .border(1.dp, fgColor.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = ripple(bounded = true),
+                            onClick = onRevert
+                        )
+                        .padding(vertical = 9.dp)
+                        .testTag("revert_iteration_button_${iteration.iterationNumber}"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Restore,
+                            contentDescription = null,
+                            tint = fgColor,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = "Revert to this Version",
+                            color = fgColor,
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.Bold
                         )
                     }
                 }
@@ -290,12 +718,24 @@ private fun AgentConceptReplyBubble(
     val conceptDisplay = message.concept ?: message.text.removePrefix("Building ").trim()
     val fullText = "Building $conceptDisplay"
 
-    var typedLength by remember(fullText) { mutableStateOf(0) }
-    LaunchedEffect(fullText) {
-        typedLength = 0
-        while (typedLength < fullText.length) {
-            typedLength = (typedLength + 2).coerceAtMost(fullText.length)
-            delay(16L)
+    val hasAlreadyPlayed = remember(message.id) {
+        playedTypewriterMessageIds.contains(message.id)
+    }
+
+    var typedLength by remember(message.id, fullText) {
+        mutableStateOf(if (hasAlreadyPlayed) fullText.length else 0)
+    }
+
+    LaunchedEffect(message.id, fullText) {
+        if (!hasAlreadyPlayed) {
+            typedLength = 0
+            while (typedLength < fullText.length) {
+                typedLength = (typedLength + 2).coerceAtMost(fullText.length)
+                delay(16L)
+            }
+            playedTypewriterMessageIds.add(message.id)
+        } else {
+            typedLength = fullText.length
         }
     }
 

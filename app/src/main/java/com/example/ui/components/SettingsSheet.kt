@@ -80,7 +80,8 @@ fun SettingsSheet(
     modifier: Modifier = Modifier
 ) {
     var clearDataSuccess by remember { mutableStateOf(false) }
-    var apiKeyInput by remember(customApiKey) { mutableStateOf(customApiKey) }
+    val safeCustomApiKey = if (customApiKey.startsWith("AQ.") || customApiKey.contains("AQ.Ab8RN6")) "" else customApiKey
+    var apiKeyInput by remember(safeCustomApiKey) { mutableStateOf(safeCustomApiKey) }
     var nvidiaApiKeyInput by remember(customNvidiaApiKey) { mutableStateOf(customNvidiaApiKey) }
 
     Box(

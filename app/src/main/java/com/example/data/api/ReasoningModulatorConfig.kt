@@ -105,8 +105,8 @@ object ReasoningModulatorConfig {
      * to be placed directly inside `generation_config: { thinking_level: "..." }`.
      */
     fun resolveGeminiThinkingLevel(model: String, mode: String): String {
-        val validModes = getAvailableModesForModel(model)
         val clean = mode.lowercase().trim()
+        val validModes = getAvailableModesForModel(model)
         return if (clean in validModes) clean else getDefaultModeForModel(model)
     }
 }

@@ -23,6 +23,7 @@ import com.example.data.api.evaluateJsSuspend
 import com.example.data.model.BookmarkEntity
 import com.example.data.model.GeneratedThemeEntity
 import com.example.data.model.HistoryEntity
+import com.example.data.model.ThemeVisualIteration
 import com.example.data.repository.BrowserRepository
 import com.example.data.repository.WebsiteColorRepository
 import com.example.ui.model.MessageSender
@@ -51,7 +52,8 @@ data class AiThinkingState(
     val morphBgColor: String? = null,
     val morphFgColor: String? = null,
     val activeConcept: String? = null,
-    val chatHistory: List<ThemeChatMessage> = emptyList()
+    val chatHistory: List<ThemeChatMessage> = emptyList(),
+    val visualHistory: List<ThemeVisualIteration> = emptyList()
 )
 
 class BrowserViewModel(
@@ -76,7 +78,13 @@ class BrowserViewModel(
 
     init {
         val prefs = application.getSharedPreferences("mydes_prefs", Context.MODE_PRIVATE)
-        _customApiKey.value = prefs.getString("custom_api_key", "") ?: ""
+        val loadedKey = (prefs.getString("custom_api_key", "") ?: "").trim()
+        if (loadedKey.isNotBlank() && (loadedKey.contains("AQ.Ab8RN6") || loadedKey.startsWith("AQ."))) {
+            prefs.edit().remove("custom_api_key").apply()
+            _customApiKey.value = ""
+        } else {
+            _customApiKey.value = loadedKey
+        }
         _customNvidiaApiKey.value = prefs.getString("custom_nvidia_api_key", "") ?: ""
         val savedModel = prefs.getString("synthesis_model", GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE)
             ?: GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE
@@ -231,11 +239,15 @@ class BrowserViewModel(
         val baseScript: String,
         val pageScripts: Map<String, String> = emptyMap(),
         val isImported: Boolean = false,
+        val isSavedTheme: Boolean = false,
         val activeCss: String = "",
         val activeConcept: String = "",
         val chatHistory: List<ThemeChatMessage> = emptyList(),
         val bg: String = "#10141D",
-        val fg: String = "#E6EDF3"
+        val fg: String = "#E6EDF3",
+        val entityId: Long? = null,
+        val screenshotPath: String? = null,
+        val visualHistory: List<ThemeVisualIteration> = emptyList()
     )
 
     private val _websiteThemes = MutableStateFlow<Map<String, WebsiteTheme>>(emptyMap())
@@ -261,10 +273,6 @@ class BrowserViewModel(
     private val _pendingUserScriptToInject = MutableStateFlow<String?>(null)
     val pendingUserScriptToInject: StateFlow<String?> = _pendingUserScriptToInject.asStateFlow()
 
-    /**
-     * Requirement 2: As long as a theme is applied and active on the current domain,
-     * the brush icon is in active state. When removed or not yet applied, it is inactive.
-     */
     val isCustomStyleApplied: StateFlow<Boolean> = combine(activeTab, _websiteThemes) { tab, themes ->
         val domain = extractDomain(tab?.url ?: "")
         if (domain.isBlank()) false
@@ -340,7 +348,6 @@ class BrowserViewModel(
         var bg = theme.bg?.takeIf { it.isNotBlank() }
         var fg = theme.fg?.takeIf { it.isNotBlank() }
 
-        // 1. Try to extract from script's JSON config argument
         if (concept == null || bg == null || fg == null) {
             val script = theme.script
             val idx = script.lastIndexOf("})(")
@@ -364,7 +371,6 @@ class BrowserViewModel(
             }
         }
 
-        // 2. Fallback to request_logs.json if still missing
         if (concept == null || bg == null || fg == null) {
             try {
                 val logsFile = java.io.File(getApplication<Application>().filesDir, "request_logs.json")
@@ -405,6 +411,34 @@ class BrowserViewModel(
         return Triple(finalConcept, finalBg, finalFg)
     }
 
+    private fun extractCleanCss(activeCss: String?, baseScript: String?): String {
+        activeCss?.trim()?.takeIf { it.isNotBlank() && !it.startsWith("(function") }?.let {
+            return it
+        }
+        if (baseScript.isNullOrBlank()) return "/* Clean baseline styling */"
+
+        val idx = baseScript.lastIndexOf("})(")
+        if (idx != -1) {
+            val arg = baseScript.substring(idx + 3).trim().removeSuffix(";").removeSuffix(")")
+            try {
+                val json = org.json.JSONObject(arg)
+                val css = json.optString("customCss", "").ifBlank { json.optString("custom_css", "") }
+                if (css.isNotBlank()) return css
+            } catch (_: Exception) {}
+        }
+
+        val match = Regex("\"(?:customCss|custom_css|css)\"\\s*:\\s*\"([\\s\\S]*?)\"\\s*[,}]").find(baseScript)
+        if (match != null) {
+            val unescaped = match.groupValues[1]
+                .replace("\\n", "\n")
+                .replace("\\\"", "\"")
+                .replace("\\\\", "\\")
+            if (unescaped.isNotBlank()) return unescaped
+        }
+
+        return "/* Baseline page styling */"
+    }
+
     fun applySavedTheme(theme: GeneratedThemeEntity) {
         val tab = activeTab.value ?: return
         val currentTabDomain = extractDomain(tab.url)
@@ -412,10 +446,14 @@ class BrowserViewModel(
         val domain = if (currentTabDomain.isNotBlank()) currentTabDomain else themeDomain
         if (domain.isBlank()) return
 
-        // Resolve true concept, bg, and fg from entity fields, script JSON blueprint, or request logs
+        backgroundAdaptationJob?.cancel()
+        thinkingTimerJob?.cancel()
+        _isThemeUpdatingInBackground.value = false
+        _isAiStylerLoading.value = false
+        lastAdaptedUrl = tab.url
+
         val (conceptName, resolvedBg, resolvedFg) = resolveThemeMetadata(theme)
 
-        // Restore specific chat history for this saved design
         val restoredHistory = ThemeChatMessage.listFromJson(theme.chatHistoryJson).ifEmpty {
             listOf(
                 ThemeChatMessage(
@@ -438,16 +476,24 @@ class BrowserViewModel(
             )
         }
 
+        val resolvedCss = extractCleanCss(theme.activeCss, theme.script)
+        val visualHistory = ThemeVisualIteration.listFromJson(theme.visualHistoryJson, theme)
+
         val websiteTheme = WebsiteTheme(
             domain = domain,
             prompt = theme.prompt,
             baseScript = theme.script,
             pageScripts = mapOf(tab.url to theme.script),
-            activeCss = theme.activeCss ?: "",
+            isImported = false,
+            isSavedTheme = true,
+            activeCss = resolvedCss,
             activeConcept = conceptName,
             chatHistory = restoredHistory,
             bg = resolvedBg,
-            fg = resolvedFg
+            fg = resolvedFg,
+            entityId = theme.id,
+            screenshotPath = theme.screenshotPath,
+            visualHistory = visualHistory
         )
 
         val updatedThemes = _websiteThemes.value.toMutableMap()
@@ -459,7 +505,6 @@ class BrowserViewModel(
 
         _pendingUserScriptToInject.value = theme.script
 
-        // Requirement 5: Default model for continued chats is gemini-3.5-flash-lite
         setDefaultModelForContinuedChat()
 
         _aiThinkingState.value = AiThinkingState(
@@ -468,10 +513,10 @@ class BrowserViewModel(
             morphBgColor = resolvedBg,
             morphFgColor = resolvedFg,
             activeConcept = conceptName,
-            chatHistory = restoredHistory
+            chatHistory = restoredHistory,
+            visualHistory = visualHistory
         )
 
-        // Keep AiStylerPillBar visible so user can see conversation overlay and controls
         _isAiStylerPillVisible.value = true
 
         Toast.makeText(getApplication(), "Applied: ${theme.prompt}", Toast.LENGTH_SHORT).show()
@@ -496,10 +541,6 @@ class BrowserViewModel(
         }
     }
 
-    /**
-     * Imports an externally generated UIBlueprint from a JSON file or pasted string,
-     * applies it immediately to the active webpage, and initializes its chat history.
-     */
     fun importAndApplyRedesign(jsonContent: String, sourceName: String = "External File"): Result<UIBlueprint> {
         val tab = activeTab.value ?: return Result.failure(IllegalStateException("No active tab open"))
         val domain = extractDomain(tab.url)
@@ -556,6 +597,19 @@ class BrowserViewModel(
         val siteName = if (tab.title.isNotBlank()) tab.title else tab.url
 
         viewModelScope.launch {
+            val initialIteration = ThemeVisualIteration(
+                iterationNumber = 1,
+                title = promptName,
+                screenshotPath = null,
+                script = script,
+                activeCss = parsedBlueprint.customCss,
+                concept = conceptName,
+                bg = parsedBlueprint.bg,
+                fg = parsedBlueprint.fg,
+                timestamp = System.currentTimeMillis()
+            )
+            val initialVisualHistory = listOf(initialIteration)
+
             val initialThemeEntity = GeneratedThemeEntity(
                 domain = domain,
                 websiteUrl = tab.url,
@@ -567,22 +621,38 @@ class BrowserViewModel(
                 activeCss = parsedBlueprint.customCss,
                 concept = conceptName,
                 chatHistoryJson = ThemeChatMessage.listToJson(importedHistory),
+                visualHistoryJson = ThemeVisualIteration.listToJson(initialVisualHistory),
                 bg = parsedBlueprint.bg,
                 fg = parsedBlueprint.fg
             )
             val insertedId = browserRepository.saveGeneratedTheme(initialThemeEntity)
 
             val wv = activeWebViewRef
+            var finalScreenshot: String? = null
             if (wv != null) {
                 delay(4000L)
                 val bitmap = captureWebViewBitmap(wv)
-                val screenshotPath = if (bitmap != null) saveScreenshotToFile(bitmap) else null
-                if (screenshotPath != null) {
+                finalScreenshot = if (bitmap != null) saveScreenshotToFile(bitmap) else null
+                if (finalScreenshot != null) {
+                    val updatedIter1 = initialIteration.copy(screenshotPath = finalScreenshot)
+                    val updatedHistory = listOf(updatedIter1)
                     browserRepository.updateGeneratedTheme(
-                        initialThemeEntity.copy(id = insertedId, screenshotPath = screenshotPath)
+                        initialThemeEntity.copy(
+                            id = insertedId,
+                            screenshotPath = finalScreenshot,
+                            visualHistoryJson = ThemeVisualIteration.listToJson(updatedHistory)
+                        )
                     )
                 }
             }
+
+            val updatedWithEntity = websiteTheme.copy(
+                entityId = insertedId,
+                screenshotPath = finalScreenshot,
+                visualHistory = listOf(initialIteration.copy(screenshotPath = finalScreenshot))
+            )
+            _websiteThemes.value = _websiteThemes.value + (domain to updatedWithEntity)
+            _aiThinkingState.update { it.copy(visualHistory = updatedWithEntity.visualHistory) }
 
             ApiRequestLogger.logRequest(
                 context = getApplication(),
@@ -607,15 +677,12 @@ class BrowserViewModel(
     }
 
     /**
-     * Requirements 4 & 5:
-     * - Runs the Concept Pass first.
-     * - Once Concept Pass returns `background` (`bg`), `fg`, and `concept`, `onConceptReady` triggers
-     *   the rising translucent `MorphingWebOverlay` with `bg` color and adds:
-     *   1) User message bubble
-     *   2) Agent reply: "Building <concept field from concept pass>"
-     *   3) Agent reply: Live streaming thinking drop-down in `fg` color.
-     * - If a theme is already active for this domain, treats the request as a continued chat
-     *   modification with the currently active CSS included in the system prompt.
+     * Full 3-Pass Execution Pipeline:
+     * - Pass 1 (Visual Architect) -> triggers `onConceptReady` so the morphing overlay rises.
+     * - Pass 2 (Pure CSS Compiler) -> compiles Pass 1's 13-point spec and injects it onto the WebView.
+     * - Pass 3 (2-Frame Animation & DOM Telemetry + Live Screenshot Review) -> automatically samples two
+     *   rendered frames (`280ms` apart), captures the painted WebView screenshot, stitches any frozen
+     *   animations, skipped ornaments, or clashing surfaces, and injects the final self-healed theme!
      */
     fun applyAiStyle(prompt: String) {
         val tab = activeTab.value ?: return
@@ -648,8 +715,6 @@ class BrowserViewModel(
             "Pass 1: Visual Architecture..."
         }
 
-        // Before Concept Pass finishes on a brand-new theme, morphBgColor is null so the overlay
-        // waits to rise until `background` and `fg` are extracted from the concept result.
         val startingHistory = if (isModification) {
             activeTheme!!.chatHistory + listOf(userMsg)
         } else {
@@ -744,7 +809,6 @@ class BrowserViewModel(
                 }
             }
 
-            // Called as soon as Pass 1 (Concept Pass) finishes and extracts `background` (bg), `fg`, and `concept`
             val onConceptReady: (bg: String, fg: String, concept: String) -> Unit = { bg, fg, concept ->
                 val agentConceptMsg = ThemeChatMessage(
                     id = agentConceptMsgId,
@@ -787,9 +851,8 @@ class BrowserViewModel(
             }
 
             if (isModification) {
-                // Continued chat modification of active design
-                val currentCss = (activeTheme!!.activeCss?.takeIf { it.isNotBlank() } ?: activeTheme.baseScript).ifBlank { "/* No prior CSS */" }
-                val currentConcept = (activeTheme!!.activeConcept?.takeIf { it.isNotBlank() } ?: activeTheme.prompt).ifBlank { "Website Restyle" }
+                val currentCss = extractCleanCss(activeTheme!!.activeCss, activeTheme.baseScript)
+                val currentConcept = (activeTheme.activeConcept.takeIf { it.isNotBlank() } ?: activeTheme.prompt).ifBlank { "Website Restyle" }
 
                 val result = geminiStylerService.modifyUserScript(
                     context = getApplication(),
@@ -830,6 +893,48 @@ class BrowserViewModel(
                     }
 
                     val finalHistory = _aiThinkingState.value.chatHistory
+                    _pendingUserScriptToInject.value = script
+
+                    val wv = activeWebViewRef
+                    val newScreenshotPath = if (wv != null) {
+                        delay(4000L)
+                        val bitmap = captureWebViewBitmap(wv)
+                        if (bitmap != null) saveScreenshotToFile(bitmap) else null
+                    } else null
+
+                    val currentVisualHistory = activeTheme.visualHistory.ifEmpty {
+                        listOf(
+                            ThemeVisualIteration(
+                                iterationNumber = 1,
+                                title = (activeTheme.activeConcept.takeIf { it.isNotBlank() } ?: activeTheme.prompt),
+                                screenshotPath = activeTheme.screenshotPath,
+                                script = activeTheme.baseScript,
+                                activeCss = activeTheme.activeCss,
+                                concept = activeTheme.activeConcept,
+                                bg = activeTheme.bg,
+                                fg = activeTheme.fg
+                            )
+                        )
+                    }
+
+                    val nextIterationNumber = (currentVisualHistory.maxOfOrNull { it.iterationNumber } ?: 1) + 1
+                    val newIteration = ThemeVisualIteration(
+                        iterationNumber = nextIterationNumber,
+                        title = blueprint.concept.ifBlank { blueprint.name },
+                        screenshotPath = newScreenshotPath ?: activeTheme.screenshotPath,
+                        script = script,
+                        activeCss = blueprint.customCss,
+                        concept = blueprint.concept,
+                        bg = blueprint.bg,
+                        fg = blueprint.fg,
+                        timestamp = System.currentTimeMillis()
+                    )
+                    val updatedVisualHistory = currentVisualHistory + newIteration
+                    val updatedHistoryJson = ThemeVisualIteration.listToJson(updatedVisualHistory)
+
+                    val updatedThemeName = blueprint.concept.ifBlank { blueprint.name }
+                    val finalScreenshot = newScreenshotPath ?: activeTheme.screenshotPath
+
                     val updatedTheme = activeTheme.copy(
                         prompt = prompt,
                         baseScript = script,
@@ -838,25 +943,57 @@ class BrowserViewModel(
                         activeConcept = blueprint.concept,
                         chatHistory = finalHistory,
                         bg = blueprint.bg,
-                        fg = blueprint.fg
+                        fg = blueprint.fg,
+                        screenshotPath = finalScreenshot,
+                        visualHistory = updatedVisualHistory
                     )
                     _websiteThemes.value = _websiteThemes.value + (domain to updatedTheme)
-                    _pendingUserScriptToInject.value = script
+                    _aiThinkingState.update {
+                        it.copy(
+                            visualHistory = updatedVisualHistory,
+                            activeConcept = blueprint.concept
+                        )
+                    }
 
-                    val entity = GeneratedThemeEntity(
-                        domain = domain,
-                        websiteUrl = tab.url,
-                        websiteTitle = siteName,
-                        prompt = prompt,
-                        themeName = blueprint.name,
-                        script = script,
-                        activeCss = blueprint.customCss,
-                        concept = blueprint.concept,
-                        chatHistoryJson = ThemeChatMessage.listToJson(finalHistory),
-                        bg = blueprint.bg,
-                        fg = blueprint.fg
-                    )
-                    browserRepository.saveGeneratedTheme(entity)
+                    val targetEntityId = activeTheme.entityId
+                    if (targetEntityId != null) {
+                        val existingEntity = browserRepository.getGeneratedThemeById(targetEntityId)
+                        if (existingEntity != null) {
+                            browserRepository.updateGeneratedTheme(
+                                existingEntity.copy(
+                                    themeName = updatedThemeName,
+                                    prompt = prompt,
+                                    script = script,
+                                    screenshotPath = finalScreenshot,
+                                    activeCss = blueprint.customCss,
+                                    concept = blueprint.concept,
+                                    chatHistoryJson = ThemeChatMessage.listToJson(finalHistory),
+                                    visualHistoryJson = updatedHistoryJson,
+                                    bg = blueprint.bg,
+                                    fg = blueprint.fg
+                                )
+                            )
+                        }
+                    } else {
+                        val fallbackEntity = GeneratedThemeEntity(
+                            domain = domain,
+                            websiteUrl = tab.url,
+                            websiteTitle = siteName,
+                            prompt = prompt,
+                            themeName = updatedThemeName,
+                            script = script,
+                            screenshotPath = finalScreenshot,
+                            activeCss = blueprint.customCss,
+                            concept = blueprint.concept,
+                            chatHistoryJson = ThemeChatMessage.listToJson(finalHistory),
+                            visualHistoryJson = updatedHistoryJson,
+                            bg = blueprint.bg,
+                            fg = blueprint.fg
+                        )
+                        val insertedId = browserRepository.saveGeneratedTheme(fallbackEntity)
+                        val withId = updatedTheme.copy(entityId = insertedId)
+                        _websiteThemes.value = _websiteThemes.value + (domain to withId)
+                    }
                 }.onFailure { err ->
                     thinkingTimerJob?.cancel()
                     val errMsg = err.message ?: "Failed to apply modification."
@@ -883,30 +1020,72 @@ class BrowserViewModel(
                     }
                 }
             } else {
-                // Brand-new theme creation
+                // Brand-new theme creation:
+                // Step 1: Probe outline & run Pass 1 (Visual Architect) + Pass 2 (Pure CSS Compiler)
                 val preOutline = try {
                     activeWebViewRef?.evaluateJsSuspend(MydesRuntime.OUTLINE_PROBE_JS)
                 } catch (_: Exception) {
                     null
                 }
-                val initialBitmap = activeWebViewRef?.let { captureWebViewBitmap(it) }
-                val initialScreenshotBase64 = if (initialBitmap != null) bitmapToBase64(initialBitmap) else null
 
-                val result = geminiStylerService.themeSpec(
+                val pass2Result = geminiStylerService.themeSpec(
                     context = getApplication(),
                     prompt = prompt,
                     websiteUrl = tab.url,
                     pageOutlineJson = preOutline,
-                    screenshotBase64 = initialScreenshotBase64,
+                    screenshotBase64 = null,
                     forceFresh = true,
+                    isReviewPass = false,
                     onThinkingUpdate = onThinkingProgress,
                     onConceptReady = onConceptReady
                 )
-                _isAiStylerLoading.value = false
-                result.onSuccess { blueprint ->
+
+                pass2Result.onSuccess { initialBlueprint ->
+                    val initialScript = MydesRuntime.script(initialBlueprint)
+                    // Inject Pass 2 CSS immediately so the WebView paints it
+                    _pendingUserScriptToInject.value = initialScript
+
+                    var finalBlueprint = initialBlueprint
+                    var finalScript = initialScript
+                    var savedReviewScreenshotPath: String? = null
+
+                    // Step 2: Run Pass 3 (2-Frame Animation Differential Audit + Live Screenshot Review)
+                    val wv = activeWebViewRef
+                    if (wv != null) {
+                        onThinkingProgress("Pass 3: Auditing live render & animations...", "", false)
+                        delay(350L) // Allow WebView to paint Pass 2 CSS
+                        try { wv.evaluateJsSuspend(MydesRuntime.SNAPSHOT_FRAME_1_JS) } catch (_: Exception) {}
+                        delay(280L) // Advance keyframes by 280ms for Frame 2 differential check
+                        val auditJson = try { wv.evaluateJsSuspend(MydesRuntime.VISUAL_AND_DOM_AUDIT_JS) } catch (_: Exception) { null }
+                        val reviewBmp = captureWebViewBitmap(wv)
+                        val reviewBase64 = if (reviewBmp != null) bitmapToBase64(reviewBmp) else null
+                        savedReviewScreenshotPath = if (reviewBmp != null) saveScreenshotToFile(reviewBmp) else null
+
+                        val pass3Result = geminiStylerService.themeSpec(
+                            context = getApplication(),
+                            prompt = prompt,
+                            websiteUrl = tab.url,
+                            pageOutlineJson = preOutline,
+                            screenshotBase64 = reviewBase64,
+                            forceFresh = false,
+                            auditJson = auditJson,
+                            isReviewPass = true,
+                            onThinkingUpdate = onThinkingProgress,
+                            screenshotPath = savedReviewScreenshotPath
+                        )
+
+                        pass3Result.getOrNull()?.let { stitchedBp ->
+                            if (stitchedBp.customCss != initialBlueprint.customCss) {
+                                finalBlueprint = stitchedBp
+                                finalScript = MydesRuntime.script(stitchedBp)
+                                _pendingUserScriptToInject.value = finalScript
+                            }
+                        }
+                    }
+
+                    _isAiStylerLoading.value = false
                     thinkingTimerJob?.cancel()
                     val (finalSummaries, _) = ThoughtSummarizer.summarize(thoughtBuffer.toString(), isComplete = true)
-                    val script = MydesRuntime.script(blueprint)
 
                     _aiThinkingState.update { current ->
                         val updatedChat = current.chatHistory.map { msg ->
@@ -914,7 +1093,7 @@ class BrowserViewModel(
                                 msg.copy(
                                     isThinkingActive = false,
                                     isThinkingFinished = true,
-                                    thinkingPhase = "Theme Synthesized & Applied",
+                                    thinkingPhase = "Theme Synthesized & Verified",
                                     thinkingSteps = if (finalSummaries.isNotEmpty()) finalSummaries else msg.thinkingSteps,
                                     activeStreamSnippet = ""
                                 )
@@ -923,7 +1102,7 @@ class BrowserViewModel(
                         current.copy(
                             isActive = false,
                             isFinished = true,
-                            phase = "Theme Synthesized & Applied",
+                            phase = "Theme Synthesized & Verified",
                             summarizedStatements = if (finalSummaries.isNotEmpty()) finalSummaries else current.summarizedStatements,
                             currentStreamSnippet = "",
                             chatHistory = updatedChat
@@ -931,65 +1110,65 @@ class BrowserViewModel(
                     }
 
                     val finalHistory = _aiThinkingState.value.chatHistory
-
-                    if (domain.isNotBlank()) {
-                        val theme = WebsiteTheme(
-                            domain = domain,
-                            prompt = prompt,
-                            baseScript = script,
-                            pageScripts = mapOf(tab.url to script),
-                            activeCss = blueprint.customCss,
-                            activeConcept = blueprint.concept,
-                            chatHistory = finalHistory,
-                            bg = blueprint.bg,
-                            fg = blueprint.fg
-                        )
-                        _websiteThemes.value = _websiteThemes.value + (domain to theme)
-                    }
-                    _pendingUserScriptToInject.value = script
-
-                    // Requirement 5: Default model for subsequent continued chats is gemini-3.5-flash-lite
                     setDefaultModelForContinuedChat()
 
-                    val wv = activeWebViewRef
-                    if (wv != null && domain.isNotBlank()) {
-                        delay(5000L)
+                    val screenshotPath = if (wv != null && domain.isNotBlank()) {
+                        delay(2000L)
                         val bitmap = captureWebViewBitmap(wv)
-                        val screenshotPath = if (bitmap != null) saveScreenshotToFile(bitmap) else null
+                        if (bitmap != null) saveScreenshotToFile(bitmap) else savedReviewScreenshotPath
+                    } else savedReviewScreenshotPath
 
+                    val initialIteration = ThemeVisualIteration(
+                        iterationNumber = 1,
+                        title = finalBlueprint.name.ifBlank { finalBlueprint.concept },
+                        screenshotPath = screenshotPath,
+                        script = finalScript,
+                        activeCss = finalBlueprint.customCss,
+                        concept = finalBlueprint.concept,
+                        bg = finalBlueprint.bg,
+                        fg = finalBlueprint.fg,
+                        timestamp = System.currentTimeMillis()
+                    )
+                    val initialVisualHistory = listOf(initialIteration)
+                    val initialHistoryJson = ThemeVisualIteration.listToJson(initialVisualHistory)
+
+                    if (domain.isNotBlank()) {
                         val initialThemeEntity = GeneratedThemeEntity(
                             domain = domain,
                             websiteUrl = tab.url,
                             websiteTitle = siteName,
                             prompt = prompt,
-                            themeName = blueprint.name,
-                            script = script,
+                            themeName = finalBlueprint.name,
+                            script = finalScript,
                             screenshotPath = screenshotPath,
-                            activeCss = blueprint.customCss,
-                            concept = blueprint.concept,
+                            activeCss = finalBlueprint.customCss,
+                            concept = finalBlueprint.concept,
                             chatHistoryJson = ThemeChatMessage.listToJson(finalHistory),
-                            bg = blueprint.bg,
-                            fg = blueprint.fg
+                            visualHistoryJson = initialHistoryJson,
+                            bg = finalBlueprint.bg,
+                            fg = finalBlueprint.fg
                         )
-                        browserRepository.saveGeneratedTheme(initialThemeEntity)
-                    } else if (domain.isNotBlank()) {
-                        val fallbackTheme = GeneratedThemeEntity(
+                        val insertedId = browserRepository.saveGeneratedTheme(initialThemeEntity)
+
+                        val theme = WebsiteTheme(
                             domain = domain,
-                            websiteUrl = tab.url,
-                            websiteTitle = siteName,
                             prompt = prompt,
-                            themeName = blueprint.name,
-                            script = script,
-                            screenshotPath = null,
-                            activeCss = blueprint.customCss,
-                            concept = blueprint.concept,
-                            chatHistoryJson = ThemeChatMessage.listToJson(finalHistory),
-                            bg = blueprint.bg,
-                            fg = blueprint.fg
+                            baseScript = finalScript,
+                            pageScripts = mapOf(tab.url to finalScript),
+                            activeCss = finalBlueprint.customCss,
+                            activeConcept = finalBlueprint.concept,
+                            chatHistory = finalHistory,
+                            bg = finalBlueprint.bg,
+                            fg = finalBlueprint.fg,
+                            entityId = insertedId,
+                            screenshotPath = screenshotPath,
+                            visualHistory = initialVisualHistory
                         )
-                        browserRepository.saveGeneratedTheme(fallbackTheme)
+                        _websiteThemes.value = _websiteThemes.value + (domain to theme)
+                        _aiThinkingState.update { it.copy(visualHistory = initialVisualHistory) }
                     }
                 }.onFailure { err ->
+                    _isAiStylerLoading.value = false
                     thinkingTimerJob?.cancel()
                     val errMsg = err.message ?: "Failed to generate styling."
                     _aiStylerErrorMessage.value = errMsg
@@ -1022,6 +1201,59 @@ class BrowserViewModel(
 
     fun registerActiveWebView(webView: android.webkit.WebView?) {
         activeWebViewRef = webView
+    }
+
+    fun revertToVisualIteration(iteration: ThemeVisualIteration) {
+        val tab = activeTab.value ?: return
+        val domain = extractDomain(tab.url)
+        if (domain.isBlank()) return
+        val activeTheme = _websiteThemes.value[domain] ?: return
+
+        _pendingUserScriptToInject.value = iteration.script
+
+        val updatedTheme = activeTheme.copy(
+            prompt = iteration.title,
+            baseScript = iteration.script,
+            pageScripts = activeTheme.pageScripts + (tab.url to iteration.script),
+            activeCss = iteration.activeCss ?: "",
+            activeConcept = iteration.concept ?: iteration.title,
+            bg = iteration.bg ?: "#10141D",
+            fg = iteration.fg ?: "#E6EDF3",
+            screenshotPath = iteration.screenshotPath
+        )
+        val updatedThemes = _websiteThemes.value.toMutableMap()
+        updatedThemes[domain] = updatedTheme
+        _websiteThemes.value = updatedThemes
+
+        _aiThinkingState.update { current ->
+            current.copy(
+                morphBgColor = iteration.bg,
+                morphFgColor = iteration.fg,
+                activeConcept = iteration.concept
+            )
+        }
+
+        viewModelScope.launch {
+            val entityId = activeTheme.entityId
+            if (entityId != null) {
+                val existing = browserRepository.getGeneratedThemeById(entityId)
+                if (existing != null) {
+                    browserRepository.updateGeneratedTheme(
+                        existing.copy(
+                            script = iteration.script,
+                            activeCss = iteration.activeCss,
+                            concept = iteration.concept,
+                            bg = iteration.bg,
+                            fg = iteration.fg,
+                            screenshotPath = iteration.screenshotPath,
+                            themeName = iteration.title
+                        )
+                    )
+                }
+            }
+        }
+
+        Toast.makeText(getApplication(), "Reverted to Iteration #${iteration.iterationNumber}: ${iteration.title}", Toast.LENGTH_SHORT).show()
     }
 
     private suspend fun captureWebViewBitmap(webView: android.webkit.WebView): android.graphics.Bitmap? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
@@ -1136,11 +1368,6 @@ class BrowserViewModel(
         }
     }
 
-    /**
-     * Requirement 1 & 2:
-     * Deactivates the active theme, sets the brush icon back to inactive state,
-     * and runs a staggered exit animation on each styled element before restoring the original webpage.
-     */
     fun resetCustomStyle() {
         val domain = extractDomain(activeTab.value?.url ?: "")
         if (domain.isNotBlank()) {
@@ -1199,7 +1426,7 @@ class BrowserViewModel(
         val initialScript = cachedPageScript ?: activeTheme.baseScript
         _pendingUserScriptToInject.value = initialScript
 
-        if (!activeTheme.isImported && cachedPageScript == null && url != lastAdaptedUrl) {
+        if (!activeTheme.isImported && !activeTheme.isSavedTheme && cachedPageScript == null && url != lastAdaptedUrl) {
             lastAdaptedUrl = url
             backgroundAdaptationJob?.cancel()
             backgroundAdaptationJob = viewModelScope.launch {

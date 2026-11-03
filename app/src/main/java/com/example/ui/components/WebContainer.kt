@@ -13,7 +13,6 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -24,7 +23,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.viewinterop.AndroidView
 
 const val DESKTOP_USER_AGENT =
@@ -84,7 +82,7 @@ fun WebContainer(
         }
     }
 
-    var dragTotalX by remember { mutableStateOf(0f) }
+    var lastDesktopMode by remember { mutableStateOf(isDesktopMode) }
 
     Box(
         modifier = modifier.fillMaxSize()
@@ -95,37 +93,31 @@ fun WebContainer(
                 WebView(context).apply {
                     webViewRef = this
                     onWebViewCreated(this)
-                    val hasDriNode = try {
-                        val dri = java.io.File("/dev/dri")
-                        dri.exists() && (dri.listFiles()?.isNotEmpty() == true)
-                    } catch (_: Exception) {
-                        false
-                    }
-                    if (hasDriNode) {
-                        // LAYER_TYPE_NONE allows WebView's internal Chromium GPU compositor to draw
-                        // directly into the window surface when hardware render nodes are available.
-                        setLayerType(View.LAYER_TYPE_NONE, null)
-                    } else {
-                        // In virtualized/headless environments without DRM rendernodes (/dev/dri),
-                        // use software layer to prevent "Failed to open rendernode: No such file or directory" error.
-                        setLayerType(View.LAYER_TYPE_SOFTWARE, null)
-                    }
+                    // Ensure layer type is LAYER_TYPE_NONE so WebView's internal Chromium GPU compositor
+                    // draws directly with full hardware acceleration at 60/90/120fps.
+                    // NEVER set LAYER_TYPE_SOFTWARE: software layer disables GPU acceleration, causing
+                    // CPU rasterization lag (unscrollable jagged scrolling) and broken variable font metrics.
+                    setLayerType(View.LAYER_TYPE_NONE, null)
+                    isNestedScrollingEnabled = true
+                    overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
 
-                settings.apply {
-                    javaScriptEnabled = isJavaScriptEnabled
-                    domStorageEnabled = true
-                    loadsImagesAutomatically = true
-                    offscreenPreRaster = true // Pre-rasterize offscreen tiles on GPU like Chrome
-                    loadWithOverviewMode = true
-                    useWideViewPort = true
-                    builtInZoomControls = true
-                    displayZoomControls = false
-                    setSupportZoom(true)
-                    mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-                    cacheMode = if (isIncognito) WebSettings.LOAD_NO_CACHE else WebSettings.LOAD_DEFAULT
-                    userAgentString = if (isDesktopMode) DESKTOP_USER_AGENT else MOBILE_USER_AGENT
-                    mediaPlaybackRequiresUserGesture = true
-                }
+                    settings.apply {
+                        javaScriptEnabled = isJavaScriptEnabled
+                        domStorageEnabled = true
+                        loadsImagesAutomatically = true
+                        offscreenPreRaster = true // Pre-rasterize offscreen tiles on GPU like Chrome
+                        loadWithOverviewMode = true
+                        useWideViewPort = true
+                        builtInZoomControls = false
+                        displayZoomControls = false
+                        setSupportZoom(false)
+                        mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                        cacheMode = if (isIncognito) WebSettings.LOAD_NO_CACHE else WebSettings.LOAD_DEFAULT
+                        if (isDesktopMode) {
+                            userAgentString = DESKTOP_USER_AGENT
+                        }
+                        mediaPlaybackRequiresUserGesture = true
+                    }
 
                 CookieManager.getInstance().setAcceptCookie(!isIncognito)
                 CookieManager.getInstance().setAcceptThirdPartyCookies(this, !isIncognito)
@@ -198,9 +190,6 @@ fun WebContainer(
                             """
                             (function() {
                                 var meta = document.querySelector('meta[name="theme-color"]');
-                                var bannerFix = document.createElement('style');
-                                bannerFix.textContent = 'div[class*="banner"], div[class*="popup"], shreddit-app-banner { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; background-color: rgba(26, 26, 27, 0.98) !important; color: #fff !important; }';
-                                document.head.appendChild(bannerFix);
                                 if (meta && meta.content) return meta.content;
                                 var header = document.querySelector('header') || document.querySelector('nav');
                                 if (header) {
@@ -278,10 +267,12 @@ fun WebContainer(
             }
         },
         update = { webView ->
-            webView.settings.javaScriptEnabled = isJavaScriptEnabled
-            val targetUserAgent = if (isDesktopMode) DESKTOP_USER_AGENT else null
-            if (webView.settings.userAgentString != targetUserAgent) {
-                webView.settings.userAgentString = targetUserAgent
+            if (webView.settings.javaScriptEnabled != isJavaScriptEnabled) {
+                webView.settings.javaScriptEnabled = isJavaScriptEnabled
+            }
+            if (isDesktopMode != lastDesktopMode) {
+                lastDesktopMode = isDesktopMode
+                webView.settings.userAgentString = if (isDesktopMode) DESKTOP_USER_AGENT else null
                 webView.reload()
             }
         }

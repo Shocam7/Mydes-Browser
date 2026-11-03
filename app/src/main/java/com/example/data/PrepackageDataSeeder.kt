@@ -76,18 +76,23 @@ object PrepackageDataSeeder {
         if (!reviewDir.exists()) reviewDir.mkdirs()
 
         try {
-            val assetFiles = context.assets.list("files/theme_screenshots") ?: emptyArray()
-            for (filename in assetFiles) {
-                val themeDest = File(themeDir, filename)
-                if (!themeDest.exists() || themeDest.length() == 0L) {
-                    copyAssetFile(context, "files/theme_screenshots/$filename", themeDest)
-                }
-                val reviewDest = File(reviewDir, filename)
-                if (!reviewDest.exists() || reviewDest.length() == 0L) {
-                    copyAssetFile(context, "files/theme_screenshots/$filename", reviewDest)
+            val assetDirs = listOf("files/theme_screenshots", "files/review_screenshots")
+            var count = 0
+            for (dir in assetDirs) {
+                val files = context.assets.list(dir) ?: emptyArray()
+                for (filename in files) {
+                    val themeDest = File(themeDir, filename)
+                    if (!themeDest.exists() || themeDest.length() == 0L) {
+                        copyAssetFile(context, "$dir/$filename", themeDest)
+                        count++
+                    }
+                    val reviewDest = File(reviewDir, filename)
+                    if (!reviewDest.exists() || reviewDest.length() == 0L) {
+                        copyAssetFile(context, "$dir/$filename", reviewDest)
+                    }
                 }
             }
-            Log.i(TAG, "Seeded ${assetFiles.size} screenshots to theme_screenshots and review_screenshots")
+            Log.i(TAG, "Seeded screenshots to theme_screenshots and review_screenshots (synced $count)")
         } catch (e: Exception) {
             Log.w(TAG, "Could not list theme_screenshots from assets", e)
         }
@@ -104,6 +109,23 @@ object PrepackageDataSeeder {
                 if (!destFile.exists() || destFile.length() == 0L) {
                     copyAssetFile(context, "shared_prefs/$filename", destFile)
                 }
+            }
+            // Sanitize cached blueprints if an old transparent body background was stored
+            val bpFile = File(prefsDir, "mydes_blueprints_v4.xml")
+            if (bpFile.exists()) {
+                try {
+                    val content = bpFile.readText()
+                    if (content.contains("background: transparent !important;")) {
+                        bpFile.writeText(content.replace("background: transparent !important;", "background-color: #020208 !important;"))
+                    }
+                } catch (_: Exception) {}
+            }
+
+            // Ensure any legacy prefilled wrong key is stripped from SharedPreferences
+            val sp = context.getSharedPreferences("mydes_prefs", Context.MODE_PRIVATE)
+            val existingKey = sp.getString("custom_api_key", "") ?: ""
+            if (existingKey.isNotBlank() && (existingKey.contains("AQ.Ab8RN6") || existingKey.startsWith("AQ."))) {
+                sp.edit().remove("custom_api_key").apply()
             }
             Log.i(TAG, "Seeded shared preferences XML files")
         } catch (e: Exception) {

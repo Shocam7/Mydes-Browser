@@ -55,6 +55,9 @@ interface MydesDao {
     @Query("SELECT * FROM generated_themes ORDER BY createdAt DESC")
     fun getAllGeneratedThemes(): Flow<List<com.example.data.model.GeneratedThemeEntity>>
 
+    @Query("SELECT * FROM generated_themes WHERE id = :id LIMIT 1")
+    suspend fun getGeneratedThemeById(id: Long): com.example.data.model.GeneratedThemeEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertGeneratedTheme(theme: com.example.data.model.GeneratedThemeEntity): Long
 

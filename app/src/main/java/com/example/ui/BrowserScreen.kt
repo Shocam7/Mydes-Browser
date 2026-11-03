@@ -51,6 +51,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -156,7 +157,9 @@ fun BrowserScreen(
     var scrollUpKey by remember { mutableLongStateOf(0L) }
 
     fun onUpwardScrollDetected() {
-        controlsVisible = true
+        if (!controlsVisible) {
+            controlsVisible = true
+        }
         scrollUpKey++
     }
 
@@ -278,63 +281,66 @@ fun BrowserScreen(
         )
 
         // 4. Top Header Controls:
-        // Brush icon reflects active state (`isCustomStyleApplied == true`) vs inactive state (`false`)
-        if (!isOptionsMenuExpanded) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .then(topInsetsModifier)
-                    .padding(start = 16.dp, top = 8.dp)
-                    .offset(x = settingsOffsetX)
-                    .size(44.dp)
-                    .shadow(3.dp, CircleShape)
-                    .clip(CircleShape)
-                    .background(Color(0xFFE4E6EA))
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = ripple(bounded = true),
-                        onClick = { viewModel.toggleSettings() }
-                    )
-                    .testTag("standalone_settings_button")
-                    .semantics { contentDescription = "Open Settings" },
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Settings,
-                    contentDescription = null,
-                    tint = Color(0xFF33373D),
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-
-            Column(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .then(topInsetsModifier)
-                    .padding(end = 16.dp, top = 8.dp)
-                    .offset(x = brushOffsetX),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                // Standalone top-right Brush (Active state when theme is applied, Inactive otherwise)
+        // Hide settings, brush, new tab plus buttons and TopHeaderPill when SettingsSheet is open
+        if (!isSettingsOpen) {
+            if (!isOptionsMenuExpanded) {
                 Box(
-                    modifier = Modifier.size(44.dp),
+                    modifier = Modifier
+                        .zIndex(25f)
+                        .align(Alignment.TopStart)
+                        .then(topInsetsModifier)
+                        .padding(start = 16.dp, top = 8.dp)
+                        .offset(x = settingsOffsetX)
+                        .size(44.dp)
+                        .shadow(3.dp, CircleShape)
+                        .clip(CircleShape)
+                        .background(Color(0xFFE4E6EA))
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = ripple(bounded = true),
+                            onClick = { viewModel.toggleSettings() }
+                        )
+                        .testTag("standalone_settings_button")
+                        .semantics { contentDescription = "Open Settings" },
                     contentAlignment = Alignment.Center
                 ) {
-                    if (isThemeUpdatingInBackground) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(48.dp),
-                            color = Color(0xFFF6C343),
-                            strokeWidth = 2.5.dp
-                        )
-                    }
-                    val isBrushActive = isCustomStyleApplied
+                    Icon(
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = null,
+                        tint = Color(0xFF33373D),
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                Column(
+                    modifier = Modifier
+                        .zIndex(25f)
+                        .align(Alignment.TopEnd)
+                        .then(topInsetsModifier)
+                        .padding(end = 16.dp, top = 8.dp)
+                        .offset(x = brushOffsetX),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // Standalone top-right Brush (Active state when theme is applied, Inactive otherwise)
                     Box(
-                        modifier = Modifier
-                            .size(44.dp)
-                            .shadow(if (isBrushActive) 6.dp else 2.dp, CircleShape)
-                            .clip(CircleShape)
-                            .background(if (isBrushActive) Color(0xFF1E2024) else Color(0xFFE4E6EA))
+                        modifier = Modifier.size(44.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (isThemeUpdatingInBackground) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(48.dp),
+                                color = Color(0xFFF6C343),
+                                strokeWidth = 2.5.dp
+                            )
+                        }
+                        val isBrushActive = isCustomStyleApplied
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .shadow(if (isBrushActive) 6.dp else 2.dp, CircleShape)
+                                .clip(CircleShape)
+                                .background(if (isBrushActive) Color(0xFF1E2024) else Color(0xFFE4E6EA))
                             .border(
                                 width = if (isBrushActive) 1.5.dp else 0.dp,
                                 color = if (isBrushActive) Color(0xFFF6C343) else Color.Transparent,
@@ -381,10 +387,12 @@ fun BrowserScreen(
                 isThemeUpdatingInBackground = isThemeUpdatingInBackground,
                 isCustomStyleApplied = isCustomStyleApplied,
                 modifier = Modifier
+                    .zIndex(25f)
                     .align(Alignment.TopCenter)
                     .then(topInsetsModifier)
             )
         }
+    }
 
         // 5. Find In Page Overlay
         AnimatedVisibility(
@@ -471,6 +479,7 @@ fun BrowserScreen(
             onApplyStyle = { viewModel.applyAiStyle(it) },
             onApplySavedTheme = { viewModel.applySavedTheme(it) },
             onDeleteSavedTheme = { viewModel.deleteSavedTheme(it) },
+            onRevertToVisualIteration = { viewModel.revertToVisualIteration(it) },
             onResetStyle = { viewModel.resetCustomStyle() },
             onOpenImportRedesign = { viewModel.openImportRedesignDialog() },
             selectedSynthesisModel = synthesisModel,

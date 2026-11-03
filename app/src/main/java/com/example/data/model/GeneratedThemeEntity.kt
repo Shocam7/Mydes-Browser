@@ -23,5 +23,6 @@ data class GeneratedThemeEntity(
     val concept: String? = null,
     val chatHistoryJson: String? = null,
     val bg: String? = null,
-    val fg: String? = null
+    val fg: String? = null,
+    val visualHistoryJson: String? = null
 )
