@@ -773,292 +773,665 @@ object ResilientGoogleDns : Dns {
 object MydesRuntime {
 
     private val CORE = """
-if(window.__mydes && window.__mydes.id()===BP.id) return;
-if(window.__mydes && window.__mydes.clear){try{window.__mydes.clear();}catch(e){}}
-if(BP.skip && BP.skip.indexOf(location.hostname)>=0) return;
+if (window.top !== window) return;
+if (window.__mydes && window.__mydes.id() === BP.id) return;
+if (window.__mydes && window.__mydes.clear) { try { window.__mydes.clear(false); } catch (e) {} }
+if (BP.skip && BP.skip.indexOf(location.hostname) >= 0) return;
 
-var cfg = BP;
-var cleanupFns=[], mo=null, retagRaf=0;
+var W = window, D = document, cfg = BP;
+var A = 'data-mydes', S = 'data-mydes-surface', F = 'data-mydes-fix', ST = 'data-mydes-state';
+var dead = false, scheduled = false;
+var stats = { slices: 0, ms: 0, scanned: 0, tagged: 0, surfaces: 0, healed: 0 };
 
 window.MydesBridge = {
-  decorateUnits: function() {},
-  injectOrnament: function() {},
-  spawnParticles: function() {},
-  enable3DTilt: function() {},
-  onCleanup: function(fn) { if(typeof fn === 'function') cleanupFns.push(fn); }
+  decorateUnits: function() {}, injectOrnament: function() {}, spawnParticles: function() {}, enable3DTilt: function() {},
+  onCleanup: function() {}
 };
 
-/* ---------- 1. Artisanal Pure-CSS Stylesheet Engine ---------- */
-var eStyle = null;
-function applySheets() {
-  var rootVars = ':root{' +
-    '--m-bg:'+cfg.bg+';--bg:'+cfg.bg+';' +
-    '--m-surface:'+cfg.surface+';--surface:'+cfg.surface+';--m-primary:'+cfg.surface+';' +
-    '--m-surface2:'+cfg.surface2+';--surface2:'+cfg.surface2+';' +
-    '--m-fg:'+cfg.fg+';--fg:'+cfg.fg+';--m-text:'+cfg.fg+';' +
-    '--m-ink:'+cfg.ink+';--ink:'+cfg.ink+';' +
-    '--m-accent:'+cfg.accent+';--accent:'+cfg.accent+';' +
-    '--m-border:color-mix(in srgb, '+cfg.accent+' 50%, '+cfg.surface2+');--border:var(--m-border);' +
-    '}\n';
+/* ================= colour helpers ================= */
+function h2c(h) { return { r: parseInt(h.substr(1, 2), 16), g: parseInt(h.substr(3, 2), 16), b: parseInt(h.substr(5, 2), 16), a: 1 }; }
+function c2h(c) {
+  function x(v) { v = Math.max(0, Math.min(255, Math.round(v))); return (v < 16 ? '0' : '') + v.toString(16); }
+  return '#' + x(c.r) + x(c.g) + x(c.b);
+}
+function lum(c) {
+  function f(v) { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }
+  return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
+}
+function contrast(a, b) { var x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); }
+function mix(a, b, t) { return { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t, a: 1 }; }
+function sat(c) {
+  var r = c.r / 255, g = c.g / 255, b = c.b / 255, mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2, d = mx - mn;
+  if (d === 0) return { s: 0, l: l };
+  return { s: d / (1 - Math.abs(2 * l - 1)), l: l };
+}
+function parse(c) {
+  if (!c) return null;
+  var m = /^rgba?\(([^)]+)\)$/.exec(c), p;
+  if (m) {
+    p = m[1].split(/[\s,\/]+/).filter(Boolean).map(parseFloat);
+    if (p.length < 3) return null;
+    var a = p.length > 3 ? p[3] : 1;
+    if (a > 1) a = a / 100;
+    return { r: p[0], g: p[1], b: p[2], a: a };
+  }
+  m = /^color\(srgb\s+([^)]+)\)$/.exec(c);
+  if (m) {
+    p = m[1].split(/[\s\/]+/).filter(Boolean).map(parseFloat);
+    if (p.length < 3) return null;
+    return { r: p[0] * 255, g: p[1] * 255, b: p[2] * 255, a: p.length > 3 ? p[3] : 1 };
+  }
+  return null;
+}
 
-  var universalBaseCss =
-    'html, body { background-color: var(--m-bg) !important; color: var(--m-fg) !important; }\n' +
-    'main, [role="main"], [data-mydes="main"], [data-mydes="grid"], lazy-list, ytm-rich-grid-renderer, ytm-section-list-renderer, ytm-item-section-renderer, ytm-single-column-browse-results-renderer, #page-manager, #content { background-color: transparent !important; }\n' +
-    '[data-mydes="header"], header, .mobile-topbar-header { background-color: var(--m-surface); border-bottom: 2px solid var(--m-accent); }\n' +
-    '[data-mydes="search"], yt-searchbox, input[type="search"], input[name="q"], input[name="k"] { background-color: var(--m-surface2); color: var(--m-fg); border: 1px solid var(--m-accent); border-radius: 18px; }\n' +
-    '[data-mydes="chip"] { background-color: var(--m-surface2); color: var(--m-ink); border: 1px solid var(--m-border); border-radius: 12px; }\n' +
-    '[data-mydes="card"] { background-color: var(--m-surface); border: 1.5px solid var(--m-border); border-radius: 14px; margin-bottom: 12px !important; padding: 10px !important; box-sizing: border-box !important; color: var(--m-fg); position: relative; }\n' +
-    '[data-mydes="media-box"] { position: relative; display: block; overflow: hidden; border-radius: 8px; }\n' +
-    '[data-mydes="heading"], [data-mydes="title"], [data-mydes="card"] h1, [data-mydes="card"] h2, [data-mydes="card"] h3, [data-mydes="card"] h4, [class*="media-item-headline"], [class*="title"] { color: var(--m-ink); }\n' +
-    '[data-mydes="heading"] *, [data-mydes="title"] *, [class*="media-item-headline"] * { font-family: inherit !important; color: inherit !important; letter-spacing: inherit !important; text-shadow: inherit !important; text-transform: inherit !important; }\n' +
-    '[data-mydes="bottom-bar"], ytm-pivot-bar-renderer, footer { background-color: var(--m-surface); border-top: 2px solid var(--m-accent); color: var(--m-fg); }\n';
+/* ================= palette + stylesheet ================= */
+var P = {};
+function pal() {
+  P.bg = h2c(cfg.bg); P.surface = h2c(cfg.surface); P.surface2 = h2c(cfg.surface2);
+  P.fg = h2c(cfg.fg); P.ink = h2c(cfg.ink); P.accent = h2c(cfg.accent);
+}
+function buildCss() {
+  var border = c2h(mix(P.accent, P.surface2, 0.5));
+  var vars = ':root{color-scheme:' + (cfg.dark ? 'dark' : 'light') + ';' +
+    '--m-bg:' + cfg.bg + ';--bg:' + cfg.bg + ';' +
+    '--m-surface:' + cfg.surface + ';--surface:' + cfg.surface + ';--m-primary:' + cfg.surface + ';' +
+    '--m-surface2:' + cfg.surface2 + ';--surface2:' + cfg.surface2 + ';' +
+    '--m-fg:' + cfg.fg + ';--fg:' + cfg.fg + ';--m-text:' + cfg.fg + ';' +
+    '--m-ink:' + cfg.ink + ';--ink:' + cfg.ink + ';' +
+    '--m-accent:' + cfg.accent + ';--accent:' + cfg.accent + ';' +
+    '--m-border:' + border + ';--border:' + border + ';}\n';
 
+  var base =
+    'html,body{background-color:var(--m-bg)!important;color:var(--m-fg)!important}\n' +
+    /* surface remap: every opaque host panel is moved onto the palette, tiers alternate with nesting */
+    '[data-mydes-surface="canvas"],[data-mydes-surface="clear"]{background-color:transparent!important}\n' +
+    '[data-mydes-surface="1"],[data-mydes-surface="pop"]{background-color:var(--m-surface)!important;color:var(--m-fg)!important}\n' +
+    '[data-mydes-surface="2"],[data-mydes-surface="field"]{background-color:var(--m-surface2)!important;color:var(--m-fg)!important}\n' +
+    '[data-mydes-surface="pop"],[data-mydes-surface="field"]{border-color:var(--m-border)!important}\n' +
+    '[data-mydes-surface="field"]::placeholder{color:var(--m-fg)!important;opacity:.55!important}\n' +
+    '[data-mydes-fix="fg"]{color:var(--m-fg)!important}\n' +
+    '[data-mydes-fix="link"]{color:var(--m-accent)!important}\n' +
+    '[data-mydes-fix="w"]{color:#fff!important}\n' +
+    '[data-mydes-fix="k"]{color:#000!important}\n' +
+    /* role defaults: no !important, so the generated CSS always wins */
+    '[data-mydes="header"]{background-color:var(--m-surface);border-bottom:2px solid var(--m-accent)}\n' +
+    '[data-mydes="search"]{background-color:var(--m-surface2);color:var(--m-fg);border:1px solid var(--m-accent);border-radius:18px}\n' +
+    '[data-mydes="search"] input,[data-mydes="search"] textarea{background-color:transparent;color:var(--m-fg)}\n' +
+    '[data-mydes="chip"]{background-color:var(--m-surface2);color:var(--m-ink);border:1px solid var(--m-border);border-radius:12px}\n' +
+    '[data-mydes="card"]{background-color:var(--m-surface);border:1.5px solid var(--m-border);border-radius:14px;margin-bottom:12px!important;padding:10px!important;box-sizing:border-box!important;color:var(--m-fg);position:relative}\n' +
+    '[data-mydes="media-box"]{position:relative;display:block;overflow:hidden;border-radius:8px}\n' +
+    '[data-mydes="heading"],[data-mydes="title"]{color:var(--m-ink)}\n' +
+    '[data-mydes="heading"] *,[data-mydes="title"] *{font-family:inherit!important;color:inherit!important;letter-spacing:inherit!important;text-shadow:inherit!important;text-transform:inherit!important}\n' +
+    '[data-mydes="bottom-bar"]{background-color:var(--m-surface);border-top:2px solid var(--m-accent);color:var(--m-fg)}\n';
+
+  /* Bug 1 Fix: Pure-CSS Safety Resets so structural <a> wrappers and icon <button> elements never get crushed */
   var safetyResetCss =
     '\n/* --- Pure-CSS Safety Resets --- */\n' +
     'html body a:not([data-mydes="card"]):not([data-mydes="btn"]):not([data-mydes="chip"]):has(img, video, picture, h1, h2, h3, h4, div), html body [class*="thumbnail"] a:not([data-mydes="card"]), html body [class*="media"] a:not([data-mydes="card"]) { border: none !important; padding: 0 !important; background: transparent !important; box-shadow: none !important; }\n' +
     'html body button:not([data-mydes="nav-item"]):has(svg, img), html body [role="button"]:not([data-mydes="nav-item"]):not([data-mydes="chip"]):has(svg, img), html body [aria-label*="menu" i], html body [aria-label*="More" i], html body [aria-label*="Action" i] { background: transparent !important; border: none !important; box-shadow: none !important; }\n';
 
-  var fullCss = rootVars + universalBaseCss + '\n' + (cfg.customCss || '') + safetyResetCss;
-  var root = document.head || document.documentElement;
-  if(!root) return;
-  if(!eStyle || !eStyle.isConnected) {
-    eStyle = document.createElement('style');
-    eStyle.id = '__mydes_style';
-    root.appendChild(eStyle);
-  }
-  if(eStyle.textContent !== fullCss) eStyle.textContent = fullCss;
+  return vars + base + '\n' + (cfg.customCss || '') + safetyResetCss + '\n';
+}
 
-  var fontRegex = /(?:font-family|--[a-zA-Z0-9_-]*font[a-zA-Z0-9_-]*)\s*:\s*['"]?([^;'"!,}]+)['"]?/gi, match;
-  while((match = fontRegex.exec(cfg.customCss || '')) !== null) {
-    var fam = match[1].trim();
-    if(fam && !/^(serif|sans-serif|monospace|cursive|fantasy|system-ui|inherit|initial|unset|var\(|Georgia|Arial|Verdana|Tahoma|Courier|Times)$/i.test(fam)) {
+var sheet = null, styleEl = null;
+function mountSheet() {
+  var css = buildCss();
+  try {
+    if (typeof CSSStyleSheet === 'function' && 'adoptedStyleSheets' in D) {
+      sheet = new CSSStyleSheet();
+      sheet.replaceSync(css);
+      D.adoptedStyleSheets = D.adoptedStyleSheets.concat([sheet]);
+      return;
+    }
+  } catch (e) { sheet = null; }
+  styleEl = D.createElement('style');
+  styleEl.id = '__mydes_style';
+  styleEl.textContent = css;
+  var r = D.head || D.documentElement;
+  if (r) r.appendChild(styleEl);
+}
+function ensureSheet() {
+  if (sheet) {
+    if (D.adoptedStyleSheets.indexOf(sheet) < 0) { try { D.adoptedStyleSheets = D.adoptedStyleSheets.concat([sheet]); } catch (e) {} }
+  } else if (styleEl && !styleEl.isConnected) {
+    var r = D.head || D.documentElement;
+    if (r) r.appendChild(styleEl);
+  }
+}
+function fonts() {
+  var head = D.head;
+  if (!head) return;
+  var re = /(?:font-family|--[a-zA-Z0-9_-]*font[a-zA-Z0-9_-]*)\s*:\s*['"]?([^;'"!,}]+)['"]?/gi, m;
+  var css = cfg.customCss || '';
+  while ((m = re.exec(css)) !== null) {
+    var fam = m[1].trim();
+    if (fam && !/^(serif|sans-serif|monospace|cursive|fantasy|system-ui|inherit|initial|unset|var\(|Georgia|Arial|Verdana|Tahoma|Courier|Times)/i.test(fam)) {
       var id = '__mydes_font_' + fam.replace(/\W+/g, '_');
-      if(!document.getElementById(id) && document.head) {
-        var link = document.createElement('link');
-        link.id = id;
-        link.rel = 'stylesheet';
-        link.href = 'https://fonts.googleapis.com/css2?family=' + encodeURIComponent(fam).replace(/%20/g, '+') + ':wght@400;500;600;700&display=swap';
-        document.head.appendChild(link);
+      if (!D.getElementById(id)) {
+        var l = D.createElement('link');
+        l.id = id; l.rel = 'stylesheet';
+        l.href = 'https://fonts.googleapis.com/css2?family=' + encodeURIComponent(fam).replace(/%20/g, '+') + ':wght@400;500;600;700&display=swap';
+        head.appendChild(l);
       }
     }
   }
 }
 
-/* ---------- 2. Universal Semantic & Geometric Role Tagger ---------- */
-function each(sel,fn){var l=document.querySelectorAll(sel);for(var i=0;i<l.length;i++)fn(l[i]);}
-function put(e,r){if(e.getAttribute('data-mydes')!==r)e.setAttribute('data-mydes',r);}
-function putNew(e,r){if(!e.hasAttribute('data-mydes'))e.setAttribute('data-mydes',r);}
-var PRICE=/^\s*(?:(?:[\u0024\u20AC\u00A3\u00A5\u20B9]|USD|EUR|GBP|INR|Rs\.?)\s?\d[\d,.]*|\d[\d,.]*\s?(?:[\u0024\u20AC\u00A3\u00A5\u20B9]|USD|EUR|GBP|INR))\s*$/;
-function inContent(e){return !!e.closest('main,article,section,[role="main"]');}
+/* ================= state ================= */
+var done = new WeakSet();       // elements already visited by the role pass
+var seen = new WeakSet();       // elements already inspected by the surface/contrast pass
+var tmap = new WeakMap();       // element -> surface tier (virtual, applied on flush)
+var known = new WeakMap();      // group parent -> { signature: role }
+var fresh = new Set(), regroup = new Set(), bars = new Set(), stateDirty = new Set();
+var plan = new Map(), fixPlan = new Map(), sq = [], iq = [], tasks = [];
+var bgCache = new Map();
+var mo = null, io = null;
+var origAttach = null;
 
-function cardLike(e){
-  if(e.closest('nav,footer,header,[data-mydes="nav"],[data-mydes="footer"],[data-mydes="header"],[data-mydes="bottom-bar"]'))return false;
-  var tag = e.tagName.toLowerCase();
-  if(/continuation|spinner|skeleton|loader|sentinel/.test(tag + ' ' + (e.className||''))) return false;
-  var link = e.tagName==='A' || !!e.querySelector('a[href]');
-  var hasMedia = !!e.querySelector('img,picture,video,yt-thumbnail-view-model,ytm-thumbnail-overlay-time-status-renderer');
-  var t = (e.textContent||'').trim().length;
-  return (link || hasMedia) && (hasMedia || t >= 20);
+var SKIPT = { script: 1, style: 1, noscript: 1, template: 1, head: 1, link: 1, meta: 1, title: 1, base: 1, svg: 1 };
+var NOINSPECT = { html: 1, head: 1, body: 1, svg: 1, img: 1, picture: 1, source: 1, video: 1, audio: 1, canvas: 1, iframe: 1, br: 1, hr: 1, wbr: 1, option: 1 };
+var NOGROUP = { table: 1, tbody: 1, thead: 1, tfoot: 1, tr: 1, select: 1, datalist: 1, optgroup: 1, colgroup: 1, dl: 1, pre: 1, code: 1 };
+var NOKID = { script: 1, style: 1, template: 1, link: 1, meta: 1, br: 1, hr: 1, option: 1, tr: 1, td: 1, th: 1, dt: 1, dd: 1, source: 1, track: 1, svg: 1, noscript: 1, img: 1 };
+var CANDBAR = { div: 1, nav: 1, ul: 1, section: 1, aside: 1 };
+var RANK = { 'header': 9, 'bottom-bar': 9, 'search': 8, 'chip': 7, 'nav-item': 7, 'card': 6, 'media-box': 5, 'title': 4, 'heading': 4, 'btn': 3 };
+var BYROLE = { banner: 'header', contentinfo: 'bottom-bar', search: 'search', searchbox: 'search', tab: 'chip', heading: 'heading', button: 'btn' };
+var POPROLE = { dialog: 1, alertdialog: 1, menu: 1, listbox: 1, tooltip: 1 };
+var BARSEL = 'header,[role="banner"],footer,[role="contentinfo"],[data-mydes="header"],[data-mydes="bottom-bar"]';
+var CLICK = 'a[href],button,[role="button"],[role="link"],[role="tab"]';
+var PRICE = /^\s*(?:(?:[\u0024\u20AC\u00A3\u00A5\u20B9]|USD|EUR|GBP|INR|Rs\.?)\s?\d[\d,.]*|\d[\d,.]*\s?(?:[\u0024\u20AC\u00A3\u00A5\u20B9]|USD|EUR|GBP|INR))\s*$/;
+
+/* ================= small utilities ================= */
+function up(n) {
+  if (!n) return null;
+  if (n.parentElement) return n.parentElement;
+  var r = n.getRootNode && n.getRootNode();
+  return (r && r.host) ? r.host : null;
+}
+function depthOf(el) { var d = 0, p = el; while ((p = p.parentElement) && d < 12) d++; return d; }
+function med(a) { a = a.slice().sort(function(x, y) { return x - y; }); return a[a.length >> 1]; }
+function txtLen(e) { return (e.textContent || '').trim().length; }
+function inContent(e) { return !!e.closest('main,article,section,[role="main"]'); }
+function docOrder(a, b) {
+  if (a === b) return 0;
+  var p = a.compareDocumentPosition(b);
+  return (p & 4) ? -1 : ((p & 2) ? 1 : 0);
+}
+function hasOwnText(e) {
+  var c = e.childNodes, n = Math.min(c.length, 14);
+  for (var i = 0; i < n; i++) if (c[i].nodeType === 3 && /\S/.test(c[i].nodeValue)) return true;
+  return false;
 }
 
-function decorateCardAnatomy(c){
-  var mainImg = c.querySelector('img:not([class*="avatar" i]):not([class*="channel" i]):not([class*="icon" i]):not([width^="1"]):not([width^="2"]):not([width^="3"]), video');
-  if(mainImg) {
-    var mediaWrap = mainImg.closest('a[class*="thumbnail" i], div[class*="thumbnail" i], yt-thumbnail-view-model, picture') || mainImg.parentElement;
-    if(mediaWrap && mediaWrap !== c && !mediaWrap.hasAttribute('data-mydes')) {
-      put(mediaWrap, 'media-box');
+/* ================= role planning (writes are batched) ================= */
+function want(el, role) {
+  var cur = plan.has(el) ? plan.get(el) : el.getAttribute(A);
+  if (role === '') { plan.set(el, ''); return; }
+  if (cur && (RANK[cur] || 0) >= (RANK[role] || 0)) return;
+  plan.set(el, role);
+}
+function flush() {
+  plan.forEach(function(role, el) {
+    if (!el.isConnected) return;
+    var cur = el.getAttribute(A);
+    if (role === '') { if (cur) el.removeAttribute(A); return; }
+    if (cur !== role) { el.setAttribute(A, role); stats.tagged++; }
+    if (el.hasAttribute(S)) { el.removeAttribute(S); tmap.delete(el); }
+    if (role === 'chip' || role === 'nav-item') syncState(el);
+  });
+  plan.clear();
+  for (var i = 0; i < sq.length; i++) {
+    var e = sq[i], t = tmap.get(e);
+    if (e.isConnected && t && !e.hasAttribute(A)) { if (e.getAttribute(S) !== t) e.setAttribute(S, t); }
+  }
+  sq.length = 0;
+  fixPlan.forEach(function(v, el) {
+    if (!el.isConnected) return;
+    if (v === '') { if (el.hasAttribute(F)) el.removeAttribute(F); }
+    else if (el.getAttribute(F) !== v) el.setAttribute(F, v);
+  });
+  fixPlan.clear();
+}
+var STATE_TOK = /(^|[-_])(active|selected|current)$/;
+var STATE_NEG = /(^|[-_])(inactive|unselected|not[-_]active|not[-_]selected)$/;
+function syncState(e) {
+  var on = e.getAttribute('aria-selected') === 'true' || e.getAttribute('aria-pressed') === 'true' ||
+    e.getAttribute('aria-current') === 'page' || e.getAttribute('aria-current') === 'true' || e.getAttribute('aria-checked') === 'true';
+  if (!on) {
+    var cl = e.classList;
+    for (var i = 0; i < cl.length && i < 12; i++) {
+      var t = cl[i].toLowerCase();
+      if (STATE_TOK.test(t) && !STATE_NEG.test(t)) { on = true; break; }
     }
   }
+  if (!on) on = !!e.querySelector('[aria-selected="true"],[aria-current="page"],[aria-current="true"],[aria-pressed="true"]');
+  if (on) { if (e.getAttribute(ST) !== 'active') e.setAttribute(ST, 'active'); }
+  else if (e.hasAttribute(ST)) e.removeAttribute(ST);
+}
 
-  var existingHeadings = c.querySelectorAll('[data-mydes="heading"]');
-  if(existingHeadings.length > 1) {
-    for(var h=1; h<existingHeadings.length; h++) existingHeadings[h].removeAttribute('data-mydes');
+/* ================= phase 1: semantic roles (no layout reads) ================= */
+function btnOk(e) {
+  if (e.querySelector('img,svg,picture,video,canvas,h1,h2,h3,h4,h5,h6')) return false;
+  return txtLen(e) > 0 || !!e.value;
+}
+function searchTarget(el) {
+  var c = el.closest('form,[role="search"]');
+  if (c && c.getElementsByTagName('*').length <= 40) return c;
+  return el;
+}
+var SEARCHNAME = /^(q|k|s|query|search|keyword|keywords|term|text)$/i;
+function semantic(el, ln) {
+  var role = el.getAttribute('role');
+  if (role && BYROLE[role]) {
+    var m = BYROLE[role];
+    if (m === 'btn') return btnOk(el) ? 'btn' : null;
+    if (m === 'header' || m === 'bottom-bar') return inContent(el) ? null : m;
+    if (m === 'search') { if (ln === 'input') { want(searchTarget(el), 'search'); return null; } return 'search'; }
+    if (m === 'chip') return el.closest(BARSEL) ? 'nav-item' : 'chip';
+    return m;
+  }
+  switch (ln) {
+    case 'header': return inContent(el) ? null : 'header';
+    case 'footer': return inContent(el) ? null : 'bottom-bar';
+    case 'h1': return 'title';
+    case 'h2': case 'h3': case 'h4': case 'h5': case 'h6': return 'heading';
+    case 'button': return btnOk(el) ? 'btn' : null;
+    case 'input':
+      var ty = (el.getAttribute('type') || 'text').toLowerCase();
+      if (ty === 'submit' || ty === 'button' || ty === 'reset') return 'btn';
+      if (ty === 'search' || SEARCHNAME.test(el.getAttribute('name') || '') ||
+          /search/i.test((el.getAttribute('placeholder') || '') + ' ' + (el.getAttribute('aria-label') || ''))) {
+        want(searchTarget(el), 'search');
+      }
+      return null;
+    case 'form': return null;
+  }
+  return null;
+}
+function visit(el) {
+  done.add(el);
+  stats.scanned++;
+  var ln = el.localName;
+  if (el.shadowRoot) watch(el.shadowRoot);
+  var r = semantic(el, ln);
+  if (r) want(el, r);
+  if (el.childElementCount >= 2) regroup.add(el);
+  if (!NOINSPECT[ln]) { if (io) io.observe(el); else iq.push(el); }
+  if ((CANDBAR[ln] || ln.indexOf('-') > 0) && depthOf(el) <= 6) bars.add(el);
+}
+function accept(node) { return (SKIPT[node.localName] || done.has(node)) ? 2 : 1; }
+function* scanRoots(roots) {
+  var n = 0;
+  for (var i = 0; i < roots.length; i++) {
+    var root = roots[i];
+    if (root.nodeType === 9) root = root.documentElement;
+    if (!root || !root.isConnected) continue;
+    if (root.nodeType === 1) { if (done.has(root) || SKIPT[root.localName]) continue; visit(root); }
+    var tw = D.createTreeWalker(root, 1, { acceptNode: accept }), cur;
+    while ((cur = tw.nextNode())) {
+      visit(cur);
+      if ((++n & 63) === 0) { flush(); yield; }
+    }
+  }
+  flush();
+}
+
+/* ================= phase 2: structure (bars, repeated groups, card anatomy) ================= */
+function sig(e) {
+  var f = e.firstElementChild;
+  return e.localName + '>' + (f ? f.localName : '') + (e.querySelector('img,picture,video') ? 'm' : '');
+}
+function* structure() {
+  var vw = W.innerWidth || 400, vh = W.innerHeight || 800, k = 0, i, j;
+
+  /* bars: full-width fixed/sticky strips at the top or bottom, whatever their tag */
+  var bl = Array.from(bars); bars.clear();
+  for (i = 0; i < bl.length; i++) {
+    var b = bl[i];
+    if (!b.isConnected || b.hasAttribute(A) || b.closest('[data-mydes="header"],[data-mydes="bottom-bar"]')) continue;
+    var cs = W.getComputedStyle(b), pos = cs.position, fixed = (pos === 'fixed' || pos === 'sticky');
+    if (!fixed && !(W.scrollY < 4 && depthOf(b) <= 3)) continue;
+    var br = b.getBoundingClientRect();
+    if (br.width < vw * 0.9 || br.height < 24 || br.height > vh * 0.2) continue;
+    var atTop = br.top <= 8 && br.bottom > 0, atBottom = br.bottom >= vh - 8 && br.top < vh;
+    if (!atTop && !atBottom) continue;
+    if (!fixed && atBottom) continue;
+    var it = b.querySelectorAll('a[href],button,[role="tab"],[role="link"],input').length;
+    if (it < 2 || it > 40) continue;
+    if (atBottom && (it < 3 || txtLen(b) > 200)) continue;
+    if (b.closest('[role="dialog"],dialog')) continue;
+    want(b, atTop ? 'header' : 'bottom-bar');
+    flush();
+    if ((++k & 15) === 0) yield;
+  }
+
+  /* repeated sibling groups -> card / chip / nav-item (structure only, never class names) */
+  var ps = Array.from(regroup); regroup.clear();
+  var newCards = [];
+  for (i = 0; i < ps.length; i++) {
+    var p = ps[i];
+    if (!p.isConnected || NOGROUP[p.localName] || p.closest('[data-mydes="card"],[data-mydes="chip"]')) continue;
+    var kids = p.children, n = Math.min(kids.length, 120), buckets = {}, c;
+    if (n < 2) continue;
+    for (j = 0; j < n; j++) {
+      c = kids[j];
+      if (NOKID[c.localName]) continue;
+      var s = sig(c);
+      (buckets[s] || (buckets[s] = [])).push(c);
+    }
+    var learned = known.get(p) || {};
+    for (var key in buckets) {
+      var g = buckets[key], lr = learned[key];
+      var need = (g[0].localName === 'article' || g[0].hasAttribute('itemscope')) ? 2 : 3;
+      if (lr) {
+        for (j = 0; j < g.length; j++) { if (!g[j].hasAttribute(A)) { want(g[j], lr); if (lr === 'card') newCards.push(g[j]); } }
+        continue;
+      }
+      if (g.length < need) continue;
+      var rs = [], vis = [];
+      for (j = 0; j < g.length; j++) {
+        var r = g[j].getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) { rs.push(r); vis.push(g[j]); }
+      }
+      if (vis.length < need) continue;
+      var ws = rs.map(function(x) { return x.width; }), hs = rs.map(function(x) { return x.height; });
+      var mw = med(ws), mh = med(hs);
+      if (mw < 24 || mh < 16) continue;
+      var wOk = 0, hOk = 0, tops = [], tl = [], media = 0, click = 0;
+      for (j = 0; j < vis.length; j++) {
+        if (Math.abs(ws[j] - mw) <= mw * 0.25) wOk++;
+        if (Math.abs(hs[j] - mh) <= mh * 0.4) hOk++;
+        tops.push(Math.round(rs[j].top / 6));
+        tl.push(txtLen(vis[j]));
+        if (vis[j].querySelector('img,picture,video,canvas')) media++;
+        if (vis[j].matches(CLICK) || vis[j].querySelector(CLICK)) click++;
+      }
+      var m2 = vis.length, wf = wOk / m2, hf = hOk / m2, cf = click / m2, mf = media / m2, mt = med(tl);
+      var rowsN = 0, seenTop = {};
+      for (j = 0; j < tops.length; j++) { if (!seenTop[tops[j]]) { seenTop[tops[j]] = 1; rowsN++; } }
+      var horizontal = rowsN <= Math.ceil(m2 / 3);
+      var role = null;
+      if (p.closest(BARSEL)) {
+        if (cf >= 0.6 && mt <= 40 && wf >= 0.5) role = 'nav-item';
+      } else if (mh <= 64 && mt >= 1 && mt <= 32 && cf >= 0.6 && mf < 0.5 && horizontal && wf >= 0.5) {
+        role = 'chip';
+      } else if (mw >= 96 && mh >= 56 && (wf >= 0.7 || hf >= 0.6) && hf >= 0.5 &&
+                 (mf >= 0.5 || (mt >= 20 && cf >= 0.5) || g[0].localName === 'article')) {
+        role = 'card';
+      }
+      if (!role) continue;
+      learned[key] = role; known.set(p, learned);
+      for (j = 0; j < vis.length; j++) { want(vis[j], role); if (role === 'card') newCards.push(vis[j]); }
+      if ((++k & 7) === 0) { flush(); yield; }
+    }
+  }
+  flush();
+
+  /* card anatomy: one media-box + one heading per card */
+  for (i = 0; i < newCards.length; i++) {
+    if (newCards[i].isConnected) anatomy(newCards[i]);
+    if ((i & 7) === 7) { flush(); yield; }
+  }
+  flush();
+}
+function anatomy(card) {
+  var cr = card.getBoundingClientRect(), carea = cr.width * cr.height;
+  var ms = card.querySelectorAll('img,video,canvas'), best = null, ba = 0, i;
+  for (i = 0; i < ms.length && i < 12; i++) {
+    var r = ms[i].getBoundingClientRect(), a = r.width * r.height;
+    if (r.width >= 64 && a > ba && a >= carea * 0.1) { ba = a; best = ms[i]; }
+  }
+  if (best) {
+    var w = null, p = best.parentElement;
+    while (p && p !== card) {
+      var pr = p.getBoundingClientRect();
+      if (pr.width * pr.height <= ba * 1.25 + 300) { w = p; p = p.parentElement; } else break;
+    }
+    if (!w && best.parentElement && best.parentElement !== card) w = best.parentElement;
+    if (w && w !== card) want(w, 'media-box');
+  }
+  /* exactly one heading per card */
+  var hs = card.querySelectorAll('[data-mydes="heading"],[data-mydes="title"]');
+  for (i = 0; i < hs.length; i++) want(hs[i], '');
+  var h = card.querySelector('h1,h2,h3,h4,h5,h6,[role="heading"],[itemprop="name"]');
+  if (!h) {
+    var cand = card.querySelectorAll('a,span,div,p,strong,b'), bestSize = 0, n = 0;
+    for (i = 0; i < cand.length && n < 14; i++) {
+      var x = cand[i];
+      if (x.childElementCount > 1) continue;
+      var t = (x.textContent || '').trim();
+      if (t.length < 6 || t.length > 160 || PRICE.test(t)) continue;
+      n++;
+      var cs = W.getComputedStyle(x), size = parseFloat(cs.fontSize) * (parseInt(cs.fontWeight, 10) >= 600 ? 1.15 : 1);
+      if (size > bestSize + 0.5) { bestSize = size; h = x; }
+    }
+  }
+  if (h) want(h, 'heading');
+}
+
+/* ================= phase 3: surfaces + contrast healing (viewport-gated) ================= */
+function parentTier(el) {
+  var a = up(el);
+  while (a && a.nodeType === 1 && a !== D.body && a !== D.documentElement) {
+    if (a.hasAttribute(A)) return 'clear';
+    var t = tmap.get(a) || a.getAttribute(S);
+    if (t === '1') return '2';
+    if (t === '2' || t === 'pop' || t === 'field') return '1';
+    a = up(a);
+  }
+  return '1';
+}
+function isField(el, ln) {
+  if (ln === 'textarea' || ln === 'select') return true;
+  if (ln !== 'input') return false;
+  var t = (el.getAttribute('type') || 'text').toLowerCase();
+  return !(t === 'checkbox' || t === 'radio' || t === 'range' || t === 'color' || t === 'file' || t === 'image' || t === 'hidden' || t === 'submit' || t === 'button' || t === 'reset');
+}
+function surface(el, ln, cs) {
+  var bgc = parse(cs.backgroundColor);
+  if (!bgc || bgc.a < 0.5 || cs.backgroundImage !== 'none') return;
+  var field = isField(el, ln), sc = sat(bgc);
+  if (!field && sc.s > 0.35 && sc.l > 0.15 && sc.l < 0.85) return;   /* keep genuinely coloured elements */
+  var r = el.getBoundingClientRect();
+  if (r.width < 4 || r.height < 4) return;
+  var vw = W.innerWidth || 400, vh = W.innerHeight || 800, tier;
+  if (ln === 'dialog' || POPROLE[el.getAttribute('role')]) tier = 'pop';
+  else if (field) tier = 'field';
+  else if (r.width >= vw * 0.9 && r.width * r.height >= vw * vh * 0.55) tier = 'canvas';
+  else tier = parentTier(el);
+  tmap.set(el, tier); sq.push(el); stats.surfaces++;
+}
+function effBg(n, d) {
+  if (!n || (d || 0) > 60) return P.bg;
+  if (bgCache.has(n)) return bgCache.get(n);
+  var t = tmap.get(n) || (n.nodeType === 1 ? n.getAttribute(S) : null), res = null;
+  if (t === '1' || t === 'pop') res = P.surface;
+  else if (t === '2' || t === 'field') res = P.surface2;
+  else if (t !== 'canvas' && t !== 'clear') {
+    var c = parse(W.getComputedStyle(n).backgroundColor);
+    if (c && c.a >= 0.5) res = c;
+  }
+  if (!res) res = effBg(up(n), (d || 0) + 1);
+  bgCache.set(n, res);
+  return res;
+}
+var WHITE = { r: 255, g: 255, b: 255 }, BLACK = { r: 0, g: 0, b: 0 };
+function heal(el, ln, cs) {
+  if (!hasOwnText(el) || cs.webkitBackgroundClip === 'text' || cs.backgroundClip === 'text') return;
+  var fg = parse(cs.color);
+  if (!fg || fg.a < 0.2) return;
+  var bg = effBg(el), ratio = contrast(fg, bg);
+  if (ratio >= 3.6) {
+    /* Bug 3 Fix: Clear stale data-mydes-fix if contrast is naturally sufficient */
+    if (el.hasAttribute(F)) fixPlan.set(el, '');
     return;
   }
-  if(existingHeadings.length === 1) return;
-
-  var primaryHeading = c.querySelector('h1, h2, h3, h4, [class*="media-item-headline"], [class*="title" i]:not([class*="sub" i])');
-  if(primaryHeading) {
-    put(primaryHeading, 'heading');
-    return;
+  var cf = contrast(P.fg, bg), cw = contrast(WHITE, bg), ck = contrast(BLACK, bg), v;
+  if (ln === 'a' && contrast(P.accent, bg) >= 4.5) v = 'link';
+  else if (cf >= 4 || (cf >= cw && cf >= ck)) v = 'fg';
+  else v = cw >= ck ? 'w' : 'k';
+  fixPlan.set(el, v); stats.healed++;
+}
+function inspect(el) {
+  seen.add(el);
+  var cs;
+  try { cs = W.getComputedStyle(el); } catch (e) { return; }
+  if (cs.display === 'none' || cs.visibility === 'hidden') return;
+  var ln = el.localName;
+  if (!el.hasAttribute(A) && cs.display !== 'inline') surface(el, ln, cs);
+  heal(el, ln, cs);
+}
+function inspectChain(el) {
+  var chain = [], p = el;
+  while (p && p.nodeType === 1 && !seen.has(p) && chain.length < 30) { chain.push(p); p = up(p); }
+  for (var i = chain.length - 1; i >= 0; i--) inspect(chain[i]);   /* ancestors first, so contrast is judged on the new surfaces */
+}
+function* inspectAll() {
+  var list = iq.splice(0, iq.length).filter(function(e) { return e.isConnected && !seen.has(e); });
+  list.sort(docOrder);
+  for (var i = 0; i < list.length; i++) {
+    inspectChain(list[i]);
+    if ((i & 31) === 31) { flush(); yield; }
   }
+  flush();
+}
 
-  var l = c.querySelectorAll('a,span,div,p,strong,b');
-  for(var i=0; i<l.length; i++){
-    var x = l[i];
-    if(x.children.length <= 1){
-      var t = (x.textContent||'').trim();
-      if(t.length >= 8 && t.length <= 160 && !PRICE.test(t)){
-        put(x, 'heading');
-        return;
+/* ================= scheduler ================= */
+function refill() {
+  if (!(fresh.size || regroup.size || bars.size || iq.length)) return;
+  if (fresh.size) { var rs = Array.from(fresh); fresh.clear(); tasks.push(scanRoots(rs)); }
+  tasks.push(structure());
+  tasks.push(inspectAll());
+}
+function idle() { return !tasks.length && !fresh.size && !regroup.size && !bars.size && !iq.length && !plan.size; }
+function pumpSlice(budgetMs) {
+  if (dead) return;
+  ensureSheet();
+  var t0 = performance.now();
+  if (!tasks.length) refill();
+  while (tasks.length && performance.now() - t0 < budgetMs) {
+    if (tasks[0].next().done) tasks.shift();
+  }
+  if (stateDirty.size) {
+    stateDirty.forEach(function(e) { if (e.isConnected && (e.getAttribute(A) === 'chip' || e.getAttribute(A) === 'nav-item')) syncState(e); });
+    stateDirty.clear();
+  }
+  flush();
+  bgCache.clear();
+  stats.ms += performance.now() - t0; stats.slices++;
+}
+function pump() {
+  scheduled = false;
+  pumpSlice(8);
+  if (!idle()) schedule();
+}
+function schedule() {
+  if (scheduled || dead) return;
+  scheduled = true;
+  if (W.requestIdleCallback) W.requestIdleCallback(pump, { timeout: 120 }); else setTimeout(pump, 16);
+}
+
+/* ================= observers (document + every shadow root, open or closed) ================= */
+var watched = new WeakSet();
+function watch(root) {
+  if (watched.has(root)) return;
+  watched.add(root);
+  try { mo.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'aria-selected', 'aria-current', 'aria-pressed', 'aria-checked'] }); } catch (e) {}
+  if (root !== D && sheet) { try { root.adoptedStyleSheets = root.adoptedStyleSheets.concat([sheet]); } catch (e) {} }
+  fresh.add(root);
+  schedule();
+}
+function start() {
+  pal();
+  mountSheet();
+  mo = new MutationObserver(function(recs) {
+    for (var i = 0; i < recs.length; i++) {
+      var r = recs[i];
+      if (r.type === 'childList') {
+        for (var j = 0; j < r.addedNodes.length; j++) { var n = r.addedNodes[j]; if (n.nodeType === 1) fresh.add(n); }
+        if (r.addedNodes.length && r.target.nodeType === 1) regroup.add(r.target);
+      } else if (r.target.hasAttribute && r.target.hasAttribute(A)) {
+        stateDirty.add(r.target);
       }
     }
+    schedule();
+  });
+  if (typeof IntersectionObserver === 'function') {
+    io = new IntersectionObserver(function(es) {
+      for (var i = 0; i < es.length; i++) if (es[i].isIntersecting) { io.unobserve(es[i].target); iq.push(es[i].target); }
+      if (iq.length) schedule();
+    }, { rootMargin: '120% 0px 120% 0px' });
   }
-}
-
-function syncActiveState(e) {
-  var isAct = e.getAttribute('aria-selected') === 'true' ||
-              e.getAttribute('aria-pressed') === 'true' ||
-              e.getAttribute('aria-current') === 'page' ||
-              e.getAttribute('aria-current') === 'true' ||
-              /\b(?:selected|active|chip-bar-item-selected|pivot-bar-item-tab-selected)\b/i.test(e.className || '') ||
-              !!e.querySelector('[aria-selected="true"], .pivot-bar-item-tab-selected');
-  if(isAct) e.setAttribute('data-mydes-state', 'active');
-  else e.removeAttribute('data-mydes-state');
-}
-
-function retag(){
-  if(!document.body)return;
-  var vw = window.innerWidth || 400;
-
-  // 1. Header, Bottom Bar & Nav Items, Search, Chips
-  each('header,[role="banner"],#navbar,#nav-main,#navbar-main,.mobile-topbar-header',function(e){if(!inContent(e))put(e,'header');});
-  each('footer,[role="contentinfo"],#navFooter,ytm-pivot-bar-renderer',function(e){
-    put(e,'bottom-bar');
-    each('ytm-pivot-bar-item-renderer, [role="tab"], a, button', function(item){
-      if(item.closest('[data-mydes="bottom-bar"]') === e && item.parentElement === e) {
-        put(item, 'nav-item');
-        syncActiveState(item);
-      }
-    });
-  });
-  each('ytm-pivot-bar-item-renderer', function(item){
-    put(item, 'nav-item');
-    syncActiveState(item);
-  });
-  each('yt-searchbox,form[role="search"],form[name="site-search"],input[type="search"],input[name="q"],input[name="k"]',function(e){
-    if(e.parentElement && e.parentElement.closest('[data-mydes="search"]')) return;
-    put(e,'search');
-  });
-  each('ytm-chip-cloud-chip-renderer,[role="tab"],[class*="chip-cloud-chip"]',function(e){
-    if(e.closest('ytm-pivot-bar-renderer,footer,[data-mydes="bottom-bar"],header,[data-mydes="header"]')) {
-      if(e.getAttribute('data-mydes')==='chip') e.removeAttribute('data-mydes');
-      return;
+  try {
+    origAttach = Element.prototype.attachShadow;
+    Element.prototype.attachShadow = function(init) {
+      var sr = origAttach.call(this, init);
+      try { watch(sr); } catch (e) {}
+      return sr;
+    };
+  } catch (e) { origAttach = null; }
+  watch(D);
+  fonts();
+  var ready = function() {
+    fonts();
+    if (D.documentElement) {
+      fresh.add(D.documentElement);
+      /* Bug 2 Fix: Run an immediate synchronous bootstrap slice (28ms) so role tags are ready before Pass 3 probes */
+      pumpSlice(28);
+      if (!idle()) schedule();
     }
-    if(e.parentElement && e.parentElement.closest('[data-mydes="chip"]')) {
-      if(e.getAttribute('data-mydes')==='chip') e.removeAttribute('data-mydes');
-      return;
-    }
-    put(e,'chip');
-    syncActiveState(e);
-  });
-
-  // 2. Universal & Platform Card Archetypes
-  var cardSel = [
-    '[data-component-type="s-search-result"]',
-    '[data-asin]:not([data-asin=""])',
-    '.s-result-item',
-    '.a-cardui',
-    'article',
-    'ytm-video-with-context-renderer',
-    'ytm-rich-item-renderer',
-    'ytm-compact-video-renderer',
-    'ytm-shorts-lockup-view-model',
-    'ytm-shorts-lockup-view-model-v2',
-    'ytm-playlist-video-renderer'
-  ].join(',');
-
-  each(cardSel, function(e){
-    if(e.parentElement && e.parentElement.closest('[data-mydes="card"]')) {
-      e.removeAttribute('data-mydes');
-      return;
-    }
-    if(!e.closest('nav,header,footer,[data-mydes="header"],[data-mydes="bottom-bar"]') && cardLike(e)){
-      put(e,'card');
-      decorateCardAnatomy(e);
-    }
-  });
-
-  // 3. Geometric Repeating Feed Detector
-  var containers = document.querySelectorAll('main, [role="main"], section, ul, ol, lazy-list, [id*="feed" i], [class*="feed" i], [class*="list" i], [class*="results" i], [class*="grid" i]');
-  for(var c=0; c<containers.length && c<80; c++) {
-    var parent = containers[c];
-    if(parent.closest('header, nav, footer, [data-mydes="header"], [data-mydes="bottom-bar"]')) continue;
-    var kids = parent.children;
-    if(!kids || kids.length < 3) continue;
-    var sigCounts = {};
-    for(var k=0; k<kids.length && k<50; k++) {
-      var ch = kids[k];
-      var sig = ch.tagName + '|' + (ch.classList[0] || '');
-      sigCounts[sig] = (sigCounts[sig] || 0) + 1;
-    }
-    for(var k2=0; k2<kids.length && k2<50; k2++) {
-      var item = kids[k2];
-      var itemSig = item.tagName + '|' + (item.classList[0] || '');
-      if(sigCounts[itemSig] >= 3 && !item.hasAttribute('data-mydes') && !item.closest('[data-mydes="card"]')) {
-        var rect = item.getBoundingClientRect();
-        if(rect.width >= vw * 0.42 && rect.height >= 48 && cardLike(item)) {
-          put(item, 'card');
-          decorateCardAnatomy(item);
-        }
-      }
-    }
-  }
-
-  each('h1',function(e){if(!e.closest('[data-mydes="card"]'))putNew(e,'title');});
-  each('h2,h3,h4,[class*="media-item-headline"]',function(e){if(!e.closest('[data-mydes="card"]'))putNew(e,'heading');});
-  each('button,input[type="submit"],input[type="button"],[role="button"],a[class*="btn"],a[class*="button"],.a-button',function(e){
-    if(e.closest('ytm-pivot-bar-renderer,footer,[data-mydes="bottom-bar"],[data-mydes="chip"]')) return;
-    if(e.querySelector('img, video, picture, svg, h1, h2, h3, h4')) return;
-    putNew(e,'btn');
-  });
-}
-
-/* ---------- 3. Page Summary ---------- */
-function summary(){
-  try{retag();}catch(e){}
-  var counts={};
-  each('[data-mydes]',function(e){
-    var r=e.getAttribute('data-mydes');
-    counts[r]=(counts[r]||0)+1;
-  });
-  return JSON.stringify({
-    url:location.href,
-    host:location.hostname,
-    title:(document.title||'').slice(0,80),
-    viewport:{w:innerWidth,h:innerHeight},
-    roleCounts:counts
-  });
-}
-
-/* ---------- 4. Continuous SPA & Scroll Observer ---------- */
-function observe(){
-  try{
-    if(mo) mo.disconnect();
-    mo = new MutationObserver(function(){
-      if(retagRaf) return;
-      retagRaf = requestAnimationFrame(function(){
-        retagRaf = 0;
-        if(!document.getElementById('__mydes_style')) applySheets();
-        retag();
-      });
-    });
-    mo.observe(document.documentElement, {childList: true, subtree: true});
-    window.addEventListener('popstate', retag, {passive: true});
-    window.addEventListener('yt-navigate-finish', retag, {passive: true});
-  } catch(e){}
-}
-
-function start(){
-  applySheets();
-  var go=function(){
-    if(!document.body)return;
-    retag();
-    observe();
   };
-  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',go);else go();
+  if (D.readyState === 'loading') D.addEventListener('DOMContentLoaded', ready, { once: true }); else ready();
+  W.addEventListener('pageshow', function() { ensureSheet(); schedule(); }, { passive: true });
 }
 
-window.__mydes={
-  id:function(){return cfg.id;},
-  setBlueprint:function(nextBp){
-    cfg=nextBp;
-    start();
+window.__mydes = {
+  id: function() { return cfg.id; },
+  setBlueprint: function(next) {
+    cfg = next; pal();
+    /* Bug 3 Fix: Clear stale surface and contrast-heal caches when palette changes */
+    seen = new WeakSet();
+    tmap = new WeakMap();
+    bgCache.clear();
+    var surfEls = D.querySelectorAll('[data-mydes-surface],[data-mydes-fix]');
+    for (var i = 0; i < surfEls.length; i++) {
+      surfEls[i].removeAttribute(S);
+      surfEls[i].removeAttribute(F);
+      iq.push(surfEls[i]);
+    }
+    var css = buildCss();
+    if (sheet) { try { sheet.replaceSync(css); } catch (e) {} } else if (styleEl) styleEl.textContent = css;
+    fonts();
+    schedule();
   },
-  outline:summary,
-  clear:function(){
-    if(mo)mo.disconnect();
-    var s=document.getElementById('__mydes_style');if(s)s.remove();
+  idle: idle,
+  outline: function() {
+    if (!idle()) pumpSlice(24);
+    var counts = {}, els = D.querySelectorAll('[data-mydes]');
+    for (var i = 0; i < els.length; i++) { var r = els[i].getAttribute(A); counts[r] = (counts[r] || 0) + 1; }
+    return JSON.stringify({
+      url: location.href, host: location.hostname, title: (D.title || '').slice(0, 80),
+      viewport: { w: innerWidth, h: innerHeight }, roleCounts: counts,
+      surfaces: D.querySelectorAll('[data-mydes-surface]').length, healed: D.querySelectorAll('[data-mydes-fix]').length,
+      idle: idle(), stats: stats
+    });
+  },
+  clear: function(keepTags) {
+    dead = true;
+    if (mo) mo.disconnect();
+    if (io) io.disconnect();
+    if (origAttach) { try { Element.prototype.attachShadow = origAttach; } catch (e) {} }
+    if (sheet) {
+      try { sheet.replaceSync(''); } catch (e) {}
+      try { D.adoptedStyleSheets = D.adoptedStyleSheets.filter(function(s) { return s !== sheet; }); } catch (e) {}
+    }
+    if (styleEl) styleEl.remove();
+    /* Bug 3 Fix: Always clear palette-dependent surface & contrast-fix attributes even if keepTags is true */
+    var sfEls = D.querySelectorAll('[data-mydes-surface],[data-mydes-fix]');
+    for (var j = 0; j < sfEls.length; j++) { sfEls[j].removeAttribute(S); sfEls[j].removeAttribute(F); }
+    if (!keepTags) {
+      var els = D.querySelectorAll('[data-mydes],[data-mydes-state]');
+      for (var i = 0; i < els.length; i++) { els[i].removeAttribute(A); els[i].removeAttribute(ST); }
+    }
   }
 };
 start();
