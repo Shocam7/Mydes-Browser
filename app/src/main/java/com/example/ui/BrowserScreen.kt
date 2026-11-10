@@ -75,6 +75,8 @@ import com.example.ui.components.TopPlateauNotch
 import com.example.ui.components.WebContainer
 import com.example.ui.viewmodel.BrowserViewModel
 import kotlinx.coroutines.delay
+import com.example.ui.components.YoloInspectorApprovalBar
+
 
 @Composable
 fun BrowserScreen(
@@ -127,6 +129,7 @@ fun BrowserScreen(
     val isAiStylerLoading by viewModel.isAiStylerLoading.collectAsState()
     val aiStylerErrorMessage by viewModel.aiStylerErrorMessage.collectAsState()
     val aiThinkingState by viewModel.aiThinkingState.collectAsState()
+    val yoloInspectionState by viewModel.yoloInspectionState.collectAsState()
     val pendingUserScriptToInject by viewModel.pendingUserScriptToInject.collectAsState()
     val isCustomStyleApplied by viewModel.isCustomStyleApplied.collectAsState()
     val isThemeUpdatingInBackground by viewModel.isThemeUpdatingInBackground.collectAsState()
@@ -203,6 +206,7 @@ fun BrowserScreen(
 
     BackHandler {
         when {
+            yoloInspectionState.isActive -> viewModel.declineYoloInspection()
             isImportRedesignDialogOpen -> viewModel.closeImportRedesignDialog()
             isAiStylerPillVisible -> viewModel.closeAiStylerPill()
             isFindInPageOpen -> viewModel.toggleFindInPage()
@@ -256,6 +260,14 @@ fun BrowserScreen(
                         onScrollUp = {
                             onUpwardScrollDetected()
                         }
+                        
+                                            onScrollUp = {
+                            onUpwardScrollDetected()
+                      },
+                      isYoloInspectMode = yoloInspectionState.isActive,
+                        onElementTappedInInspectMode = { cssX, cssY ->
+                            viewModel.onWebViewTappedInYoloMode(cssX, cssY)
+                      }
                     )
                 }
             }
@@ -467,7 +479,7 @@ fun BrowserScreen(
         val currentAppliedConcept = activeWebsiteTheme?.activeConcept
 
         AiStylerPillBar(
-            visible = isAiStylerPillVisible,
+            visible = isAiStylerPillVisible && !yoloInspectionState.isActive,
             websiteName = currentTab.title,
             isLoading = isAiStylerLoading,
             isStyleApplied = isCustomStyleApplied,
@@ -490,6 +502,22 @@ fun BrowserScreen(
             onDismiss = { viewModel.closeAiStylerPill() },
             modifier = Modifier.fillMaxSize()
         )
+
+        if (yoloInspectionState.isActive) {
+            YoloInspectorApprovalBar(
+                state = yoloInspectionState,
+                onApprove = { viewModel.approveYoloInspectionAndSynthesize() },
+                onDecline = { viewModel.declineYoloInspection() },
+                onAssignRole = { role -> viewModel.assignRoleToSelectedYoloElement(role) },
+                onStepSelection = { dir -> viewModel.stepSelectedYoloElement(dir) },
+                onTogglePropagateSiblings = { viewModel.toggleYoloSiblingPropagation() },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .then(bottomInsetsModifier)
+                    .zIndex(35f)
+            )
+        }
+
 
         // 9. Fullscreen Modals and Sheets
         if (isTabGridOpen) {
