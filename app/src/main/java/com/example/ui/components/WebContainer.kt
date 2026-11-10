@@ -24,6 +24,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
+import android.view.MotionEvent
+import android.view.ViewConfiguration
+import kotlin.math.abs
+
 
 const val DESKTOP_USER_AGENT =
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -50,6 +54,8 @@ fun WebContainer(
     onPageLoaded: (url: String, title: String) -> Unit = { _, _ -> },
     onScrollDown: () -> Unit = {},
     onScrollUp: () -> Unit = {},
+    isYoloInspectMode: Boolean = false,
+    onElementTappedInInspectMode: (cssX: Float, cssY: Float) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
@@ -274,6 +280,46 @@ fun WebContainer(
                 lastDesktopMode = isDesktopMode
                 webView.settings.userAgentString = if (isDesktopMode) DESKTOP_USER_AGENT else null
                 webView.reload()
+            }
+            if (isYoloInspectMode) {
+                val touchSlop = ViewConfiguration.get(webView.context).scaledTouchSlop
+                var downX = 0f
+                var downY = 0f
+                var isTapCandidate = false
+                webView.setOnTouchListener { v, event ->
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            downX = event.x
+                            downY = event.y
+                            isTapCandidate = true
+                            false // Let WebView track potential scroll
+                        }
+                        MotionEvent.ACTION_MOVE -> {
+                            if (abs(event.x - downX) > touchSlop || abs(event.y - downY) > touchSlop) {
+                                isTapCandidate = false
+                            }
+                            false
+                        }
+                        MotionEvent.ACTION_UP -> {
+                            if (isTapCandidate) {
+                                val densityScale = if (webView.scale > 0f) webView.scale else v.resources.displayMetrics.density
+                                val cssX = event.x / densityScale
+                                val cssY = event.y / densityScale
+                                onElementTappedInInspectMode(cssX, cssY)
+                                // Send a cancel event to WebView so the host page link/button is not clicked
+                                val cancelEvt = MotionEvent.obtain(event).apply { action = MotionEvent.ACTION_CANCEL }
+                                webView.onTouchEvent(cancelEvt)
+                                cancelEvt.recycle()
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                        else -> false
+                    }
+                }
+            } else {
+                webView.setOnTouchListener(null)
             }
         }
     )
