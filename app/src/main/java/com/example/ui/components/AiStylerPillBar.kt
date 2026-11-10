@@ -91,6 +91,8 @@ import com.example.data.model.ThemeVisualIteration
 import com.example.ui.viewmodel.AiThinkingState
 import kotlinx.coroutines.delay
 import java.io.File
+import com.example.ui.viewmodel.YoloInspectionState
+
 
 @Composable
 fun AiStylerPillBar(
@@ -324,12 +326,12 @@ fun AiStylerPillBar(
                     }
                 }
 
-                // 2B. Requirement 6: Reasoning Modulator Pill
+                // 2B. Reasoning Modulator Pill
                 val availableModes = remember(selectedSynthesisModel) {
                     ReasoningModulatorConfig.getAvailableModesForModel(selectedSynthesisModel)
                 }
-                val effectiveReasoningMode = if (isStyleApplied && isNemotron) {
-                    ReasoningModulatorConfig.MODE_OFF
+                val effectiveReasoningMode = if (isStyleApplied) {
+                    ReasoningModulatorConfig.getLowestModeForModel(selectedSynthesisModel)
                 } else {
                     selectedReasoningLevel
                 }
@@ -338,7 +340,7 @@ fun AiStylerPillBar(
                     model = selectedSynthesisModel,
                     availableModes = availableModes,
                     selectedMode = effectiveReasoningMode,
-                    isLockedFastForContinuedNemotron = isStyleApplied && isNemotron,
+                    isLockedLowestForModification = isStyleApplied,
                     onSelectMode = onSelectReasoningLevel,
                     onCycleMode = onCycleReasoningLevel
                 )
@@ -583,7 +585,7 @@ private fun ReasoningModulatorBar(
     model: String,
     availableModes: List<String>,
     selectedMode: String,
-    isLockedFastForContinuedNemotron: Boolean,
+    isLockedLowestForModification: Boolean,
     onSelectMode: (String) -> Unit,
     onCycleMode: () -> Unit
 ) {
@@ -613,17 +615,22 @@ private fun ReasoningModulatorBar(
             modifier = Modifier.clickable(onClick = onCycleMode)
         )
 
-        if (isLockedFastForContinuedNemotron) {
+        if (isLockedLowestForModification) {
+            val label = ReasoningModulatorConfig.getDisplayLabel(model, selectedMode)
+            val isNemotron = GeminiStylerService.isNvidiaModel(model)
+            val badgeBg = if (isNemotron) Color(0xFF76B900).copy(alpha = 0.25f) else Color(0xFFF6C343).copy(alpha = 0.2f)
+            val badgeBorder = if (isNemotron) Color(0xFF76B900) else Color(0xFFF6C343)
+            val badgeText = if (isNemotron) Color(0xFF9BE61D) else Color(0xFFF6C343)
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(10.dp))
-                    .background(Color(0xFF76B900).copy(alpha = 0.25f))
-                    .border(0.8.dp, Color(0xFF76B900), RoundedCornerShape(10.dp))
+                    .background(badgeBg)
+                    .border(0.8.dp, badgeBorder, RoundedCornerShape(10.dp))
                     .padding(horizontal = 7.dp, vertical = 2.dp)
             ) {
                 Text(
-                    text = "OFF (Rapid Chat)",
-                    color = Color(0xFF9BE61D),
+                    text = "$label (Lowest)",
+                    color = badgeText,
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold
                 )
@@ -1002,5 +1009,333 @@ private fun StylerSuggestionChip(
             fontSize = 12.sp,
             fontWeight = FontWeight.Medium
         )
+    }
+}
+
+private val YOLO_ROLE_OPTIONS = listOf(
+    "card" to Color(0xFF00E676),
+    "header" to Color(0xFF00E5FF),
+    "bottom-bar" to Color(0xFF00B8D4),
+    "search" to Color(0xFFFFD600),
+    "chip" to Color(0xFFFF4081),
+    "media-box" to Color(0xFFB388FF),
+    "heading" to Color(0xFFFF9100),
+    "title" to Color(0xFFFF9100),
+    "btn" to Color(0xFFFF5252),
+    "nav-item" to Color(0xFF64FFDA),
+    "none" to Color(0xFF9E9E9E)
+)
+
+@Composable
+fun YoloInspectorApprovalBar(
+    state: YoloInspectionState,
+    onApprove: () -> Unit,
+    onDecline: () -> Unit,
+    onAssignRole: (String) -> Unit,
+    onStepSelection: (String) -> Unit,
+    onTogglePropagateSiblings: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    if (!state.isActive) return
+
+    var isRoleDropdownExpanded by remember { mutableStateOf(false) }
+    val selected = state.selectedElement
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+            .shadow(16.dp, RoundedCornerShape(24.dp))
+            .clip(RoundedCornerShape(24.dp))
+            .background(Color(0xFF14171C).copy(alpha = 0.96f))
+            .border(1.5.dp, Color(0xFF00E676).copy(alpha = 0.7f), RoundedCornerShape(24.dp))
+            .padding(14.dp)
+            .testTag("yolo_inspector_approval_bar")
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            // 1. Top Status & Role Counts Summary
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF00E676))
+                    )
+                    Column {
+                        Text(
+                            text = "YOLO Element Inspector",
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = state.statusToast ?: "Tap any element on the page to inspect or change its tag",
+                            color = Color(0xFFB0BEC5),
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                // Total mapped badge
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFF263238))
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        text = "${state.roleCounts.values.sum()} tagged",
+                        color = Color(0xFF00E676),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            // 2. Selected Element Inspector & Role Dropdown (Choices 3 & 4)
+            if (selected != null) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color(0xFF1E232B))
+                        .border(1.dp, Color(0xFF37474F), RoundedCornerShape(14.dp))
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "<${selected.tag}> (${selected.rectW}×${selected.rectH}px)",
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            val curRole = selected.assignedRole.ifBlank { "unassigned" }
+                            Text(
+                                text = "Current tag: [$curRole] • ${selected.matchingSiblings} matching siblings",
+                                color = Color(0xFF90A4AE),
+                                fontSize = 10.5.sp
+                            )
+                        }
+
+                        // Step Up / Step Down buttons for Ancestor-Snapping refinement
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (selected.canStepUp) Color(0xFF2C333F) else Color(0xFF1A1E24))
+                                    .clickable(enabled = selected.canStepUp) { onStepSelection("up") }
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Text(
+                                    text = "↑ Parent",
+                                    color = if (selected.canStepUp) Color(0xFF80D8FF) else Color(0xFF546E7A),
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (selected.canStepDown) Color(0xFF2C333F) else Color(0xFF1A1E24))
+                                    .clickable(enabled = selected.canStepDown) { onStepSelection("down") }
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Text(
+                                    text = "↓ Child",
+                                    color = if (selected.canStepDown) Color(0xFF80D8FF) else Color(0xFF546E7A),
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+
+                    // Dropdown trigger + Sibling Propagation toggle
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Color(0xFF28303D))
+                                .border(1.dp, Color(0xFFF6C343), RoundedCornerShape(10.dp))
+                                .clickable { isRoleDropdownExpanded = !isRoleDropdownExpanded }
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                val currentLabel = selected.assignedRole.ifBlank { "Assign Tag..." }
+                                Text(
+                                    text = "Tag: $currentLabel",
+                                    color = Color(0xFFF6C343),
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Icon(
+                                    imageVector = if (isRoleDropdownExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                    contentDescription = "Select Role",
+                                    tint = Color(0xFFF6C343),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        // Sibling Propagation Toggle
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(
+                                    if (state.propagateToSiblings) Color(0xFF00E676).copy(alpha = 0.2f)
+                                    else Color(0xFF262B33)
+                                )
+                                .border(
+                                    1.dp,
+                                    if (state.propagateToSiblings) Color(0xFF00E676) else Color(0xFF455A64),
+                                    RoundedCornerShape(10.dp)
+                                )
+                                .clickable { onTogglePropagateSiblings() }
+                                .padding(horizontal = 9.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = if (state.propagateToSiblings) "⚡ Siblings: ON" else "Siblings: OFF",
+                                color = if (state.propagateToSiblings) Color(0xFF00E676) else Color(0xFF90A4AE),
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    // Expandable Role Picker Grid/Row
+                    AnimatedVisibility(visible = isRoleDropdownExpanded) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState())
+                                .padding(top = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            YOLO_ROLE_OPTIONS.forEach { (roleName, roleColor) ->
+                                val isCurrent = selected.assignedRole == roleName ||
+                                    (roleName == "none" && selected.assignedRole.isBlank())
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (isCurrent) roleColor else roleColor.copy(alpha = 0.16f))
+                                        .border(1.dp, roleColor, RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            onAssignRole(roleName)
+                                            isRoleDropdownExpanded = false
+                                        }
+                                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                                ) {
+                                    Text(
+                                        text = if (roleName == "none") "✕ Clear" else roleName,
+                                        color = if (isCurrent) Color.Black else Color.White,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 3. Approve (Choice 1) & Decline (Choice 2) Action Buttons
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color(0xFF2B1D22))
+                        .border(1.dp, Color(0xFFFF5252), RoundedCornerShape(14.dp))
+                        .clickable { onDecline() }
+                        .padding(vertical = 10.dp)
+                        .testTag("yolo_decline_button"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Decline",
+                            tint = Color(0xFFFF5252),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = "Decline & Cancel",
+                            color = Color(0xFFFF5252),
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .weight(1.4f)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color(0xFF00E676))
+                        .clickable { onApprove() }
+                        .padding(vertical = 10.dp)
+                        .testTag("yolo_approve_button"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Check,
+                            contentDescription = "Approve",
+                            tint = Color(0xFF0A0E12),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = "Approve & Synthesize",
+                            color = Color(0xFF0A0E12),
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+                }
+            }
+        }
     }
 }
