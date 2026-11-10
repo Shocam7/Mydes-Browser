@@ -19,6 +19,7 @@ import com.example.data.api.MydesRuntime
 import com.example.data.api.ReasoningModulatorConfig
 import com.example.data.api.ThoughtSummarizer
 import com.example.data.api.UIBlueprint
+import com.example.data.api.captureBlindWireframeBase64
 import com.example.data.api.evaluateJsSuspend
 import com.example.data.model.BookmarkEntity
 import com.example.data.model.GeneratedThemeEntity
@@ -40,6 +41,13 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import com.example.data.api.InspectedElementInfo
+import com.example.data.api.assignRoleToInspectedElement
+import com.example.data.api.captureApprovedYoloBase64
+import com.example.data.api.hitTestElementForInspection
+import com.example.data.api.startYoloInspectionSession
+import com.example.data.api.stepInspectedElement
+
 
 data class AiThinkingState(
     val isActive: Boolean = false,
@@ -55,6 +63,16 @@ data class AiThinkingState(
     val chatHistory: List<ThemeChatMessage> = emptyList(),
     val visualHistory: List<ThemeVisualIteration> = emptyList()
 )
+
+data class YoloInspectionState(
+    val isActive: Boolean = false,
+    val pendingPrompt: String = "",
+    val roleCounts: Map<String, Int> = emptyMap(),
+    val selectedElement: InspectedElementInfo? = null,
+    val propagateToSiblings: Boolean = true,
+    val statusToast: String? = null
+)
+
 
 class BrowserViewModel(
     application: Application,
@@ -110,7 +128,15 @@ class BrowserViewModel(
         _synthesisModel.value = model
         val prefs = getApplication<Application>().getSharedPreferences("mydes_prefs", Context.MODE_PRIVATE)
         prefs.edit().putString("synthesis_model", model).apply()
-        _reasoningLevel.value = GeminiStylerService.getReasoningLevel(getApplication(), model)
+        val tab = activeTab.value
+        val domain = tab?.let { extractDomain(it.url) } ?: ""
+        val isModification = _websiteThemes.value[domain] != null
+
+        if (isModification) {
+            _reasoningLevel.value = ReasoningModulatorConfig.getLowestModeForModel(model)
+        } else {
+            _reasoningLevel.value = GeminiStylerService.getReasoningLevel(getApplication(), model)
+        }
         val displayName = when (model) {
             GeminiStylerService.MODEL_NVIDIA_NEMOTRON_3_ULTRA -> "Nemotron 3 Ultra 550B (NIM)"
             GeminiStylerService.MODEL_GEMINI_38_FLASH -> "Gemini 3.8 Flash"
@@ -132,6 +158,11 @@ class BrowserViewModel(
     }
 
     fun updateReasoningLevel(level: String) {
+        val tab = activeTab.value
+        val domain = tab?.let { extractDomain(it.url) } ?: ""
+        val isModification = _websiteThemes.value[domain] != null
+        if (isModification) return
+
         val model = _synthesisModel.value
         val validModes = ReasoningModulatorConfig.getAvailableModesForModel(model)
         val normalized = if (level.lowercase().trim() in validModes) {
@@ -144,6 +175,11 @@ class BrowserViewModel(
     }
 
     fun cycleReasoningLevel() {
+        val tab = activeTab.value
+        val domain = tab?.let { extractDomain(it.url) } ?: ""
+        val isModification = _websiteThemes.value[domain] != null
+        if (isModification) return
+
         val model = _synthesisModel.value
         val next = ReasoningModulatorConfig.nextMode(model, _reasoningLevel.value)
         updateReasoningLevel(next)
@@ -525,10 +561,8 @@ class BrowserViewModel(
     private fun setDefaultModelForContinuedChat() {
         _synthesisModel.value = GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE
         GeminiStylerService.setSynthesisModel(getApplication(), GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE)
-        _reasoningLevel.value = GeminiStylerService.getReasoningLevel(
-            getApplication(),
-            GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE
-        )
+        val lowestMode = ReasoningModulatorConfig.getLowestModeForModel(GeminiStylerService.MODEL_GEMINI_35_FLASH_LITE)
+        _reasoningLevel.value = lowestMode
     }
 
     fun deleteSavedTheme(theme: GeneratedThemeEntity) {
@@ -676,6 +710,185 @@ class BrowserViewModel(
         else -> "Gemini 3.5 Flash Lite"
     }
 
+
+    private val _yoloInspectionState = MutableStateFlow(YoloInspectionState())
+    val yoloInspectionState: StateFlow<YoloInspectionState> = _yoloInspectionState.asStateFlow()
+
+    private fun parseRoleCountsFromOutline(outlineJson: String?): Map<String, Int> {
+        if (outlineJson.isNullOrBlank()) return emptyMap()
+        return try {
+            val unwrapped = if (outlineJson.startsWith("\"") && outlineJson.endsWith("\"")) {
+                org.json.JSONObject("{\"v\":$outlineJson}").optString("v", "{}")
+            } else outlineJson
+            val rc = org.json.JSONObject(unwrapped).optJSONObject("roleCounts") ?: return emptyMap()
+            val map = LinkedHashMap<String, Int>()
+            val keys = rc.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                map[k] = rc.optInt(k, 0)
+            }
+            map
+        } catch (_: Exception) {
+            emptyMap()
+        }
+    }
+
+    /**
+     * Entry point when user submits a prompt:
+     * - If modifying an already-active theme, runs modification immediately.
+     * - If creating a fresh theme on a live webpage, runs MydesRuntime probe + shows the
+     *   interactive YOLO bounding-box HUD so the user can Approve, Decline, or Edit tags first!
+     */
+    fun applyAiStyle(prompt: String) {
+        val tab = activeTab.value ?: return
+        val domain = extractDomain(tab.url)
+        val isModification = _websiteThemes.value[domain] != null
+        val wv = activeWebViewRef
+
+        if (isModification || wv == null) {
+            executeAiStylePipeline(prompt, preApprovedYoloScreenshot = null)
+            return
+        }
+
+        viewModelScope.launch {
+            _isAiStylerLoading.value = true
+            _aiStylerErrorMessage.value = null
+            val outlineRaw = try {
+                wv.startYoloInspectionSession()
+            } catch (_: Exception) {
+                null
+            }
+            _isAiStylerLoading.value = false
+            val counts = parseRoleCountsFromOutline(outlineRaw)
+            val totalTagged = counts.values.sum()
+            _yoloInspectionState.value = YoloInspectionState(
+                isActive = true,
+                pendingPrompt = prompt,
+                roleCounts = counts,
+                selectedElement = null,
+                propagateToSiblings = true,
+                statusToast = "Mapped $totalTagged elements. Tap any element to inspect or reassign."
+            )
+        }
+    }
+
+    /**
+     * Choice 1: User Approves the YOLO element map -> Captures the crystal-clear YOLO visual
+     * and launches Pass 1 -> Pass 2 -> Pass 3.
+     */
+    fun approveYoloInspectionAndSynthesize() {
+        val state = _yoloInspectionState.value
+        if (!state.isActive || state.pendingPrompt.isBlank()) return
+        val prompt = state.pendingPrompt
+        val wv = activeWebViewRef
+
+        viewModelScope.launch {
+            _yoloInspectionState.value = YoloInspectionState(isActive = false)
+            val approvedYoloBase64 = try {
+                wv?.captureApprovedYoloBase64(maxDimension = 640)
+            } catch (_: Exception) {
+                null
+            }
+            executeAiStylePipeline(prompt, preApprovedYoloScreenshot = approvedYoloBase64)
+        }
+    }
+
+    /**
+     * Choice 2: User Declines & Cancels the whole process -> Removes YOLO HUD and clears probe tags.
+     */
+    fun declineYoloInspection() {
+        val wv = activeWebViewRef
+        _yoloInspectionState.value = YoloInspectionState(isActive = false)
+        _isAiStylerLoading.value = false
+        viewModelScope.launch {
+            try {
+                wv?.evaluateJsSuspend(MydesRuntime.REMOVE_YOLO_INSPECTOR_HUD_JS)
+                wv?.evaluateJsSuspend("window.__mydes && window.__mydes.clear(false);")
+            } catch (_: Exception) {}
+        }
+        Toast.makeText(getApplication(), "Redesign cancelled", Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * Choice 3 & 4 (Selection): User taps any assigned or unassigned element on the WebView ->
+     * Runs viewport hit-test + ancestor-snapping heuristic.
+     */
+    fun onWebViewTappedInYoloMode(cssX: Float, cssY: Float) {
+        if (!_yoloInspectionState.value.isActive) return
+        val wv = activeWebViewRef ?: return
+        viewModelScope.launch {
+            val info = wv.hitTestElementForInspection(cssX, cssY)
+            if (info != null) {
+                val roleLabel = if (info.assignedRole.isBlank()) "Unassigned" else info.assignedRole
+                _yoloInspectionState.update {
+                    it.copy(
+                        selectedElement = info,
+                        statusToast = "Selected <${info.tag}> [$roleLabel]"
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Allows stepping Up to parent container or Down to child if ancestor-snapping needs manual fine-tuning.
+     */
+    fun stepSelectedYoloElement(direction: String) {
+        if (!_yoloInspectionState.value.isActive) return
+        val wv = activeWebViewRef ?: return
+        viewModelScope.launch {
+            val info = wv.stepInspectedElement(direction)
+            if (info != null) {
+                val roleLabel = if (info.assignedRole.isBlank()) "Unassigned" else info.assignedRole
+                _yoloInspectionState.update {
+                    it.copy(
+                        selectedElement = info,
+                        statusToast = "Stepped $direction to <${info.tag}> [$roleLabel]"
+                    )
+                }
+            }
+        }
+    }
+
+    fun toggleYoloSiblingPropagation() {
+        _yoloInspectionState.update { it.copy(propagateToSiblings = !it.propagateToSiblings) }
+    }
+
+    /**
+     * Choice 3 & 4 (Assignment): User assigns or changes the tag of the selected element via dropdown,
+     * automatically propagating to matching siblings (`sig(e)`) if enabled.
+     */
+    fun assignRoleToSelectedYoloElement(newRole: String) {
+        val state = _yoloInspectionState.value
+        if (!state.isActive || state.selectedElement == null) return
+        val wv = activeWebViewRef ?: return
+        viewModelScope.launch {
+            val (updatedCount, updatedInfo) = wv.assignRoleToInspectedElement(
+                role = newRole,
+                propagateSiblings = state.propagateToSiblings
+            )
+            val outlineRaw = try {
+                wv.evaluateJsSuspend(MydesRuntime.OUTLINE_PROBE_JS)
+            } catch (_: Exception) {
+                null
+            }
+            val newCounts = parseRoleCountsFromOutline(outlineRaw)
+            val displayRole = if (newRole.isBlank() || newRole == "none") "Unassigned" else newRole
+            _yoloInspectionState.update {
+                it.copy(
+                    roleCounts = if (newCounts.isNotEmpty()) newCounts else it.roleCounts,
+                    selectedElement = updatedInfo ?: it.selectedElement.copy(assignedRole = if (displayRole == "Unassigned") "" else newRole),
+                    statusToast = if (updatedCount > 1) {
+                        "Assigned '$displayRole' to $updatedCount matching siblings!"
+                    } else {
+                        "Assigned '$displayRole' to <${updatedInfo?.tag ?: it.selectedElement.tag}>"
+                    }
+                )
+            }
+        }
+    }
+
+
     /**
      * Full 3-Pass Execution Pipeline:
      * - Pass 1 (Visual Architect) -> triggers `onConceptReady` so the morphing overlay rises.
@@ -684,7 +897,10 @@ class BrowserViewModel(
      *   rendered frames (`280ms` apart), captures the painted WebView screenshot, stitches any frozen
      *   animations, skipped ornaments, or clashing surfaces, and injects the final self-healed theme!
      */
-    fun applyAiStyle(prompt: String) {
+    private fun executeAiStylePipeline(
+        prompt: String,
+        preApprovedYoloScreenshot: String? = null
+    )  {
         val tab = activeTab.value ?: return
         val domain = extractDomain(tab.url)
         _isAiStylerLoading.value = true
@@ -695,8 +911,9 @@ class BrowserViewModel(
         val currentModel = _synthesisModel.value
         val isNemotron = GeminiStylerService.isNvidiaModel(currentModel)
 
-        val effectiveReasoningLabel = if (isModification && isNemotron) {
-            "OFF"
+        val effectiveReasoningLabel = if (isModification) {
+            val lowestMode = ReasoningModulatorConfig.getLowestModeForModel(currentModel)
+            ReasoningModulatorConfig.getDisplayLabel(currentModel, lowestMode)
         } else {
             ReasoningModulatorConfig.getDisplayLabel(currentModel, _reasoningLevel.value)
         }
@@ -854,6 +1071,12 @@ class BrowserViewModel(
                 val currentCss = extractCleanCss(activeTheme!!.activeCss, activeTheme.baseScript)
                 val currentConcept = (activeTheme.activeConcept.takeIf { it.isNotBlank() } ?: activeTheme.prompt).ifBlank { "Website Restyle" }
 
+                val blindWireframe = try {
+                    activeWebViewRef?.captureBlindWireframeBase64(maxDimension = 384)
+                } catch (_: Exception) {
+                    null
+                }
+
                 val result = geminiStylerService.modifyUserScript(
                     context = getApplication(),
                     userModificationPrompt = prompt,
@@ -861,6 +1084,7 @@ class BrowserViewModel(
                     activeConcept = currentConcept,
                     websiteName = siteName,
                     websiteUrl = tab.url,
+                    screenshotBase64 = blindWireframe,
                     onThinkingUpdate = onThinkingProgress,
                     onConceptReady = onConceptReady
                 )
@@ -1022,8 +1246,14 @@ class BrowserViewModel(
             } else {
                 // Brand-new theme creation:
                 // Step 1: Probe outline & run Pass 1 (Visual Architect) + Pass 2 (Pure CSS Compiler)
+                val wv = activeWebViewRef
                 val preOutline = try {
-                    activeWebViewRef?.evaluateJsSuspend(MydesRuntime.OUTLINE_PROBE_JS)
+                    wv?.evaluateJsSuspend(MydesRuntime.OUTLINE_PROBE_JS)
+                } catch (_: Exception) {
+                    null
+                }
+                val approvedVisual = preApprovedYoloScreenshot ?: try {
+                    wv?.captureApprovedYoloBase64(maxDimension = 640)
                 } catch (_: Exception) {
                     null
                 }
@@ -1033,7 +1263,7 @@ class BrowserViewModel(
                     prompt = prompt,
                     websiteUrl = tab.url,
                     pageOutlineJson = preOutline,
-                    screenshotBase64 = null,
+                    screenshotBase64 = approvedVisual,
                     forceFresh = true,
                     isReviewPass = false,
                     onThinkingUpdate = onThinkingProgress,
