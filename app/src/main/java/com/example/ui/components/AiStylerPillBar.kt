@@ -1034,308 +1034,277 @@ fun YoloInspectorApprovalBar(
     onAssignRole: (String) -> Unit,
     onStepSelection: (String) -> Unit,
     onTogglePropagateSiblings: () -> Unit,
+    onDismissPopup: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     if (!state.isActive) return
 
-    var isRoleDropdownExpanded by remember { mutableStateOf(false) }
     val selected = state.selectedElement
+    var pendingRole by remember(selected) {
+        mutableStateOf(selected?.assignedRole?.ifBlank { "card" } ?: "card")
+    }
+    var isDropdownOpen by remember(selected) { mutableStateOf(false) }
 
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 10.dp)
-            .shadow(16.dp, RoundedCornerShape(24.dp))
-            .clip(RoundedCornerShape(24.dp))
-            .background(Color(0xFF14171C).copy(alpha = 0.96f))
-            .border(1.5.dp, Color(0xFF00E676).copy(alpha = 0.7f), RoundedCornerShape(24.dp))
-            .padding(14.dp)
-            .testTag("yolo_inspector_approval_bar")
-    ) {
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+    Box(modifier = modifier.fillMaxSize()) {
+        // 1. Small Bottom-Left 'Cross' Button (Decline)
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = 18.dp, bottom = 18.dp)
+                .size(42.dp)
+                .shadow(6.dp, CircleShape)
+                .clip(CircleShape)
+                .background(Color(0xFF22252A))
+                .border(0.8.dp, Color(0xFF686E78), CircleShape)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = ripple(bounded = true),
+                    onClick = onDecline
+                )
+                .testTag("yolo_decline_button")
+                .semantics { contentDescription = "Decline and cancel YOLO inspection" },
+            contentAlignment = Alignment.Center
         ) {
-            // 1. Top Status & Role Counts Summary
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(10.dp)
-                            .clip(CircleShape)
-                            .background(Color(0xFF00E676))
-                    )
-                    Column {
-                        Text(
-                            text = "YOLO Element Inspector",
-                            color = Color.White,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = state.statusToast ?: "Tap any element on the page to inspect or change its tag",
-                            color = Color(0xFFB0BEC5),
-                            fontSize = 11.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
+            Icon(
+                imageVector = Icons.Default.Close,
+                contentDescription = "Decline",
+                tint = Color.White,
+                modifier = Modifier.size(20.dp)
+            )
+        }
 
-                // Total mapped badge
+        // 2. Small Bottom-Right 'Tick' Button (Approve Whole Selection)
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 18.dp, bottom = 18.dp)
+                .size(42.dp)
+                .shadow(6.dp, CircleShape)
+                .clip(CircleShape)
+                .background(Color(0xFF22252A))
+                .border(0.8.dp, Color(0xFF686E78), CircleShape)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = ripple(bounded = true),
+                    onClick = onApprove
+                )
+                .testTag("yolo_approve_button")
+                .semantics { contentDescription = "Approve element selection and synthesize" },
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.Check,
+                contentDescription = "Approve",
+                tint = Color.White,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+
+        // 3. Popup Modal ONLY when the user taps an element on the page
+        AnimatedVisibility(
+            visible = selected != null,
+            enter = fadeIn(tween(150)) + slideInVertically(initialOffsetY = { it / 4 }),
+            exit = fadeOut(tween(120)) + slideOutVertically(targetOffsetY = { it / 4 }),
+            modifier = Modifier.align(Alignment.Center)
+        ) {
+            if (selected != null) {
                 Box(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(Color(0xFF263238))
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                ) {
-                    Text(
-                        text = "${state.roleCounts.values.sum()} tagged",
-                        color = Color(0xFF00E676),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-
-            // 2. Selected Element Inspector & Role Dropdown (Choices 3 & 4)
-            if (selected != null) {
-                Column(
-                    modifier = Modifier
+                        .padding(horizontal = 24.dp)
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(Color(0xFF1E232B))
-                        .border(1.dp, Color(0xFF37474F), RoundedCornerShape(14.dp))
-                        .padding(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                        .shadow(20.dp, RoundedCornerShape(20.dp))
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(Color(0xFF1E2024))
+                        .border(0.8.dp, Color(0xFF5A606A), RoundedCornerShape(20.dp))
+                        .padding(16.dp)
+                        .testTag("yolo_element_popup")
                 ) {
-                    Row(
+                    Column(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "<${selected.tag}> (${selected.rectW}×${selected.rectH}px)",
-                                color = Color.White,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            val curRole = selected.assignedRole.ifBlank { "unassigned" }
-                            Text(
-                                text = "Current tag: [$curRole] • ${selected.matchingSiblings} matching siblings",
-                                color = Color(0xFF90A4AE),
-                                fontSize = 10.5.sp
-                            )
-                        }
-
-                        // Step Up / Step Down buttons for Ancestor-Snapping refinement
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (selected.canStepUp) Color(0xFF2C333F) else Color(0xFF1A1E24))
-                                    .clickable(enabled = selected.canStepUp) { onStepSelection("up") }
-                                    .padding(horizontal = 8.dp, vertical = 4.dp)
-                            ) {
+                        // Header: Element Tag + Close Popup 'X'
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "↑ Parent",
-                                    color = if (selected.canStepUp) Color(0xFF80D8FF) else Color(0xFF546E7A),
-                                    fontSize = 10.5.sp,
-                                    fontWeight = FontWeight.Bold
+                                    text = "<${selected.tag}> (${selected.rectW}×${selected.rectH}px)",
+                                    color = Color.White,
+                                    fontSize = 13.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                val curRole = selected.assignedRole.ifBlank { "unassigned" }
+                                Text(
+                                    text = "Current: [$curRole] • ${selected.matchingSiblings} matching peers",
+                                    color = Color(0xFF9EA6B4),
+                                    fontSize = 11.sp
                                 )
                             }
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (selected.canStepDown) Color(0xFF2C333F) else Color(0xFF1A1E24))
-                                    .clickable(enabled = selected.canStepDown) { onStepSelection("down") }
-                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+
+                            IconButton(
+                                onClick = onDismissPopup,
+                                modifier = Modifier.size(28.dp)
                             ) {
-                                Text(
-                                    text = "↓ Child",
-                                    color = if (selected.canStepDown) Color(0xFF80D8FF) else Color(0xFF546E7A),
-                                    fontSize = 10.5.sp,
-                                    fontWeight = FontWeight.Bold
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Close popup",
+                                    tint = Color(0xFFB0BEC5),
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
                         }
-                    }
 
-                    // Dropdown trigger + Sibling Propagation toggle
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
+                        // Hierarchy Stepper (↑ Parent / ↓ Child) + Siblings Toggle
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (selected.canStepUp) Color(0xFF2C313A) else Color(0xFF181A1F))
+                                        .border(0.6.dp, Color(0xFF4A505A), RoundedCornerShape(8.dp))
+                                        .clickable(enabled = selected.canStepUp) { onStepSelection("up") }
+                                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                                ) {
+                                    Text(
+                                        text = "↑ Parent",
+                                        color = if (selected.canStepUp) Color.White else Color(0xFF555B66),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (selected.canStepDown) Color(0xFF2C313A) else Color(0xFF181A1F))
+                                        .border(0.6.dp, Color(0xFF4A505A), RoundedCornerShape(8.dp))
+                                        .clickable(enabled = selected.canStepDown) { onStepSelection("down") }
+                                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                                ) {
+                                    Text(
+                                        text = "↓ Child",
+                                        color = if (selected.canStepDown) Color.White else Color(0xFF555B66),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(
+                                        if (state.propagateToSiblings) Color(0xFF2E3830) else Color(0xFF262930)
+                                    )
+                                    .border(
+                                        0.8.dp,
+                                        if (state.propagateToSiblings) Color(0xFF00E676) else Color(0xFF4A505A),
+                                        RoundedCornerShape(8.dp)
+                                    )
+                                    .clickable { onTogglePropagateSiblings() }
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Text(
+                                    text = if (state.propagateToSiblings) "Siblings: ON" else "Siblings: OFF",
+                                    color = if (state.propagateToSiblings) Color(0xFF00E676) else Color(0xFF9EA6B4),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+
+                        // Dropdown Box for Role Selection
                         Box(
                             modifier = Modifier
-                                .weight(1f)
+                                .fillMaxWidth()
                                 .clip(RoundedCornerShape(10.dp))
-                                .background(Color(0xFF28303D))
-                                .border(1.dp, Color(0xFFF6C343), RoundedCornerShape(10.dp))
-                                .clickable { isRoleDropdownExpanded = !isRoleDropdownExpanded }
-                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                                .background(Color(0xFF282C34))
+                                .border(0.8.dp, Color(0xFF686E78), RoundedCornerShape(10.dp))
+                                .clickable { isDropdownOpen = !isDropdownOpen }
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
                         ) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                val currentLabel = selected.assignedRole.ifBlank { "Assign Tag..." }
                                 Text(
-                                    text = "Tag: $currentLabel",
-                                    color = Color(0xFFF6C343),
-                                    fontSize = 11.5.sp,
-                                    fontWeight = FontWeight.Bold
+                                    text = "Tag: ${if (pendingRole == "none") "Clear (Unassign)" else pendingRole}",
+                                    color = Color.White,
+                                    fontSize = 12.5.sp,
+                                    fontWeight = FontWeight.SemiBold
                                 )
                                 Icon(
-                                    imageVector = if (isRoleDropdownExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                                    contentDescription = "Select Role",
-                                    tint = Color(0xFFF6C343),
-                                    modifier = Modifier.size(16.dp)
+                                    imageVector = if (isDropdownOpen) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                    contentDescription = "Expand dropdown",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
                         }
 
-                        Spacer(modifier = Modifier.width(8.dp))
-
-                        // Sibling Propagation Toggle
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(
-                                    if (state.propagateToSiblings) Color(0xFF00E676).copy(alpha = 0.2f)
-                                    else Color(0xFF262B33)
-                                )
-                                .border(
-                                    1.dp,
-                                    if (state.propagateToSiblings) Color(0xFF00E676) else Color(0xFF455A64),
-                                    RoundedCornerShape(10.dp)
-                                )
-                                .clickable { onTogglePropagateSiblings() }
-                                .padding(horizontal = 9.dp, vertical = 6.dp)
-                        ) {
-                            Text(
-                                text = if (state.propagateToSiblings) "⚡ Siblings: ON" else "Siblings: OFF",
-                                color = if (state.propagateToSiblings) Color(0xFF00E676) else Color(0xFF90A4AE),
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-
-                    // Expandable Role Picker Grid/Row
-                    AnimatedVisibility(visible = isRoleDropdownExpanded) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState())
-                                .padding(top = 4.dp),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            YOLO_ROLE_OPTIONS.forEach { (roleName, roleColor) ->
-                                val isCurrent = selected.assignedRole == roleName ||
-                                    (roleName == "none" && selected.assignedRole.isBlank())
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(if (isCurrent) roleColor else roleColor.copy(alpha = 0.16f))
-                                        .border(1.dp, roleColor, RoundedCornerShape(8.dp))
-                                        .clickable {
-                                            onAssignRole(roleName)
-                                            isRoleDropdownExpanded = false
-                                        }
-                                        .padding(horizontal = 10.dp, vertical = 5.dp)
-                                ) {
-                                    Text(
-                                        text = if (roleName == "none") "✕ Clear" else roleName,
-                                        color = if (isCurrent) Color.Black else Color.White,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
+                        AnimatedVisibility(visible = isDropdownOpen) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                YOLO_ROLE_OPTIONS.forEach { (roleName, roleColor) ->
+                                    val isChosen = pendingRole == roleName
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(if (isChosen) roleColor else Color(0xFF282C34))
+                                            .border(0.8.dp, roleColor, RoundedCornerShape(8.dp))
+                                            .clickable {
+                                                pendingRole = roleName
+                                                isDropdownOpen = false
+                                            }
+                                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                                    ) {
+                                        Text(
+                                            text = if (roleName == "none") "✕ Clear" else roleName,
+                                            color = if (isChosen) Color.Black else Color.White,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
                                 }
                             }
                         }
-                    }
-                }
-            }
 
-            // 3. Approve (Choice 1) & Decline (Choice 2) Action Buttons
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(Color(0xFF2B1D22))
-                        .border(1.dp, Color(0xFFFF5252), RoundedCornerShape(14.dp))
-                        .clickable { onDecline() }
-                        .padding(vertical = 10.dp)
-                        .testTag("yolo_decline_button"),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Decline",
-                            tint = Color(0xFFFF5252),
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Text(
-                            text = "Decline & Cancel",
-                            color = Color(0xFFFF5252),
-                            fontSize = 12.5.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-
-                Box(
-                    modifier = Modifier
-                        .weight(1.4f)
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(Color(0xFF00E676))
-                        .clickable { onApprove() }
-                        .padding(vertical = 10.dp)
-                        .testTag("yolo_approve_button"),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Check,
-                            contentDescription = "Approve",
-                            tint = Color(0xFF0A0E12),
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Text(
-                            text = "Approve & Synthesize",
-                            color = Color(0xFF0A0E12),
-                            fontSize = 12.5.sp,
-                            fontWeight = FontWeight.ExtraBold
-                        )
+                        // Save Button (Applies Tag & Closes Popup)
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFF2C313A))
+                                .border(0.8.dp, Color(0xFF8A919E), RoundedCornerShape(12.dp))
+                                .clickable { onAssignRole(pendingRole) }
+                                .padding(vertical = 10.dp)
+                                .testTag("yolo_popup_save_button"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "Save",
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
             }
         }
     }
 }
+
