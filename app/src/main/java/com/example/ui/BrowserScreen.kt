@@ -175,7 +175,10 @@ fun BrowserScreen(
         }
     }
 
-    val shouldShowButtons = isStartPage || controlsVisible || isOptionsMenuExpanded || isAiStylerPillVisible
+    val shouldShowButtons = !yoloInspectionState.isActive &&
+        (isStartPage || controlsVisible || isOptionsMenuExpanded || isAiStylerPillVisible)
+
+
 
     val settingsOffsetX by animateDpAsState(
         targetValue = if (shouldShowButtons) 0.dp else (-80).dp,
@@ -259,15 +262,11 @@ fun BrowserScreen(
                         },
                         onScrollUp = {
                             onUpwardScrollDetected()
-                        }
-                        
-                                            onScrollUp = {
-                            onUpwardScrollDetected()
-                      },
-                      isYoloInspectMode = yoloInspectionState.isActive,
+                        },
+                        isYoloInspectMode = yoloInspectionState.isActive,
                         onElementTappedInInspectMode = { cssX, cssY ->
                             viewModel.onWebViewTappedInYoloMode(cssX, cssY)
-                      }
+                        }
                     )
                 }
             }
