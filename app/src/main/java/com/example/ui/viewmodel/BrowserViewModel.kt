@@ -858,15 +858,18 @@ class BrowserViewModel(
      * Choice 3 & 4 (Assignment): User assigns or changes the tag of the selected element via dropdown,
      * automatically propagating to matching siblings (`sig(e)`) if enabled.
      */
-    fun assignRoleToSelectedYoloElement(newRole: String) {
+     fun assignRoleToSelectedYoloElement(newRole: String) {
         val state = _yoloInspectionState.value
         if (!state.isActive || state.selectedElement == null) return
         val wv = activeWebViewRef ?: return
         viewModelScope.launch {
-            val (updatedCount, updatedInfo) = wv.assignRoleToInspectedElement(
+            val (updatedCount, _) = wv.assignRoleToInspectedElement(
                 role = newRole,
                 propagateSiblings = state.propagateToSiblings
             )
+            try {
+                wv.evaluateJsSuspend("(function(){ if(window.__mydes && window.__mydes.clearSelection) window.__mydes.clearSelection(); })();")
+            } catch (_: Exception) {}
             val outlineRaw = try {
                 wv.evaluateJsSuspend(MydesRuntime.OUTLINE_PROBE_JS)
             } catch (_: Exception) {
@@ -877,16 +880,28 @@ class BrowserViewModel(
             _yoloInspectionState.update {
                 it.copy(
                     roleCounts = if (newCounts.isNotEmpty()) newCounts else it.roleCounts,
-                    selectedElement = updatedInfo ?: it.selectedElement.copy(assignedRole = if (displayRole == "Unassigned") "" else newRole),
-                    statusToast = if (updatedCount > 1) {
-                        "Assigned '$displayRole' to $updatedCount matching siblings!"
-                    } else {
-                        "Assigned '$displayRole' to <${updatedInfo?.tag ?: it.selectedElement.tag}>"
-                    }
+                    selectedElement = null // Auto-close popup on Save!
                 )
             }
+            Toast.makeText(
+                getApplication(),
+                if (updatedCount > 1) "Saved '$displayRole' on $updatedCount elements" else "Saved '$displayRole'",
+                Toast.LENGTH_SHORT
+            ).show()
         }
     }
+
+
+    fun dismissSelectedYoloPopup() {
+        val wv = activeWebViewRef
+        _yoloInspectionState.update { it.copy(selectedElement = null) }
+        viewModelScope.launch {
+            try {
+                wv?.evaluateJsSuspend("(function(){ if(window.__mydes && window.__mydes.clearSelection) window.__mydes.clearSelection(); })();")
+            } catch (_: Exception) {}
+        }
+    }
+
 
 
     /**
