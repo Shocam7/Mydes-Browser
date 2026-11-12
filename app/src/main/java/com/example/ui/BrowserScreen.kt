@@ -510,12 +510,14 @@ fun BrowserScreen(
                 onAssignRole = { role -> viewModel.assignRoleToSelectedYoloElement(role) },
                 onStepSelection = { dir -> viewModel.stepSelectedYoloElement(dir) },
                 onTogglePropagateSiblings = { viewModel.toggleYoloSiblingPropagation() },
+                onDismissPopup = { viewModel.dismissSelectedYoloPopup() },
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
+                    .fillMaxSize()
                     .then(bottomInsetsModifier)
                     .zIndex(35f)
             )
         }
+
 
 
         // 9. Fullscreen Modals and Sheets
