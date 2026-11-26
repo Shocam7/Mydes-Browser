@@ -818,6 +818,33 @@ data class UIBlueprint(
             )
         }
 
+         /**
+         * Extracts pure CSS from a raw-CSS Pass 2 response.
+         * Strips `<think>` blocks and markdown code fences; gracefully falls back if a model
+         * accidentally wraps CSS inside a JSON object.
+         */
+        fun extractRawCss(raw: String): String {
+            var s = raw.trim()
+            if (s.contains("</think>")) s = s.substringAfterLast("</think>").trim()
+            Regex("```(?:css|scss|json)?\\s*([\\s\\S]*?)\\s*```", RegexOption.IGNORE_CASE)
+                .find(s)?.let { s = it.groupValues[1].trim() }
+
+            if (s.startsWith("{") && (s.contains("\"customCss\"") || s.contains("\"css\""))) {
+                val parsedCss = try {
+                    val j = JSONObject(jsonSlice(s))
+                    j.optString("customCss", "").ifBlank { j.optString("css", "") }
+                } catch (_: Exception) {
+                    try {
+                        val j = JSONObject(repairTruncatedJson(s))
+                        j.optString("customCss", "").ifBlank { j.optString("css", "") }
+                    } catch (_: Exception) { "" }
+                }
+                if (parsedCss.isNotBlank()) return sanitizeGeneratedCss(parsedCss)
+            }
+            return sanitizeGeneratedCss(s)
+        }
+
+
         fun findMissingDecisions(designSpec: String, customCss: String): List<String> {
             if (designSpec.isBlank()) return emptyList()
             val implementedIds = Regex("""\b(D\d+)\b""")
@@ -3148,7 +3175,7 @@ For every item in "elements", include a "rules" array containing the matching ta
                 appendLine(brief.raw)
             }
             appendLine()
-            appendLine("Return the updated UIBlueprint JSON now.")
+            appendLine("Output ONLY the complete updated raw CSS stylesheet now. No JSON, no markdown fences.")
         }
 
         val lowestMode = ReasoningModulatorConfig.getLowestModeForModel(synthesisModel)
@@ -3176,7 +3203,7 @@ For every item in "elements", include a "rules" array containing the matching ta
                         temperature = if (isFrontier) 0.45f else 0.3f,
                         topP = 0.95f,
                         maxOutputTokens = 8192,
-                        responseMimeType = "application/json",
+                        responseMimeType = null,
                         thinkingConfig = ThinkingConfig(thinkingLevel = resolvedLevel)
                     )
                 )
@@ -3189,8 +3216,27 @@ For every item in "elements", include a "rules" array containing the matching ta
                 )
             }
 
-            val parsed = UIBlueprint.parse(raw, userModificationPrompt)?.copy(
+            val compiledCss = UIBlueprint.extractRawCss(raw)
+            if (compiledCss.isBlank() || !compiledCss.contains('{')) {
+                return@withContext Result.failure(IllegalStateException("Model returned empty CSS for modification."))
+            }
+            val parsed = UIBlueprint(
+                id = sha1Hex("v${UIBlueprint.RUNTIME_VERSION}|${userModificationPrompt.trim().lowercase(Locale.US)}|$compiledCss").take(12),
+                name = brief?.name ?: userModificationPrompt.take(50),
+                dark = brief?.dark ?: true,
+                bg = brief?.bg ?: "#0a0c0e",
+                surface = brief?.surface ?: "#14181d",
+                surface2 = brief?.surface2 ?: "#1e242b",
+                fg = brief?.fg ?: "#e2e8f0",
+                ink = brief?.ink ?: "#ffffff",
+                accent = brief?.accent ?: "#00ff88",
+                remapSurfaces = true,
+                customCss = compiledCss,
+                backdropHtml = "",
+                hudHtml = "",
+                customJs = "",
                 concept = brief?.idea ?: activeConcept,
+                fingerprint = brief?.fingerprint ?: "",
                 designSpec = brief?.raw ?: ""
             ) ?: return@withContext Result.failure(IllegalStateException("Failed to parse modified blueprint JSON."))
 
@@ -3207,11 +3253,18 @@ For every item in "elements", include a "rules" array containing the matching ta
 
     private class ConceptBrief(
         val raw: String,
+        val name: String,
         val idea: String,
         val fingerprint: String,
+        val dark: Boolean,
         val bg: String,
-        val fg: String
+        val surface: String,
+        val surface2: String,
+        val fg: String,
+        val ink: String,
+        val accent: String
     )
+
 
     private fun extractJsonObject(raw: String): String? {
         val s = raw.indexOf('{')
@@ -3317,13 +3370,59 @@ For every item in "elements", include a "rules" array containing the matching ta
             val idea = json.optString("idea", "").trim()
             if (idea.isBlank()) throw IllegalStateException("brief has no idea: ${raw.take(200)}")
 
-            val paletteText = json.optString("palette", "").trim()
+            val titleName = json.optString("name", "").trim().ifBlank { prompt }.take(50)
             val typeText = json.optString("type", "").trim()
             val fingerprint = json.optString("fingerprint", "").trim().take(120)
 
+            val palObj = json.optJSONObject("palette")
+            val paletteText = if (palObj != null) {
+                buildString {
+                    append("canvas: ${palObj.optString("bg")}, ")
+                    append("surface: ${palObj.optString("surface")}, ")
+                    append("raised surface: ${palObj.optString("surface2")}, ")
+                    append("text: ${palObj.optString("fg")}, ")
+                    append("headline ink: ${palObj.optString("ink")}, ")
+                    append("primary accent: ${palObj.optString("accent")}")
+                    val extras = palObj.optString("extras", "").trim()
+                    if (extras.isNotBlank()) append(", $extras")
+                }
+            } else {
+                json.optString("palette", "").trim()
+            }
+
             val hexMatches = Regex("#[0-9a-fA-F]{6}").findAll(paletteText).map { it.value }.toList()
-            val extractedBg = hexMatches.getOrNull(0) ?: "#0a0c10"
-            val extractedFg = hexMatches.getOrNull(3) ?: "#e2e8f0"
+            val rawBg = palObj?.optString("bg") ?: hexMatches.getOrNull(0)
+            val inferredDark = if (json.has("dark")) {
+                json.optBoolean("dark", true)
+            } else {
+                val probeBg = Hex.norm(rawBg, "#0a0c10")
+                Hex.lum(probeBg) < 0.4
+            }
+
+            val white = "#ffffff"
+            val black = "#000000"
+            val extractedBg = Hex.norm(rawBg, if (inferredDark) "#0a0c0e" else "#f8f9fa")
+            val extractedSurface = Hex.norm(
+                palObj?.optString("surface") ?: hexMatches.getOrNull(1),
+                Hex.mix(extractedBg, if (inferredDark) white else black, 0.08)
+            )
+            val extractedSurface2 = Hex.norm(
+                palObj?.optString("surface2") ?: hexMatches.getOrNull(2),
+                Hex.mix(extractedSurface, if (inferredDark) white else black, 0.08)
+            )
+            var extractedFg = Hex.norm(
+                palObj?.optString("fg") ?: hexMatches.getOrNull(3),
+                if (inferredDark) "#e2e8f0" else "#1a202c"
+            )
+            if (Hex.contrast(extractedFg, extractedBg) < 4.5) {
+                extractedFg = if (Hex.lum(extractedBg) < 0.4) "#f8fafc" else "#0f172a"
+            }
+            val rawInk = Hex.norm(palObj?.optString("ink") ?: hexMatches.getOrNull(4), extractedFg)
+            val extractedInk = if (Hex.contrast(rawInk, extractedSurface) >= 3.0) rawInk else extractedFg
+            val extractedAccent = Hex.norm(
+                palObj?.optString("accent") ?: hexMatches.getOrNull(5),
+                if (inferredDark) "#00ff88" else "#0284c7"
+            )
 
             val directions = buildString {
                 appendLine("IDEA: $idea")
@@ -3366,11 +3465,18 @@ For every item in "elements", include a "rules" array containing the matching ta
 
             val brief = ConceptBrief(
                 raw = directions,
+                name = titleName,
                 idea = idea.take(300),
                 fingerprint = fingerprint,
+                dark = inferredDark,
                 bg = extractedBg,
-                fg = extractedFg
+                surface = extractedSurface,
+                surface2 = extractedSurface2,
+                fg = extractedFg,
+                ink = extractedInk,
+                accent = extractedAccent
             )
+
             ApiRequestLogger.logRequest(
                 context = context,
                 type = "conceptBrief ($CONCEPT_MODEL)",
@@ -3521,7 +3627,7 @@ For every item in "elements", include a "rules" array containing the matching ta
             appendLine("SPECIFICATION OF VISUAL DECISIONS & CO-LOCATED ELEMENT RULES:")
             appendLine(brief!!.raw)
             appendLine()
-            appendLine("Produce the JSON response now.")
+            appendLine("Output ONLY the complete raw CSS stylesheet now. No JSON, no markdown fences, no commentary.")
         }
 
         val parts = mutableListOf<Part>(Part(text = userContextText))
@@ -3589,7 +3695,7 @@ For every item in "elements", include a "rules" array containing the matching ta
             } else {
                 callGeminiStream(
                     activeModel,
-                    buildReq(true),
+                    buildReq(isReview),
                     geminiApiKey,
                     onThoughtChunk = { chunk ->
                         onThinkingUpdate?.invoke(
@@ -3610,13 +3716,35 @@ For every item in "elements", include a "rules" array containing the matching ta
             val blueprint: UIBlueprint? = if (isReview) {
                 applyReviewPatch(previous!!, raw, cleanPrompt)
             } else {
-                val parsed = UIBlueprint.parse(raw, cleanPrompt)
-                parsed?.copy(
-                    concept = brief!!.idea,
-                    fingerprint = brief.fingerprint,
-                    designSpec = brief.raw
-                )
+                val compiledCss = UIBlueprint.extractRawCss(raw)
+                if (compiledCss.isBlank() || !compiledCss.contains('{')) {
+                    null
+                } else {
+                    val b = brief!!
+                    UIBlueprint(
+                        id = sha1Hex("v${UIBlueprint.RUNTIME_VERSION}|${cleanPrompt.lowercase(Locale.US)}|$compiledCss").take(12),
+                        name = b.name,
+                        dark = b.dark,
+                        bg = b.bg,
+                        surface = b.surface,
+                        surface2 = b.surface2,
+                        fg = b.fg,
+                        ink = b.ink,
+                        accent = b.accent,
+                        remapSurfaces = true,
+                        customCss = compiledCss,
+                        backdropHtml = "",
+                        hudHtml = "",
+                        customJs = "",
+                        concept = b.idea,
+                        needsHud = false,
+                        hudReason = "",
+                        fingerprint = b.fingerprint,
+                        designSpec = b.raw
+                    )
+                }
             }
+
 
             if (blueprint == null) {
                 val err = "Model returned invalid UIBlueprint JSON (finish_reason=${lastNimFinishReason ?: "n/a"})."
@@ -3726,8 +3854,18 @@ HOW TO DECIDE
  
 OUTPUT: ONLY valid JSON, compact, about 450 words at most:
 {
+  "name": "short 2-4 word title",
   "idea": "one sentence",
-  "palette": "hex colours with roles: canvas, surface, raised surface, text, headline ink, primary accent, plus any further colours the idea needs",
+  "dark": true,
+  "palette": {
+    "bg": "#rrggbb",
+    "surface": "#rrggbb",
+    "surface2": "#rrggbb",
+    "fg": "#rrggbb",
+    "ink": "#rrggbb",
+    "accent": "#rrggbb",
+    "extras": "optional extra hex colours and roles, or empty"
+  },
   "type": "heading and body typefaces (any Google Font), casing and spacing",
   "elements": [
     {"target": "a listed part, or an extra layer or motif you invent and where it attaches", "decisions": ["one concrete visual decision per string"], "rules": ["TARGET_TAG", "TECHNIQUE_TAG"]}
@@ -3748,17 +3886,9 @@ METHOD
 - Do not skip small decisions, and do not merge several decisions into one weaker effect.
 - You compile, you do not redesign: add no decorative ideas of your own. Parts the specification leaves quiet still receive a clean, coherent treatment from the palette so no part of the page keeps host colours.
  
-OUTPUT: ONLY valid JSON, no markdown fences:
-{
-  "name": "short title",
-  "dark": true or false,
-  "bg": "#rrggbb", "surface": "#rrggbb", "surface2": "#rrggbb", "fg": "#rrggbb", "ink": "#rrggbb", "accent": "#rrggbb",
-  "remapSurfaces": true,
-  "customCss": "complete CSS implementing every decision",
-  "unrealized": ["decisions that could not be built, or empty"],
-  "concept": "one sentence"
-}
+OUTPUT: ONLY raw, valid CSS. Do NOT output JSON, markdown code fences (```), or explanations. Start directly with the first CSS rule or `@keyframes`.
 """.trimIndent()
+
 
     // ───────────────────────── TIER B (frontier, uncapped) ─────────────────────────
 
@@ -3774,16 +3904,27 @@ HOW TO DECIDE
 - Make every decision specific enough to picture exactly: shapes, counts, scale in plain words, direction, pace in plain words, what is still and what moves, and where light falls. Colours are given as hex. Avoid mood words that have no visual meaning.
 - Everything must be achievable within the limits above.
  
-OUTPUT: ONLY valid JSON, about 650 words at most:
+OUTPUT: ONLY valid JSON, compact, about 450 words at most:
 {
+  "name": "short 2-4 word title",
   "idea": "one vivid sentence",
-  "palette": "hex colours with roles: canvas, surface, raised surface, text, headline ink, primary accent, plus any further colours the idea needs",
-  "type": "heading and body typefaces (any Google Font), typographic mood",
+  "dark": true,
+  "palette": {
+    "bg": "#rrggbb",
+    "surface": "#rrggbb",
+    "surface2": "#rrggbb",
+    "fg": "#rrggbb",
+    "ink": "#rrggbb",
+    "accent": "#rrggbb",
+    "extras": "optional extra hex colours and roles, or empty"
+  },
+  "type": "heading and body typefaces (any Google Font), casing and spacing",
   "elements": [
     {"target": "a listed part, or an extra layer or motif you invent and where it attaches", "decisions": ["one concrete visual decision per string"], "rules": ["TARGET_TAG", "TECHNIQUE_TAG"]}
   ],
   "fingerprint": "at most 10 words naming what makes this world distinct"
 }
+
 Include one entry for every listed part, plus every invented element the idea needs. Each decision string must stand alone so it can be built and checked individually.
 """.trimIndent()
 
@@ -3799,17 +3940,9 @@ CRAFT
 - Build real material, not flat approximations: depth, lighting, texture and edge detail where the vision implies them.
 - Give every part considered treatment so the whole page reads as one coherent world and no part keeps host colours.
  
-OUTPUT: ONLY valid JSON, no markdown fences:
-{
-  "name": "short title",
-  "dark": true or false,
-  "bg": "#rrggbb", "surface": "#rrggbb", "surface2": "#rrggbb", "fg": "#rrggbb", "ink": "#rrggbb", "accent": "#rrggbb",
-  "remapSurfaces": true,
-  "customCss": "complete, richly crafted CSS implementing every decision",
-  "unrealized": ["decisions that could not be built, or empty"],
-  "concept": "one sentence"
-}
+OUTPUT: ONLY raw, valid CSS. Do NOT output JSON, markdown code fences (```), or explanations. Start directly with the first CSS rule or `@keyframes`.
 """.trimIndent()
+
 
     // ───── Networking Helpers ─────
 
