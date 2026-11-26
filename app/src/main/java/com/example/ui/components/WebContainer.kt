@@ -110,18 +110,19 @@ fun WebContainer(
                     settings.apply {
                         javaScriptEnabled = isJavaScriptEnabled
                         domStorageEnabled = true
+                        databaseEnabled = true
                         loadsImagesAutomatically = true
-                        offscreenPreRaster = true // Pre-rasterize offscreen tiles on GPU like Chrome
+                        offscreenPreRaster = true
                         loadWithOverviewMode = true
                         useWideViewPort = true
-                        builtInZoomControls = false
+                        builtInZoomControls = true
                         displayZoomControls = false
-                        setSupportZoom(false)
-                        mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                        setSupportZoom(true)
+                        setSupportMultipleWindows(true)
+                        javaScriptCanOpenWindowsAutomatically = true
+                        mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                         cacheMode = if (isIncognito) WebSettings.LOAD_NO_CACHE else WebSettings.LOAD_DEFAULT
-                        if (isDesktopMode) {
-                            userAgentString = DESKTOP_USER_AGENT
-                        }
+                        userAgentString = if (isDesktopMode) DESKTOP_USER_AGENT else null
                         mediaPlaybackRequiresUserGesture = true
                     }
 
@@ -151,6 +152,26 @@ fun WebContainer(
                         if (!title.isNullOrBlank()) {
                             onTitleChanged(title)
                         }
+                    }
+
+                    override fun onCreateWindow(
+                        view: WebView?,
+                        isDialog: Boolean,
+                        isUserGesture: Boolean,
+                        resultMsg: android.os.Message?
+                    ): Boolean {
+                        val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
+                        val dialogWebView = WebView(view?.context ?: return false).apply {
+                            webViewClient = object : WebViewClient() {
+                                override fun shouldOverrideUrlLoading(v: WebView?, request: WebResourceRequest?): Boolean {
+                                    request?.url?.toString()?.let { view?.loadUrl(it) }
+                                    return true
+                                }
+                            }
+                        }
+                        transport.webView = dialogWebView
+                        resultMsg.sendToTarget()
+                        return true
                     }
                 }
 
@@ -279,6 +300,7 @@ fun WebContainer(
             if (isDesktopMode != lastDesktopMode) {
                 lastDesktopMode = isDesktopMode
                 webView.settings.userAgentString = if (isDesktopMode) DESKTOP_USER_AGENT else null
+                webView.settings.loadWithOverviewMode = true
                 webView.reload()
             }
             if (isYoloInspectMode) {
@@ -302,7 +324,7 @@ fun WebContainer(
                         }
                         MotionEvent.ACTION_UP -> {
                             if (isTapCandidate) {
-                                val densityScale = if (webView.scale > 0f) webView.scale else v.resources.displayMetrics.density
+                                val densityScale = v.resources.displayMetrics.density
                                 val cssX = event.x / densityScale
                                 val cssY = event.y / densityScale
                                 onElementTappedInInspectMode(cssX, cssY)

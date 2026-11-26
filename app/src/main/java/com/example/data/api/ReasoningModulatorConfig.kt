@@ -41,8 +41,20 @@ object ReasoningModulatorConfig {
                 // In continued chat modifications, Nemotron defaults to OFF-thinking for rapid CSS tweaks
                 if (isContinuationChat) MODE_OFF else MODE_MEDIUM
             }
-            model == GeminiStylerService.MODEL_GEMINI_38_FLASH -> MODE_MEDIUM
-            else -> MODE_LOW
+            model == GeminiStylerService.MODEL_GEMINI_38_FLASH -> {
+                if (isContinuationChat) MODE_LOW else MODE_MEDIUM
+            }
+            else -> {
+                if (isContinuationChat) MODE_MINIMAL else MODE_LOW
+            }
+        }
+    }
+
+    fun getLowestModeForModel(model: String): String {
+        return when {
+            GeminiStylerService.isNvidiaModel(model) -> MODE_OFF
+            model == GeminiStylerService.MODEL_GEMINI_38_FLASH -> MODE_LOW
+            else -> MODE_MINIMAL
         }
     }
 

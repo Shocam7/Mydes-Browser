@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -54,6 +55,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.res.painterResource
 import coil.compose.SubcomposeAsyncImage
 
 data class QuickAccessShortcut(
@@ -104,14 +107,25 @@ fun StartPage(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            // Simple text logo
-            Text(
-                text = if (isIncognito) "Mydes Private" else "Mydes",
-                color = textPrimary,
-                fontSize = 32.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.sp
+            // MYDES Logo image
+            val logoBitmap = rememberTransparentLogo(com.example.R.drawable.ic_logo)
+            Image(
+                bitmap = logoBitmap,
+                contentDescription = if (isIncognito) "Mydes Private" else "Mydes",
+                modifier = Modifier
+                    .height(38.dp)
+                    .widthIn(max = 180.dp),
+                colorFilter = ColorFilter.tint(textPrimary)
             )
+            if (isIncognito) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Private",
+                    color = textSecondary,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
 
             Spacer(modifier = Modifier.height(28.dp))
 

@@ -312,10 +312,29 @@ fun ApiRequestLogsSheet(
                                             val thumbFile = remember(log.screenshotPath) {
                                                 if (!log.screenshotPath.isNullOrBlank()) java.io.File(log.screenshotPath) else null
                                             }
+                                            val thumbBitmap = remember(log.screenshotBase64) {
+                                                if (!log.screenshotBase64.isNullOrBlank()) {
+                                                    try {
+                                                        val decoded = android.util.Base64.decode(log.screenshotBase64, android.util.Base64.DEFAULT)
+                                                        android.graphics.BitmapFactory.decodeByteArray(decoded, 0, decoded.size)
+                                                    } catch (_: Exception) { null }
+                                                } else null
+                                            }
+                                            val isConcept = log.type.contains("conceptBrief", ignoreCase = true)
                                             if (thumbFile != null && thumbFile.exists()) {
                                                 AsyncImage(
                                                     model = thumbFile,
-                                                    contentDescription = "Sent rendered page thumbnail",
+                                                    contentDescription = if (isConcept) "Blind wireframe thumbnail" else "Sent rendered page thumbnail",
+                                                    modifier = Modifier
+                                                        .size(40.dp)
+                                                        .clip(RoundedCornerShape(6.dp))
+                                                        .background(Color.Black),
+                                                    contentScale = ContentScale.Crop
+                                                )
+                                            } else if (thumbBitmap != null) {
+                                                androidx.compose.foundation.Image(
+                                                    bitmap = thumbBitmap.asImageBitmap(),
+                                                    contentDescription = if (isConcept) "Blind wireframe thumbnail" else "Sent rendered page thumbnail",
                                                     modifier = Modifier
                                                         .size(40.dp)
                                                         .clip(RoundedCornerShape(6.dp))
@@ -323,8 +342,11 @@ fun ApiRequestLogsSheet(
                                                     contentScale = ContentScale.Crop
                                                 )
                                             }
+                                            val badgeBg = if (isConcept) Color(0x264285F4) else Color(0x264CAF50)
+                                            val badgeTint = if (isConcept) Color(0xFF82B1FF) else Color(0xFF81C784)
+                                            val badgeText = if (isConcept) "Blind Wireframe Attached" else "Rendered Webpage Attached"
                                             Surface(
-                                                color = Color(0x264CAF50),
+                                                color = badgeBg,
                                                 shape = RoundedCornerShape(6.dp)
                                             ) {
                                                 Row(
@@ -334,13 +356,13 @@ fun ApiRequestLogsSheet(
                                                     Icon(
                                                         imageVector = Icons.Default.Image,
                                                         contentDescription = null,
-                                                        tint = Color(0xFF81C784),
+                                                        tint = badgeTint,
                                                         modifier = Modifier.size(13.dp)
                                                     )
                                                     Spacer(modifier = Modifier.width(4.dp))
                                                     Text(
-                                                        text = "Rendered Webpage Attached",
-                                                        color = Color(0xFF81C784),
+                                                        text = badgeText,
+                                                        color = badgeTint,
                                                         fontSize = 11.sp,
                                                         fontWeight = FontWeight.Medium
                                                     )
@@ -442,12 +464,23 @@ fun ApiRequestLogsSheet(
                                     .background(Color(0xFF14171A))
                                     .padding(12.dp)
                             ) {
+                                val isConcept = log.type.contains("conceptBrief", ignoreCase = true)
+                                val titleText = if (isConcept) "Blind Wireframe Screenshot (Sent to Concept Agent)" else "Rendered Webpage Screenshot (Sent to Review Agent)"
+                                val tagText = if (isConcept) "BLIND WIREFRAME" else "CLEAN RENDER"
+                                val tagBg = if (isConcept) Color(0x334285F4) else Color(0x334CAF50)
+                                val tagColor = if (isConcept) Color(0xFF82B1FF) else Color(0xFF81C784)
+                                val descText = if (isConcept) "Privacy-masked wireframe • Text blurred into bars and media flat gray to guide spatial decisions." else "Clean webpage viewport only • No obstruction from brush icons, pills, or sheets."
+
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
+
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.weight(1f)
+                                    ) {
                                         Icon(
                                             imageVector = Icons.Default.Image,
                                             contentDescription = null,
@@ -456,19 +489,19 @@ fun ApiRequestLogsSheet(
                                         )
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Text(
-                                            text = "Rendered Webpage Screenshot (Sent to Review Agent)",
+                                            text = titleText,
                                             color = Color(0xFFFFD54F),
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 12.sp
                                         )
                                     }
                                     Surface(
-                                        color = Color(0x334CAF50),
+                                        color = tagBg,
                                         shape = RoundedCornerShape(4.dp)
                                     ) {
                                         Text(
-                                            text = "CLEAN RENDER",
-                                            color = Color(0xFF81C784),
+                                            text = tagText,
+                                            color = tagColor,
                                             fontSize = 9.sp,
                                             fontWeight = FontWeight.Bold,
                                             modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
@@ -477,7 +510,7 @@ fun ApiRequestLogsSheet(
                                 }
                                 Spacer(modifier = Modifier.height(3.dp))
                                 Text(
-                                    text = "Clean webpage viewport only • No obstruction from brush icons, pills, or sheets.",
+                                    text = descText,
                                     color = Color(0xFFB0BEC5),
                                     fontSize = 11.sp
                                 )
@@ -715,16 +748,21 @@ fun ApiRequestLogsSheet(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        val isConcept = log.type.contains("conceptBrief", ignoreCase = true)
                         Column {
                             Text(
-                                text = "Sent Review Screenshot",
+                                text = if (isConcept) "Blind Wireframe Screenshot" else "Sent Review Screenshot",
                                 color = Color.White,
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "Clean rendered webpage analyzed by the review agent (no UI icons/sheets)",
-                                color = Color(0xFF81C784),
+                                text = if (isConcept) {
+                                    "Privacy-masked wireframe used by Pass 1 for layout and spacing"
+                                } else {
+                                    "Clean rendered webpage analyzed by the review agent (no UI icons/sheets)"
+                                },
+                                color = if (isConcept) Color(0xFF82B1FF) else Color(0xFF81C784),
                                 fontSize = 11.sp
                             )
                         }

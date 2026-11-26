@@ -50,7 +50,26 @@ import kotlin.coroutines.resume
 import kotlin.math.roundToInt
 
 /*
- * v23 - "Interactive Set-of-Mark (SoM) YOLO Inspector, Multi-Level Sibling Propagation & Co-Located Micro-RAG"
+ * v24 - "Interactive YOLO Set-of-Mark (SoM) Inspector, Multi-Image & Cousin-Peer Engine"
+ *
+ * What's New in v24:
+ * 1. Probe-Only Mode & Interactive YOLO Inspector (`MydesRuntime.probeScript`, `APPLY_YOLO_INSPECTOR_HUD_JS`):
+ *    - Scans and tags the live DOM without painting theme CSS prematurely.
+ *    - Renders Tier 1 outer containers (`header`, `bottom-bar`, `search`, `chip`, `card`) with solid color-coded
+ *      bounding boxes + top-left badges, and Tier 2 inner anatomy (`media-box`, `heading`, `title`, `btn`, `nav-item`)
+ *      with dotted inner lines + bottom-right mini-badges to avoid label overlap.
+ * 2. Hit-Test + Ancestor-Snapping (`snapToBestAncestor`) & Deep Cousin Peer Propagation (`findMatchingPeers`):
+ *    - Skips 0x0px invisible wrappers and SVG/inline leaf nodes when tapping unassigned elements.
+ *    - Propagates user tag changes across both direct siblings (Level 0) and carousel/grid cousins (Levels 1..5).
+ *    - Locks user-approved edits via `data-mydes-locked="1"` across Pass 2 -> Pass 3 transitions.
+ * 3. Upgraded `anatomy()` & `semantic()`:
+ *    - Multi-image `media-box` tagging for 2x2 and multi-photo cards.
+ *    - Filters out visually hidden screen-reader headings (e.g. Google's 1x1px `<h2>Web results</h2>`).
+ *    - Prevents media-wrapping links from stealing `heading`, prevents inline paragraph citations from becoming `btn`,
+ *      and prioritizes prominent top titles over comments/metadata.
+ * 4. Guaranteed HUD Purge & Scroll-Accurate Set-of-Mark Capture (`captureApprovedYoloBase64`):
+ *    - Captures the exact scrolled viewport approved by the user and sends it directly to `CONCEPT_MODEL`.
+ *    - Force-removes all HUD overlays immediately after capture AND inside `mountSheet()`/`setBlueprint()`.
  */
 
 // ───────────────────────── Gemini wire models ─────────────────────────
@@ -82,7 +101,6 @@ data class GenerationConfig(
 
 @JsonClass(generateAdapter = true)
 data class ThinkingConfig(
-    val thinkingBudget: Int? = null,
     val thinkingLevel: String? = null
 )
 
@@ -155,7 +173,7 @@ object Hex {
     }
 }
 
-// ───────────────────── In-Memory Co-Located Micro-RAG (v23) ─────────────────────
+// ───────────────────── In-Memory Co-Located Micro-RAG (v23/v24) ─────────────────────
 
 object CssRuleRag {
 
@@ -167,7 +185,6 @@ Global Rules:
 1. Use `!important` on static properties so they beat host styles, EXCEPT on properties animated by `@keyframes` or `transition` (`!important` blocks animations).
 2. Keep text readable against every surface you create. Any Google Font may be referenced by name with a generic fallback.
 3. Each `[target]` below includes co-located `RULES FOR THIS ELEMENT` and `@TECHNIQUE` anchors. Obey them strictly while compiling that element's `D1..Dn` decisions.
-4. NEVER output `content: attr(data-mydes)` or diagnostic dashed inspector outlines in your CSS.
 """.trimIndent()
 
     private val TARGET_RULES = mapOf(
@@ -225,22 +242,6 @@ Global Rules:
                 t.contains("card") || t.contains("media") || t.contains("thumb") -> targetKeys.add("CARD_MEDIA")
                 t.contains("head") || t.contains("title") || t.contains("text") -> targetKeys.add("TEXT")
                 t.contains("button") || t.contains("btn") -> targetKeys.add("BTN")
-            }
-        }
-
-        if (techKeys.isEmpty()) {
-            val combined = decisions.joinToString(" ").lowercase(Locale.US)
-            if (combined.contains("animat") || combined.contains("pulse") || combined.contains("drift") || combined.contains("shimmer") || combined.contains("cycle")) {
-                techKeys.add("ANIMATION")
-            }
-            if (combined.contains("svg") || combined.contains("vector") || combined.contains("filigree") || combined.contains("emblem") || combined.contains("motif")) {
-                techKeys.add("SVG")
-            }
-            if (combined.contains("grid") || combined.contains("mesh") || combined.contains("stacked") || combined.contains("multiple") || combined.contains("pattern")) {
-                techKeys.add("LAYERED_BG")
-            }
-            if (combined.contains("glyph") || combined.contains("unicode") || combined.contains("symbol") || combined.contains("stamp")) {
-                techKeys.add("GLYPH")
             }
         }
 
@@ -356,7 +357,7 @@ Global Rules:
     }
 }
 
-// ───────────────────── Pure-CSS Sanitizer & Auto-Healer (v23) ─────────────────────
+// ───────────────────── Pure-CSS Sanitizer & Auto-Healer (v21/v24) ─────────────────────
 
 internal fun stripInventedLabels(css: String): String =
     css.replace(
@@ -416,52 +417,34 @@ internal fun splitTopLevelDeclarations(body: String): List<String> {
 
 internal fun sanitizeGeneratedCss(css: String): String {
     var out = stripInventedLabels(css)
-
-    // Strip any diagnostic attr(data-mydes) labels or inspector outlines if the LLM tried to mimic the YOLO HUD
-    out = out.replace(
-        Regex("""[^{}]*::?(?:before|after)\s*\{[^{}]*content\s*:\s*attr\(\s*data-mydes\s*\)[^{}]*\}""", RegexOption.IGNORE_CASE),
-        ""
-    )
-    out = out.replace(
-        Regex("""content\s*:\s*attr\(\s*data-mydes\s*\)\s*(?:!important)?\s*;?""", RegexOption.IGNORE_CASE),
-        ""
-    )
-
     out = out.replace(Regex("""@import\s+url\([^)]+\)\s*;?""", RegexOption.IGNORE_CASE), "")
 
-    // 0. Auto-Healer 2: Fix unclosed [data-mydes="...":pseudo selectors
     out = out.replace(Regex("""\[data-mydes=(['"])([^'"\]]+)\1(?=\s*[:\{,])"""), "[data-mydes=$1$2$1]")
 
-    // 0b. Promote standalone `html { ... background ... }` rules to `html, body { ... }`
     out = out.replace(Regex("""(^|\}|\*\/)\s*html\s*\{([^}]*\bbackground(?:-image)?\s*:[^}]+)\}""", RegexOption.IGNORE_CASE)) { match ->
         val prefix = match.groupValues[1]
         val body = match.groupValues[2]
         "$prefix\nhtml, body{$body}"
     }
 
-    // Repair any pre-existing `; !importantutf8` or `!important;utf8` corruption
     out = out.replace(Regex("""data:image/svg\+xml\s*!important\s*;""", RegexOption.IGNORE_CASE), "data:image/svg+xml;")
 
-    // 1. Auto-encode raw '#' to '%23' inside data:image/svg+xml URLs
     out = out.replace(Regex("""url\(\s*(['"]?)(data:image/svg\+xml[^)'"]+)\1\s*\)""", RegexOption.IGNORE_CASE)) { match ->
         val quote = match.groupValues[1].ifEmpty { "\"" }
         val dataUrl = match.groupValues[2].replace("#", "%23")
         "url($quote$dataUrl$quote)"
     }
 
-    // 2. Prevent repeating-radial-gradient on body::before/after from creating blinding dense rings
     out = out.replace(
         Regex("""(body::(?:before|after)\s*\{[^}]*?)repeating-radial-gradient""", RegexOption.IGNORE_CASE),
         "$1radial-gradient"
     )
 
-    // 3. Prevent foreground overlays from being buried
     out = out.replace(
         Regex("""(body::(?:before|after)\s*\{[^}]*?)z-index\s*:\s*-?[01]\b""", RegexOption.IGNORE_CASE),
         "$1z-index: 2147483630"
     )
 
-    // 4. Fix D: Unfreeze `background-size: 100% 100%` (or `0 0/100% 100%`) on animated `body::before`
     out = out.replace(Regex("""(body::before\s*\{)([^}]+)\}""", RegexOption.IGNORE_CASE)) { match ->
         val sel = match.groupValues[1]
         var body = match.groupValues[2]
@@ -478,7 +461,6 @@ internal fun sanitizeGeneratedCss(css: String): String {
         "$sel$body}"
     }
 
-    // 4b. Auto-Healer 1: Smart Blend-Mode & Alpha Clamping on body::before and body::after
     out = out.replace(Regex("""(body::(?:before|after)[^{]*\{)([^}]+)\}""", RegexOption.IGNORE_CASE)) { match ->
         val sel = match.groupValues[1]
         var body = match.groupValues[2]
@@ -505,7 +487,6 @@ internal fun sanitizeGeneratedCss(css: String): String {
         "$sel$body}"
     }
 
-    // 5. Auto-fix top-anchored conic-gradient beams pointing North (0deg) so they shine South (150deg..210deg)
     out = out.replace(
         Regex("""conic-gradient\(\s*from\s+0deg\s+at\s+50%\s+0%\s*,\s*transparent\s+0deg\s*,\s*([^,]+?)\s+(\d+)deg\s*,\s*transparent\s+(\d+)deg\s*\)""", RegexOption.IGNORE_CASE)
     ) { match ->
@@ -513,7 +494,6 @@ internal fun sanitizeGeneratedCss(css: String): String {
         "conic-gradient(from 150deg at 50% 0%, transparent 0deg, $beamColor 30deg, transparent 60deg)"
     }
 
-    // 6. Fix corrupted UTF-8 / mojibake or 5-digit supplementary emoji escapes (\1F451) inside content: "..."
     out = out.replace(Regex("""content\s*:\s*(["'])([^"']*)\1""")) { match ->
         val quote = match.groupValues[1]
         val inner = match.groupValues[2]
@@ -529,7 +509,6 @@ internal fun sanitizeGeneratedCss(css: String): String {
         }
     }
 
-    // 7. Fix B: Auto-inject `content: "" !important;` into any `::before` or `::after` rule that forgot `content:`
     out = out.replace(Regex("""([^{}@]*::?(?:before|after)[^{}@]*)\{([^{}]+)\}""", RegexOption.IGNORE_CASE)) { match ->
         val sel = match.groupValues[1]
         val body = match.groupValues[2]
@@ -540,7 +519,6 @@ internal fun sanitizeGeneratedCss(css: String): String {
         }
     }
 
-    // 7b. Auto-Healer 3: Unbury `[data-mydes="media-box"]::before` watermarks/overlays
     out = out.replace(
         Regex("""(\[data-mydes=(['"])media-box\2\])\s*::?before\b""", RegexOption.IGNORE_CASE),
         "$1::after"
@@ -554,25 +532,21 @@ internal fun sanitizeGeneratedCss(css: String): String {
         "$sel$body}"
     }
 
-    // 8. Strip layout-breaking flex-direction overrides
     out = out.replace(
         Regex("""flex-direction\s*:\s*column\s*(?:!important)?\s*;?""", RegexOption.IGNORE_CASE),
         ""
     )
 
-    // 9. Strip negative margins
     out = out.replace(
         Regex("""margin(?:-bottom|-top)?\s*:\s*-\d+(?:\.\d+)?(?:px|rem|em|%)\s*(?:!important)?\s*;?""", RegexOption.IGNORE_CASE),
         "margin-bottom: 12px;"
     )
 
-    // 10. Strip unreferenced external SVG url(#id) masks
     out = out.replace(
         Regex("""(?:-webkit-)?mask(?:-image)?\s*:\s*url\(\s*['"]?#[^)]+\)\s*(?:!important)?\s*;?""", RegexOption.IGNORE_CASE),
         ""
     )
 
-    // 11. Syntax Auto-Healer: Clean illegal shorthand placement inside background-image declarations
     out = out.replace(Regex("""background-image\s*:\s*([^;!}]+)""", RegexOption.IGNORE_CASE)) { match ->
         val propVal = match.groupValues[1]
         val cleaned = propVal.replace(
@@ -582,12 +556,10 @@ internal fun sanitizeGeneratedCss(css: String): String {
         "background-image: $cleaned"
     }
 
-    // 12. Safeguard: Clamp unconstrained 100% 100% background-size on SVG data-URIs to prevent blurry screen-covering blobs
     out = out.replace(Regex("""(\[data-mydes=['"][^'"]+['"]\][^{]*\{[^}]*background-image:[^}]*data:image\/svg\+xml[^}]*background-size:\s*)100%\s+100%""", RegexOption.IGNORE_CASE)) { match ->
         "${match.groupValues[1]}48px 48px"
     }
 
-    // 13. Prevent [data-mydes="btn"] and [data-mydes="nav-item"] from forcing fixed width & height
     out = out.replace(Regex("""(\[data-mydes=['"](?:btn|nav-item)['"]\][^{]*\{)([^}]+)\}""", RegexOption.IGNORE_CASE)) { match ->
         val sel = match.groupValues[1]
         val body = match.groupValues[2]
@@ -595,7 +567,6 @@ internal fun sanitizeGeneratedCss(css: String): String {
         "$sel$body}"
     }
 
-    // 14. Isolate broad 'a' and 'button' tags from box-model mutations
     out = out.replace(Regex("""([^{}@]+)\{([^{}]+)\}""")) { match ->
         val rawSelectors = match.groupValues[1]
         val body = match.groupValues[2]
@@ -620,7 +591,6 @@ internal fun sanitizeGeneratedCss(css: String): String {
         }
     }
 
-    // 14b. Auto-Healer 4: Strip destructive `color: inherit` resets on `[data-mydes="chip"|"btn"|"nav-item"]`
     out = out.replace(Regex("""([^{}@]+)\{([^{}]+)\}""")) { match ->
         val sel = match.groupValues[1]
         val body = match.groupValues[2]
@@ -635,7 +605,6 @@ internal fun sanitizeGeneratedCss(css: String): String {
         }
     }
 
-    // 15. Fix A: Ensure static properties on [data-mydes="..."] elements have !important using `splitTopLevelDeclarations`
     out = out.replace(Regex("""(\[data-mydes=['"][^'"]+['"]\][^{]*\{)([^}]+)\}""", RegexOption.IGNORE_CASE)) { match ->
         val sel = match.groupValues[1]
         val body = match.groupValues[2]
@@ -660,7 +629,6 @@ internal fun sanitizeGeneratedCss(css: String): String {
         "$sel$forcedBody}"
     }
 
-    // 16. Fix C: Expanded Animation Unlocker
     out = out.replace(
         Regex("""(background-position\s*:\s*[^;!}]+?)\s*!important""", RegexOption.IGNORE_CASE),
         "$1"
@@ -728,7 +696,7 @@ data class UIBlueprint(
         .toString()
 
     companion object {
-        const val RUNTIME_VERSION = 23
+        val RUNTIME_VERSION = 24
 
         fun repairTruncatedJson(raw: String): String {
             var s = raw
@@ -882,7 +850,7 @@ object SitePacks {
 object ResilientGoogleDns : Dns {
     private data class CacheEntry(val addresses: List<InetAddress>, val timestamp: Long)
     private val cache = ConcurrentHashMap<String, CacheEntry>()
-    private const val TTL_MS = 15 * 60 * 1000L
+    private val TTL_MS = 15 * 60 * 1000L
 
     private val PUBLIC_DNS_SERVERS = listOf(
         byteArrayOf(8, 8, 8, 8),
@@ -1033,27 +1001,73 @@ object ResilientGoogleDns : Dns {
     }
 }
 
-// ───────────────────── Artisanal Pure-CSS Universal Runtime v23 ─────────────────────
+// ───────────────────── Artisanal Pure-CSS Universal Runtime v24 ─────────────────────
 
 object MydesRuntime {
 
     private val CORE = """
 if (window.top !== window) return;
-var oldHud = document.getElementById('__mydes_yolo_hud'); if (oldHud && !BP.probeOnly) oldHud.remove();
-var oldMask = document.getElementById('__mydes_blind_mask'); if (oldMask) oldMask.remove();
-if (window.__mydes && window.__mydes.id() === BP.id) return;
+(function() {
+  try {
+    if (window.__mydesExitTimer1) { clearTimeout(window.__mydesExitTimer1); window.__mydesExitTimer1 = null; }
+    if (window.__mydesExitTimer2) { clearTimeout(window.__mydesExitTimer2); window.__mydesExitTimer2 = null; }
+    if (window.__mydesExitEls && window.__mydesExitEls.length) {
+      for (var ei = 0; ei < window.__mydesExitEls.length; ei++) {
+        var eel = window.__mydesExitEls[ei];
+        if (eel && eel.style) {
+          eel.style.removeProperty('transition');
+          eel.style.removeProperty('transform');
+          eel.style.removeProperty('opacity');
+          eel.style.removeProperty('filter');
+        }
+      }
+      window.__mydesExitEls = null;
+    }
+    if (!BP.probeOnly) {
+      window.__mydesYoloActive = false;
+      var huds0 = document.querySelectorAll('#__mydes_yolo_hud, #__mydes_blind_mask, [data-mydes-hud]');
+      for (var hi = 0; hi < huds0.length; hi++) huds0[hi].remove();
+      var sels0 = document.querySelectorAll('[data-mydes-selected]');
+      for (var si = 0; si < sels0.length; si++) sels0[si].removeAttribute('data-mydes-selected');
+    }
+  } catch (e) {}
+})();
+if (window.__mydes && (!window.__mydes.isDead || !window.__mydes.isDead()) && window.__mydes.id && window.__mydes.id() === BP.id) return;
 if (window.__mydes && window.__mydes.clear) { try { window.__mydes.clear(true); } catch (e) {} }
 if (BP.skip && BP.skip.indexOf(location.hostname) >= 0) return;
 
 var W = window, D = document, cfg = BP;
-var A = 'data-mydes', S = 'data-mydes-surface', F = 'data-mydes-fix', ST = 'data-mydes-state';
-var dead = false, scheduled = false;
+var A = 'data-mydes', S = 'data-mydes-surface', F = 'data-mydes-fix', ST = 'data-mydes-state', LK = 'data-mydes-locked';
+var dead = false, scheduled = false, sheetReady = false;
 var stats = { slices: 0, ms: 0, scanned: 0, tagged: 0, surfaces: 0, healed: 0 };
 
 window.MydesBridge = {
   decorateUnits: function() {}, injectOrnament: function() {}, spawnParticles: function() {}, enable3DTilt: function() {},
   onCleanup: function() {}
 };
+
+function purgeHudInRoot(root) {
+  if (!root || !root.querySelectorAll) return;
+  try {
+    var huds = root.querySelectorAll('#__mydes_yolo_hud, #__mydes_blind_mask, [data-mydes-hud]');
+    for (var i = 0; i < huds.length; i++) huds[i].remove();
+    var sels = root.querySelectorAll('[data-mydes-selected]');
+    for (var j = 0; j < sels.length; j++) sels[j].removeAttribute('data-mydes-selected');
+  } catch (e) {}
+}
+
+function purgeInspectorHud() {
+  try {
+    W.__mydesYoloActive = false;
+    purgeHudInRoot(D);
+    if (D.body) {
+      var all = D.body.querySelectorAll('*');
+      for (var i = 0; i < all.length && i < 600; i++) {
+        if (all[i].shadowRoot) purgeHudInRoot(all[i].shadowRoot);
+      }
+    }
+  } catch (e) {}
+}
 
 /* ================= colour helpers ================= */
 function h2c(h) { return { r: parseInt(h.substr(1, 2), 16), g: parseInt(h.substr(3, 2), 16), b: parseInt(h.substr(5, 2), 16), a: 1 }; }
@@ -1140,6 +1154,7 @@ function buildCss() {
 var sheet = null, styleEl = null;
 function mountSheet() {
   if (cfg.probeOnly) return;
+  purgeInspectorHud();
   var css = buildCss();
   try {
     if (typeof CSSStyleSheet === 'function' && 'adoptedStyleSheets' in D) {
@@ -1156,7 +1171,8 @@ function mountSheet() {
   if (r) r.appendChild(styleEl);
 }
 function ensureSheet() {
-  if (cfg.probeOnly) return;
+  if (cfg.probeOnly || !sheetReady) return;
+  purgeInspectorHud();
   if (!sheet && !styleEl) { mountSheet(); return; }
   if (sheet) {
     if (D.adoptedStyleSheets.indexOf(sheet) < 0) { try { D.adoptedStyleSheets = D.adoptedStyleSheets.concat([sheet]); } catch (e) {} }
@@ -1229,10 +1245,25 @@ function hasOwnText(e) {
   for (var i = 0; i < n; i++) if (c[i].nodeType === 3 && /\S/.test(c[i].nodeValue)) return true;
   return false;
 }
+function isVisuallyHidden(el, cs, r) {
+  if (!r || r.width < 12 || r.height < 10) return true;
+  if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) < 0.05) return true;
+  if (cs.clip === 'rect(0px, 0px, 0px, 0px)' || cs.clipPath === 'inset(50%)') return true;
+  if (r.width <= 2 && r.height <= 2 && cs.overflow === 'hidden') return true;
+  return false;
+}
+function wrapsLargeMedia(el) {
+  var imgs = el.querySelectorAll('img,video,canvas');
+  for (var i = 0; i < imgs.length && i < 6; i++) {
+    var r = imgs[i].getBoundingClientRect();
+    if (r.width >= 48 && r.height >= 48) return true;
+  }
+  return false;
+}
 
 /* ================= role planning (writes are batched) ================= */
 function want(el, role) {
-  if (el && el.getAttribute && el.getAttribute('data-mydes-locked') === '1') return;
+  if (el && el.getAttribute && el.getAttribute(LK) === '1') return;
   var cur = plan.has(el) ? plan.get(el) : el.getAttribute(A);
   if (role === '') { plan.set(el, ''); return; }
   if (cur && (RANK[cur] || 0) >= (RANK[role] || 0)) return;
@@ -1241,7 +1272,7 @@ function want(el, role) {
 function flush() {
   plan.forEach(function(role, el) {
     if (!el.isConnected) return;
-    if (el.getAttribute('data-mydes-locked') === '1') return;
+    if (el.getAttribute(LK) === '1') return;
     var cur = el.getAttribute(A);
     if (role === '') { if (cur) el.removeAttribute(A); return; }
     if (role === 'search' && el.parentElement && el.parentElement.closest('[data-mydes="search"]')) {
@@ -1255,21 +1286,19 @@ function flush() {
   plan.clear();
   var sEls = D.querySelectorAll('[data-mydes="search"] [data-mydes="search"]');
   for (var s = 0; s < sEls.length; s++) {
-    if (sEls[s].getAttribute('data-mydes-locked') !== '1') sEls[s].removeAttribute(A);
+    if (sEls[s].getAttribute(LK) !== '1') sEls[s].removeAttribute(A);
   }
-  if (!cfg.probeOnly) {
-    for (var i = 0; i < sq.length; i++) {
-      var e = sq[i], t = tmap.get(e);
-      if (e.isConnected && t && !e.hasAttribute(A)) { if (e.getAttribute(S) !== t) e.setAttribute(S, t); }
-    }
-    sq.length = 0;
-    fixPlan.forEach(function(v, el) {
-      if (!el.isConnected) return;
-      if (v === '') { if (el.hasAttribute(F)) el.removeAttribute(F); }
-      else if (el.getAttribute(F) !== v) el.setAttribute(F, v);
-    });
-    fixPlan.clear();
+  for (var i = 0; i < sq.length; i++) {
+    var e = sq[i], t = tmap.get(e);
+    if (e.isConnected && t && !e.hasAttribute(A)) { if (e.getAttribute(S) !== t) e.setAttribute(S, t); }
   }
+  sq.length = 0;
+  fixPlan.forEach(function(v, el) {
+    if (!el.isConnected) return;
+    if (v === '') { if (el.hasAttribute(F)) el.removeAttribute(F); }
+    else if (el.getAttribute(F) !== v) el.setAttribute(F, v);
+  });
+  fixPlan.clear();
 }
 var STATE_TOK = /(^|[-_])(active|selected|current)$/;
 var STATE_NEG = /(^|[-_])(inactive|unselected|not[-_]active|not[-_]selected)$/;
@@ -1288,14 +1317,17 @@ function syncState(e) {
   else if (e.hasAttribute(ST)) e.removeAttribute(ST);
 }
 
-/* ================= phase 1: semantic roles (no layout reads) ================= */
+/* ================= phase 1: semantic roles ================= */
 function btnOk(e) {
   if (e.querySelector('img,svg,picture,video,canvas,h1,h2,h3,h4,h5,h6')) return false;
-  /* Never tag inline prose links inside paragraphs/lists as buttons (fixes AI Overview inline links) */
-  if (e.localName === 'a' && e.closest('p,li,blockquote,dd,dt')) return false;
-  var cs = W.getComputedStyle(e);
-  if (e.localName === 'a' && cs.display === 'inline') return false;
+  /* Prevent inline citation links inside prose paragraphs (e.g. Google AI Overview) from being tagged as buttons */
+  if ((e.localName === 'span' || e.localName === 'a') && e.parentElement && txtLen(e.parentElement) > txtLen(e) + 24) return false;
   return txtLen(e) > 0 || !!e.value;
+}
+function headingOk(e) {
+  if (e.querySelector('img,picture,video,canvas')) return false;
+  if (txtLen(e) < 2) return false;
+  return true;
 }
 function searchTarget(el) {
   var c = el.closest('form,[role="search"]');
@@ -1322,23 +1354,17 @@ function semantic(el, ln) {
   if (role && BYROLE[role]) {
     var m = BYROLE[role];
     if (m === 'btn') return btnOk(el) ? 'btn' : null;
+    if (m === 'heading') return headingOk(el) ? 'heading' : null;
     if (m === 'header' || m === 'bottom-bar') return inContent(el) ? null : m;
     if (m === 'search') { if (ln === 'input') { want(searchTarget(el), 'search'); return null; } return 'search'; }
     if (m === 'chip') return el.closest(BARSEL) ? 'nav-item' : 'chip';
-    if (m === 'heading') {
-      /* Never tag a container as heading if it wraps an image/video or a whole card! */
-      if (el.querySelector('img,video,picture,canvas') && el.getBoundingClientRect().height > 90) return null;
-      return 'heading';
-    }
     return m;
   }
   switch (ln) {
     case 'header': return inContent(el) ? null : 'header';
     case 'footer': return inContent(el) ? null : 'bottom-bar';
-    case 'h1': return 'title';
-    case 'h2': case 'h3': case 'h4': case 'h5': case 'h6':
-      if (el.querySelector('img,video,picture') && el.getBoundingClientRect().height > 90) return null;
-      return 'heading';
+    case 'h1': return headingOk(el) ? 'title' : null;
+    case 'h2': case 'h3': case 'h4': case 'h5': case 'h6': return headingOk(el) ? 'heading' : null;
     case 'button': return btnOk(el) ? 'btn' : null;
     case 'input':
       var ty = (el.getAttribute('type') || 'text').toLowerCase();
@@ -1360,7 +1386,7 @@ function visit(el) {
   var r = semantic(el, ln);
   if (r) want(el, r);
   if (el.childElementCount >= 2) regroup.add(el);
-  if (!NOINSPECT[ln]) { if (io) io.observe(el); else iq.push(el); }
+  if (!NOINSPECT[ln] && !cfg.probeOnly) { if (io) io.observe(el); else iq.push(el); }
   if ((CANDBAR[ln] || ln.indexOf('-') > 0) && depthOf(el) <= 6) bars.add(el);
 }
 function accept(node) { return (SKIPT[node.localName] || done.has(node)) ? 2 : 1; }
@@ -1383,51 +1409,19 @@ function* scanRoots(roots) {
 /* ================= phase 2: structure (bars, repeated groups, card anatomy) ================= */
 function sig(e) {
   var f = e.firstElementChild;
-  while (f && W.getComputedStyle(f).display === 'contents' && f.firstElementChild) {
-    f = f.firstElementChild;
-  }
   return e.localName + '>' + (f ? f.localName : '') + (e.querySelector('img,picture,video') ? 'm' : '');
 }
-function visRect(el) {
-  if (!el || el.nodeType !== 1) return { left: 0, top: 0, width: 0, height: 0, bottom: 0, right: 0 };
-  var r = el.getBoundingClientRect();
-  if (r.width > 0 && r.height > 0) return r;
-  /* Unwrap display:contents or 0x0 wrapper by finding first visible child rect */
-  var kids = el.children;
-  for (var i = 0; i < kids.length; i++) {
-    var kr = visRect(kids[i]);
-    if (kr.width > 0 && kr.height > 0) return kr;
-  }
-  return r;
-}
-function wrapMediaBox(imgEl, boundaryEl) {
-  var r = imgEl.getBoundingClientRect(), ba = r.width * r.height;
-  if (r.width < 56 || r.height < 56) return null;
-  var w = null, p = imgEl.parentElement;
-  while (p && p !== boundaryEl && p !== D.body) {
-    var pr = visRect(p);
-    if (pr.width * pr.height <= ba * 1.3 + 400) {
-      /* Stop before a wrapper that also includes long caption text */
-      if (txtLen(p) <= 28) { w = p; p = p.parentElement; } else break;
-    } else break;
-  }
-  if (!w && imgEl.parentElement && imgEl.parentElement !== boundaryEl && txtLen(imgEl.parentElement) <= 28) {
-    w = imgEl.parentElement;
-  }
-  return (w && w !== boundaryEl) ? w : null;
-}
-
 function* structure() {
+  applyTagOverrides();
   var vw = W.innerWidth || 400, vh = W.innerHeight || 800, k = 0, i, j;
 
-  /* bars: full-width fixed/sticky strips at the top or bottom, whatever their tag */
   var bl = Array.from(bars); bars.clear();
   for (i = 0; i < bl.length; i++) {
     var b = bl[i];
     if (!b.isConnected || b.hasAttribute(A) || b.closest('[data-mydes="header"],[data-mydes="bottom-bar"]')) continue;
     var cs = W.getComputedStyle(b), pos = cs.position, fixed = (pos === 'fixed' || pos === 'sticky');
     if (!fixed && !(W.scrollY < 4 && depthOf(b) <= 3)) continue;
-    var br = visRect(b);
+    var br = b.getBoundingClientRect();
     if (br.width < vw * 0.9 || br.height < 24 || br.height > vh * 0.2) continue;
     var atTop = br.top <= 8 && br.bottom > 0, atBottom = br.bottom >= vh - 8 && br.top < vh;
     if (!atTop && !atBottom) continue;
@@ -1441,7 +1435,6 @@ function* structure() {
     if ((++k & 15) === 0) yield;
   }
 
-  /* repeated sibling groups -> card / chip / nav-item */
   var ps = Array.from(regroup); regroup.clear();
   var newCards = [];
   for (i = 0; i < ps.length; i++) {
@@ -1460,13 +1453,13 @@ function* structure() {
       var g = buckets[key], lr = learned[key];
       var need = (g[0].localName === 'article' || g[0].hasAttribute('itemscope')) ? 2 : 3;
       if (lr) {
-        for (j = 0; j < g.length; j++) { if (!g[j].hasAttribute(A)) { want(g[j], lr); if (lr === 'card') newCards.push(g[j]); } }
+        for (j = 0; j < g.length; j++) { if (!g[j].hasAttribute(A) && g[j].getAttribute(LK) !== '1') { want(g[j], lr); if (lr === 'card') newCards.push(g[j]); } }
         continue;
       }
       if (g.length < 2) continue;
       var rs = [], vis = [];
       for (j = 0; j < g.length; j++) {
-        var r = visRect(g[j]);
+        var r = g[j].getBoundingClientRect();
         if (r.width > 0 && r.height > 0) { rs.push(r); vis.push(g[j]); }
       }
       if (vis.length < 2) continue;
@@ -1503,111 +1496,110 @@ function* structure() {
       if (!role) continue;
       learned[key] = role; known.set(p, learned);
       for (j = 0; j < vis.length; j++) { want(vis[j], role); if (role === 'card') newCards.push(vis[j]); }
-      if ((++k & 7) === 0) { flush(); yield; }
+      if ((++k & 15) === 0) yield;
     }
   }
-  flush();
 
-  /* Fix Issue 4: Rescue isolated #1 search result cards that sit outside the sibling group of results #2..#10 */
-  var headings = D.querySelectorAll('h2,h3,[role="heading"]');
-  for (i = 0; i < headings.length; i++) {
-    var hEl = headings[i];
-    if (hEl.closest('[data-mydes="card"],[data-mydes="header"],[data-mydes="bottom-bar"]')) continue;
-    var linkAnc = hEl.closest('a[href]') || hEl.querySelector('a[href]');
-    if (!linkAnc) continue;
-    var candCard = hEl.parentElement;
-    while (candCard && candCard !== D.body && candCard !== D.documentElement) {
-      var cr = visRect(candCard);
-      if (cr.width >= vw * 0.82 && cr.height >= 72 && cr.height <= 360 && txtLen(candCard) >= txtLen(hEl) + 25) {
-        if (!candCard.querySelector('[data-mydes="card"]')) {
-          want(candCard, 'card');
-          newCards.push(candCard);
-        }
-        break;
+  /* Prevent giant outer section wrappers (e.g. Videos / People Also Ask blocks) from swallowing granular inner cards */
+  if (newCards.length > 1) {
+    var cardSet = new Set(newCards);
+    var leafCards = [];
+    for (i = 0; i < newCards.length; i++) {
+      var candCard = newCards[i];
+      var hasInnerCard = false;
+      for (j = 0; j < newCards.length; j++) {
+        if (i !== j && candCard.contains(newCards[j])) { hasInnerCard = true; break; }
       }
-      if (cr.height > 380) break;
-      candCard = candCard.parentElement;
+      if (hasInnerCard && candCard.getAttribute(LK) !== '1') {
+        if (plan.get(candCard) === 'card') plan.delete(candCard);
+      } else if (cardSet.has(candCard)) {
+        leafCards.push(candCard);
+      }
     }
+    newCards = leafCards;
   }
-  flush();
 
-  /* card anatomy: tag ALL qualifying media-boxes + primary heading per card */
+  flush();
+  applyTagOverrides();
+
   for (i = 0; i < newCards.length; i++) {
-    if (newCards[i].isConnected) anatomy(newCards[i]);
+    if (newCards[i].isConnected && newCards[i].getAttribute(A) === 'card') anatomy(newCards[i]);
     if ((i & 7) === 7) { flush(); yield; }
   }
   flush();
 }
 
-var META_NOISE = /^\s*(\d+[\d,.]*[kKmM]?\+?\s*(likes?|views?|comments?|followers?|shares?)|\d+\s*(mins?|minutes?|hrs?|hours?|days?|wks?|weeks?|mos?|months?|yrs?|years?)\s*ago|sponsored|promoted)\b/i;
-
 function anatomy(card) {
-  /* If a child inside this card was mistakenly tagged as 'card', unwrap it so cards don't double-nest */
-  var innerCards = card.querySelectorAll('[data-mydes="card"]');
-  var i;
-  for (i = 0; i < innerCards.length; i++) {
-    if (innerCards[i] !== card && innerCards[i].getAttribute('data-mydes-locked') !== '1') {
-      want(innerCards[i], '');
-    }
-  }
+  var cr = card.getBoundingClientRect(), carea = Math.max(cr.width * cr.height, 1);
 
-  var cr = visRect(card), carea = Math.max(1, cr.width * cr.height);
-  /* Fix Issue 3: Tag ALL qualifying thumbnail/media containers inside the card (e.g. 2x2 image grids), not just 1! */
-  var ms = card.querySelectorAll('img,video,canvas');
-  var highestMediaBottom = cr.top;
-  for (i = 0; i < ms.length && i < 16; i++) {
+  /* 1. Multi-image aware media-box detection (fixes 2x2 / carousel grids inside a card) */
+  var ms = card.querySelectorAll('img,video,canvas'), qual = [], maxArea = 0, i;
+  for (i = 0; i < ms.length && i < 24; i++) {
     var r = ms[i].getBoundingClientRect(), a = r.width * r.height;
-    if (r.width >= 56 && r.height >= 56 && a >= carea * 0.04) {
-      var mb = wrapMediaBox(ms[i], card);
-      if (mb) {
-        want(mb, 'media-box');
-        if (r.bottom > highestMediaBottom) highestMediaBottom = r.bottom;
-      }
+    if (r.width >= 64 && r.height >= 48 && a >= carea * 0.05) {
+      qual.push({ el: ms[i], area: a });
+      if (a > maxArea) maxArea = a;
     }
   }
+  for (i = 0; i < qual.length; i++) {
+    if (qual[i].area < maxArea * 0.55) continue;
+    var best = qual[i].el, ba = qual[i].area;
+    var w = null, p = best.parentElement;
+    while (p && p !== card) {
+      var pr = p.getBoundingClientRect();
+      if (pr.width * pr.height <= ba * 1.25 + 300) { w = p; p = p.parentElement; } else break;
+    }
+    if (!w && best.parentElement && best.parentElement !== card) w = best.parentElement;
+    if (w && w !== card) want(w, 'media-box');
+  }
 
-  /* Fix Issue 2: Cleanly select the true card title/headline, never an image wrapper or a bottom comment */
+  /* 2. Clear only headings belonging directly to THIS card (never wipe nested child cards) */
   var hs = card.querySelectorAll('[data-mydes="heading"],[data-mydes="title"]');
   for (i = 0; i < hs.length; i++) {
-    if (hs[i].getAttribute('data-mydes-locked') !== '1') want(hs[i], '');
+    if (hs[i].closest('[data-mydes="card"]') === card) want(hs[i], '');
   }
 
+  /* 3. Pick first VISIBLE semantic heading that does NOT wrap large media (ignores hidden SR <h2>Web results</h2>) */
   var h = null;
-  var semHeadings = card.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"],[itemprop="name"]');
-  for (i = 0; i < semHeadings.length; i++) {
-    var sh = semHeadings[i];
-    if (sh.querySelector('img,video,picture,canvas') && visRect(sh).height > 80) continue;
-    var st = (sh.textContent || '').trim();
-    if (st.length >= 4 && !META_NOISE.test(st)) { h = sh; break; }
+  var semHeads = card.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"],[itemprop="name"]');
+  for (i = 0; i < semHeads.length; i++) {
+    var sh = semHeads[i];
+    if (sh.closest('[data-mydes="card"]') !== card) continue;
+    var sr = sh.getBoundingClientRect(), scs = W.getComputedStyle(sh);
+    if (isVisuallyHidden(sh, scs, sr)) continue;
+    if (txtLen(sh) < 3) continue;
+    if (wrapsLargeMedia(sh)) continue;
+    h = sh;
+    break;
   }
 
+  /* 4. Fallback visual heading scorer: prefers prominent top titles and ignores comments/timestamps */
   if (!h) {
-    var cand = card.querySelectorAll('a,span,div,p,strong,b'), bestScore = -999, n = 0;
+    var cand = card.querySelectorAll('a,span,div,p,strong,b'), bestScore = 0, n = 0;
     for (i = 0; i < cand.length && n < 36; i++) {
       var x = cand[i];
-      if (x.querySelector('img,video,picture,canvas,div,p')) continue;
-      if (x.closest('[data-mydes="media-box"]')) continue;
+      if (x.closest('[data-mydes="card"]') !== card) continue;
+      if (x.querySelector('div,p,article,section,ul,ol')) continue;
+      if (wrapsLargeMedia(x)) continue;
       var t = (x.textContent || '').trim();
-      if (t.length < 8 || t.length > 180 || PRICE.test(t) || META_NOISE.test(t)) continue;
-      var xr = x.getBoundingClientRect();
-      if (xr.width < 40 || xr.height < 12) continue;
+      if (t.length < 6 || t.length > 180 || PRICE.test(t)) continue;
+      if (/^\s*(comment|comments|\d+(\.\d+)?[kKmM]?\s*(likes?|views?|comments?)|\d+\s*(min|hour|hr|day|wk)s?\s*ago)/i.test(t)) continue;
+      var xr = x.getBoundingClientRect(), xcs = W.getComputedStyle(x);
+      if (isVisuallyHidden(x, xcs, xr)) continue;
       n++;
-      var cs = W.getComputedStyle(x);
-      var fontSize = parseFloat(cs.fontSize) || 14;
-      var weightBonus = parseInt(cs.fontWeight, 10) >= 600 ? 1.18 : 1.0;
-      /* Prefer text near the top of the card or immediately below the thumbnail, penalizing bottom comments */
-      var relY = Math.max(0, xr.top - cr.top) / Math.max(1, cr.height);
-      var posScore = (relY < 0.68) ? (1.0 - relY * 0.35) : 0.45;
-      var score = fontSize * weightBonus * posScore;
-      if (score > bestScore + 0.3) { bestScore = score; h = x; }
+      var fs = parseFloat(xcs.fontSize) || 14;
+      var fw = parseInt(xcs.fontWeight, 10) || 400;
+      var relY = (xr.top - cr.top) / Math.max(cr.height, 1);
+      var posBonus = relY < 0.65 ? 1.15 : 0.80;
+      var linkBonus = (x.localName === 'a' || x.closest('a[href]')) ? 1.12 : 1.0;
+      var score = fs * (fw >= 600 ? 1.18 : 1.0) * posBonus * linkBonus;
+      if (score > bestScore + 0.5) { bestScore = score; h = x; }
     }
   }
-  if (h && h.getAttribute('data-mydes-locked') !== '1') {
-    plan.set(h, 'heading');
-  }
+  if (h) want(h, 'heading');
 }
 
-/* ================= phase 3: surfaces + contrast healing (viewport-gated) ================= */
+/* ================= phase 3: surfaces + contrast healing ================= */
 function parentTier(el) {
   var a = up(el);
   while (a && a.nodeType === 1 && a !== D.body && a !== D.documentElement) {
@@ -1656,11 +1648,6 @@ function effBg(n, d) {
 var WHITE = { r: 255, g: 255, b: 255 }, BLACK = { r: 0, g: 0, b: 0 };
 function heal(el, ln, cs) {
   if (!hasOwnText(el) || cs.webkitBackgroundClip === 'text' || cs.backgroundClip === 'text') return;
-  /* Never turn links inside a card heading into blue accent links (Fixes Issue 4) */
-  if (el.closest('[data-mydes="heading"],[data-mydes="title"]')) {
-    if (el.hasAttribute(F)) fixPlan.set(el, '');
-    return;
-  }
   var fg = parse(cs.color);
   if (!fg || fg.a < 0.2) return;
   var bg = effBg(el), ratio = contrast(fg, bg);
@@ -1675,8 +1662,8 @@ function heal(el, ln, cs) {
   fixPlan.set(el, v); stats.healed++;
 }
 function inspect(el) {
-  seen.add(el);
   if (cfg.probeOnly) return;
+  seen.add(el);
   var cs;
   try { cs = W.getComputedStyle(el); } catch (e) { return; }
   if (cs.display === 'none' || cs.visibility === 'hidden') return;
@@ -1690,6 +1677,7 @@ function inspectChain(el) {
   for (var i = chain.length - 1; i >= 0; i--) inspect(chain[i]);
 }
 function* inspectAll() {
+  if (cfg.probeOnly) { iq.length = 0; return; }
   var list = iq.splice(0, iq.length).filter(function(e) { return e.isConnected && !seen.has(e); });
   list.sort(docOrder);
   for (var i = 0; i < list.length; i++) {
@@ -1704,9 +1692,9 @@ function refill() {
   if (!(fresh.size || regroup.size || bars.size || iq.length)) return;
   if (fresh.size) { var rs = Array.from(fresh); fresh.clear(); tasks.push(scanRoots(rs)); }
   tasks.push(structure());
-  if (!cfg.probeOnly) tasks.push(inspectAll());
+  if (!cfg.probeOnly && sheetReady) tasks.push(inspectAll());
 }
-function idle() { return !tasks.length && !fresh.size && !regroup.size && !bars.size && (cfg.probeOnly || !iq.length) && !plan.size; }
+function idle() { return !tasks.length && !fresh.size && !regroup.size && !bars.size && !iq.length && !plan.size; }
 function pumpSlice(budgetMs) {
   if (dead) return;
   ensureSheet();
@@ -1746,7 +1734,6 @@ function watch(root) {
 }
 function start() {
   pal();
-  mountSheet();
   mo = new MutationObserver(function(recs) {
     for (var i = 0; i < recs.length; i++) {
       var r = recs[i];
@@ -1779,21 +1766,32 @@ function start() {
     fonts();
     if (D.documentElement) {
       fresh.add(D.documentElement);
-      pumpSlice(28);
-      if (!idle()) schedule();
+      /* Run initial role-tagging pass BEFORE mounting theme CSS so host geometry matches YOLO probe 1:1 */
+      var g = 0;
+      while ((tasks.length || fresh.size || regroup.size || bars.size) && g++ < 18) {
+        pumpSlice(16);
+      }
+      applyTagOverrides();
+      flush();
     }
+    sheetReady = true;
+    mountSheet();
+    if (!cfg.probeOnly) {
+      pumpSlice(18);
+    }
+    if (!idle()) schedule();
   };
   if (D.readyState === 'loading') D.addEventListener('DOMContentLoaded', ready, { once: true }); else ready();
   W.addEventListener('pageshow', function() { ensureSheet(); schedule(); }, { passive: true });
 }
 
-/* ================= Interactive YOLO Inspector & Multi-Level Hit-Test Engine ================= */
+/* ================= Interactive YOLO Inspector, Hit-Test & Deep Peer Propagation ================= */
 var selectedEl = null;
 var CONTAINER_ROLES = { 'header': 1, 'bottom-bar': 1, 'search': 1, 'chip': 1, 'card': 1 };
 
 function isMeaningfulBox(el, vw, vh) {
   if (!el || el.nodeType !== 1 || SKIPT[el.localName] || el === D.body || el === D.documentElement) return false;
-  var r = visRect(el);
+  var r = el.getBoundingClientRect();
   if (r.width < 20 || r.height < 14) return false;
   if (r.width >= vw * 0.98 && r.height >= vh * 0.92) return false;
   var cs = W.getComputedStyle(el);
@@ -1801,24 +1799,19 @@ function isMeaningfulBox(el, vw, vh) {
   return true;
 }
 
-function unwrapZeroSize(el) {
-  if (!el || el.nodeType !== 1) return el;
-  var r = el.getBoundingClientRect();
-  if (r.width > 0 && r.height > 0) return el;
-  var c = el.firstElementChild;
-  while (c && c.getBoundingClientRect().width === 0 && c.firstElementChild) c = c.firstElementChild;
-  if (c && c.getBoundingClientRect().width > 0) return c;
-  var p = el.parentElement;
-  while (p && p !== D.body && p.getBoundingClientRect().width === 0) p = p.parentElement;
-  return (p && p !== D.body) ? p : el;
-}
-
 function snapToBestAncestor(leaf) {
   if (!leaf || leaf.nodeType !== 1) return null;
   var vw = W.innerWidth || 400, vh = W.innerHeight || 800;
-  var tagged = leaf.closest('[' + A + ']');
-  if (tagged && tagged !== D.body && tagged !== D.documentElement) return unwrapZeroSize(tagged);
 
+  /* 1. If the leaf or a close ancestor already has a visible data-mydes tag, snap to it first */
+  var tagged = leaf.closest('[' + A + ']');
+  if (tagged && tagged !== D.body && tagged !== D.documentElement) {
+    var tr = tagged.getBoundingClientRect();
+    if (tr.width >= 10 && tr.height >= 10) return tagged;
+  }
+
+  /* 2. Ancestor-Snapping Heuristic for unassigned elements:
+        Walk up past 0x0px wrappers and inline/SVG leaves to nearest semantic or visual container */
   var cur = leaf;
   while (cur && cur !== D.body && cur !== D.documentElement) {
     var ln = cur.localName;
@@ -1826,7 +1819,11 @@ function snapToBestAncestor(leaf) {
       cur = cur.parentElement;
       continue;
     }
-    var r = visRect(cur);
+    var r = cur.getBoundingClientRect();
+    if (r.width < 16 || r.height < 12) {
+      cur = cur.parentElement;
+      continue;
+    }
     var cs = W.getComputedStyle(cur);
     var bg = parse(cs.backgroundColor);
     var hasBoxVisuals = (bg && bg.a > 0.15) || cs.borderTopWidth !== '0px' || cs.boxShadow !== 'none' || cs.borderRadius !== '0px';
@@ -1835,68 +1832,102 @@ function snapToBestAncestor(leaf) {
 
     if (r.width >= 28 && r.height >= 18 && !(r.width >= vw * 0.98 && r.height >= vh * 0.9)) {
       if (isSemanticBox || hasBoxVisuals || (isRepeatedSibling && cs.display !== 'inline')) {
-        return unwrapZeroSize(cur);
+        return cur;
       }
     }
     cur = cur.parentElement;
   }
   cur = leaf;
   while (cur && cur !== D.body && !isMeaningfulBox(cur, vw, vh)) cur = cur.parentElement;
-  return unwrapZeroSize((cur && cur !== D.body) ? cur : leaf);
+  return (cur && cur !== D.body) ? cur : leaf;
 }
 
-/**
- * Fix Issue 1: Walks up 1 to 4 ancestor levels (e.g. g-scrolling-carousel, ul, grid tracks)
- * to find all cousin/sibling elements at the exact same relative depth & similar geometry.
- */
-function findRepeatingPeers(el) {
-  if (!el || el.nodeType !== 1) return [];
-  var r0 = visRect(el);
-  if (r0.width < 12 || r0.height < 12) return [];
-  var bestPeers = [];
+function findMatchingPeers(el) {
+  if (!el || el.nodeType !== 1 || !el.parentElement) return [];
+  var targetSig = sig(el);
+  var targetTag = el.localName;
+  var prevRole = el.getAttribute(A) || '';
+  var r0 = el.getBoundingClientRect();
+  var peers = [];
 
-  var anc = el.parentElement;
-  for (var depth = 1; depth <= 4 && anc && anc !== D.body && anc !== D.documentElement; depth++) {
-    if (!NOGROUP[anc.localName] && anc.children.length >= 2) {
-      var candidates = [];
-      function collectAtDepth(node, d) {
-        if (!node || node.nodeType !== 1 || NOKID[node.localName]) return;
-        if (d === 0) {
-          if (node !== el && node.localName === el.localName) {
-            var nr = visRect(node);
-            if (nr.width > 0 && nr.height > 0 &&
-                Math.abs(nr.width - r0.width) <= Math.max(r0.width * 0.4, 32) &&
-                Math.abs(nr.height - r0.height) <= Math.max(r0.height * 0.45, 40)) {
-              candidates.push(node);
+  /* Level 0: Direct siblings inside immediate parent */
+  var p = el.parentElement;
+  if (!NOGROUP[p.localName]) {
+    var kids = p.children;
+    for (var i = 0; i < kids.length; i++) {
+      var sib = kids[i];
+      if (sib === el || NOKID[sib.localName]) continue;
+      var sameClass = sib.className && el.className && sib.className === el.className;
+      if (sig(sib) === targetSig || (sib.localName === targetTag && sameClass)) {
+        var sr = sib.getBoundingClientRect();
+        var widthOk = (r0.width < 4 || sr.width < 4) || (Math.abs(sr.width - r0.width) <= Math.max(r0.width * 0.4, 32));
+        if (widthOk) peers.push(sib);
+      }
+    }
+  }
+  if (peers.length > 0) return peers;
+
+  /* Levels 1..5: Deep cousin propagation for carousels & wrapped grids (carousel > slideWrapper > ... > target) */
+  var path = [];
+  var cur = el;
+  for (var depth = 0; depth < 5 && cur.parentElement && cur.parentElement !== D.body; depth++) {
+    var par = cur.parentElement;
+    var idx = 0;
+    for (var k = 0; k < par.children.length; k++) {
+      if (par.children[k] === cur) { idx = k; break; }
+    }
+    path.unshift({ tag: cur.localName, idx: idx });
+
+    var gp = par.parentElement;
+    if (gp && gp !== D.body && !NOGROUP[gp.localName] && gp.children.length >= 2) {
+      var parSig = sig(par);
+      var cousins = [];
+      for (var b = 0; b < gp.children.length; b++) {
+        var branch = gp.children[b];
+        if (branch === par || NOKID[branch.localName]) continue;
+        if (branch.localName !== par.localName && sig(branch) !== parSig) continue;
+
+        var node = branch;
+        for (var step = 0; step < path.length && node; step++) {
+          var st = path[step];
+          var next = node.children[st.idx];
+          if (!next || next.localName !== st.tag) {
+            next = null;
+            for (var c = 0; c < node.children.length; c++) {
+              var cand = node.children[c];
+              if (cand.localName === st.tag) {
+                if (step === path.length - 1 && prevRole && cand.getAttribute(A) === prevRole) {
+                  next = cand;
+                  break;
+                }
+                if (!next) next = cand;
+              }
             }
           }
-          return;
+          node = next;
         }
-        var ch = node.children;
-        for (var k = 0; k < ch.length; k++) collectAtDepth(ch[k], d - 1);
+        if (node && node !== el && node.localName === targetTag) {
+          cousins.push(node);
+        }
       }
-      collectAtDepth(anc, depth);
-      if (candidates.length > bestPeers.length) {
-        bestPeers = candidates;
-      }
-      if (bestPeers.length >= 2) break;
+      if (cousins.length > 0) return cousins;
     }
-    anc = anc.parentElement;
+    cur = par;
   }
-  return bestPeers;
+  return [];
 }
 
 function describeElement(el) {
   if (!el || el.nodeType !== 1) return null;
-  var r = visRect(el);
+  var r = el.getBoundingClientRect();
   var role = el.getAttribute(A) || '';
-  var peers = findRepeatingPeers(el);
+  var matchingSiblings = findMatchingPeers(el).length;
   var cls = (typeof el.className === 'string' ? el.className.trim().split(/\s+/).slice(0, 2).join('.') : '');
   return {
     tag: el.localName + (cls ? '.' + cls : ''),
     assignedRole: role,
     isContainer: !!CONTAINER_ROLES[role],
-    matchingSiblings: peers.length,
+    matchingSiblings: matchingSiblings,
     canStepUp: !!(el.parentElement && el.parentElement !== D.body && el.parentElement !== D.documentElement),
     canStepDown: !!(el.firstElementChild),
     rect: { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) }
@@ -1914,12 +1945,11 @@ function applyRoleToSingle(el, role) {
   if (!role || role === 'none' || role === '') {
     el.removeAttribute(A);
     el.removeAttribute(ST);
-    el.setAttribute('data-mydes-locked', '1');
+    el.setAttribute(LK, '1');
     return;
   }
   el.setAttribute(A, role);
-  el.setAttribute('data-mydes-locked', '1');
-  plan.delete(el);
+  el.setAttribute(LK, '1');
   if (el.hasAttribute(S)) { el.removeAttribute(S); tmap.delete(el); }
   if (role === 'chip' || role === 'nav-item') syncState(el);
   if (role === 'card') {
@@ -1928,18 +1958,80 @@ function applyRoleToSingle(el, role) {
   }
 }
 
-window.__mydes = {
-  id: function() { return cfg.id; },
-  setBlueprint: function(next) {
-    /* Issue 5 Fix: Always strip any lingering YOLO or Blind Mask style tags when applying a real theme! */
-    var yoloEl = D.getElementById('__mydes_yolo_hud');
-    if (yoloEl) yoloEl.remove();
-    var blindEl = D.getElementById('__mydes_blind_mask');
-    if (blindEl) blindEl.remove();
-    setSelectedEl(null);
+var userOverrides = [];
 
+function buildStableSelector(el, includePeers) {
+  if (!el || el.nodeType !== 1) return '';
+  var tag = el.localName;
+  function safeClasses(node) {
+    var raw = (typeof node.className === 'string' ? node.className : (node.getAttribute('class') || '')).trim();
+    if (!raw) return [];
+    return raw.split(/\s+/).filter(function(c) {
+      return c && c.length <= 40 && !/^(mydes|__mydes)/i.test(c) && !/\d{5,}/.test(c);
+    }).slice(0, 2);
+  }
+  function part(node) {
+    var s = node.localName;
+    if (!includePeers && node.id && !/\d{5,}/.test(node.id)) {
+      try { return s + '#' + CSS.escape(node.id); } catch (e) {}
+    }
+    var cls = safeClasses(node);
+    if (cls.length) {
+      try { return s + '.' + cls.map(function(c) { return CSS.escape(c); }).join('.'); } catch (e) {}
+    }
+    var role = node.getAttribute('role');
+    if (role) return s + '[role="' + role.replace(/"/g, '') + '"]';
+    return s;
+  }
+  var selfPart = part(el);
+  var par = el.parentElement;
+  if (par && par !== D.body && par !== D.documentElement) {
+    var parPart = part(par);
+    if (parPart !== par.localName || selfPart !== tag) {
+      return parPart + ' > ' + selfPart;
+    }
+  }
+  return selfPart !== tag ? selfPart : '';
+}
+
+function recordTagOverride(el, role, propagateSiblings) {
+  var sel = buildStableSelector(el, propagateSiblings);
+  if (!sel) return;
+  var normRole = (!role || role === 'none') ? '' : role;
+  for (var i = 0; i < userOverrides.length; i++) {
+    if (userOverrides[i].sel === sel) {
+      userOverrides[i].role = normRole;
+      return;
+    }
+  }
+  userOverrides.push({ sel: sel, role: normRole });
+  if (userOverrides.length > 40) userOverrides.shift();
+}
+
+function applyTagOverrides() {
+  var ovs = cfg.tagOverrides;
+  if (!ovs || !ovs.length) return;
+  for (var i = 0; i < ovs.length; i++) {
+    var o = ovs[i];
+    if (!o || !o.sel) continue;
+    try {
+      var matched = D.querySelectorAll(o.sel);
+      for (var j = 0; j < matched.length && j < 120; j++) {
+        applyRoleToSingle(matched[j], o.role);
+      }
+    } catch (e) {}
+  }
+}
+
+var api = {
+  id: function() { return cfg.id; },
+  isDead: function() { return dead; },
+  exportTagOverrides: function() { return JSON.stringify(userOverrides); },
+  setBlueprint: function(next) {
     cfg = next;
     cfg.probeOnly = false;
+    sheetReady = true;
+    purgeInspectorHud();
     pal();
     seen = new WeakSet();
     tmap = new WeakMap();
@@ -1990,9 +2082,9 @@ window.__mydes = {
     if (!selectedEl || !selectedEl.isConnected) return JSON.stringify({ found: false });
     var next = selectedEl;
     if (direction === 'up' && selectedEl.parentElement && selectedEl.parentElement !== D.body && selectedEl.parentElement !== D.documentElement) {
-      next = unwrapZeroSize(selectedEl.parentElement);
+      next = selectedEl.parentElement;
     } else if (direction === 'down' && selectedEl.firstElementChild) {
-      next = unwrapZeroSize(selectedEl.firstElementChild);
+      next = selectedEl.firstElementChild;
     }
     setSelectedEl(next);
     return JSON.stringify({
@@ -2002,9 +2094,11 @@ window.__mydes = {
   },
   assignSelectedRole: function(role, propagateSiblings) {
     if (!selectedEl || !selectedEl.isConnected) return JSON.stringify({ updated: 0 });
-    var peers = propagateSiblings ? findRepeatingPeers(selectedEl) : [];
+    var count = 0;
+    var peers = propagateSiblings ? findMatchingPeers(selectedEl) : [];
+    recordTagOverride(selectedEl, role, propagateSiblings);
     applyRoleToSingle(selectedEl, role);
-    var count = 1;
+    count++;
     for (var i = 0; i < peers.length; i++) {
       applyRoleToSingle(peers[i], role);
       count++;
@@ -2033,8 +2127,7 @@ window.__mydes = {
   clear: function(keepTags) {
     dead = true;
     setSelectedEl(null);
-    var yoloEl = D.getElementById('__mydes_yolo_hud');
-    if (yoloEl && !keepTags) yoloEl.remove();
+    purgeInspectorHud();
     if (mo) mo.disconnect();
     if (io) io.disconnect();
     if (origAttach) { try { Element.prototype.attachShadow = origAttach; } catch (e) {} }
@@ -2050,20 +2143,32 @@ window.__mydes = {
       for (var i = 0; i < els.length; i++) {
         els[i].removeAttribute(A);
         els[i].removeAttribute(ST);
-        els[i].removeAttribute('data-mydes-locked');
+        els[i].removeAttribute(LK);
       }
+    }
+    if (W.__mydes === api) {
+      try { delete W.__mydes; } catch (e) { W.__mydes = undefined; }
     }
   }
 };
+window.__mydes = api;
 start();
 """
 
     fun script(
         blueprint: UIBlueprint,
-        skipHosts: Set<String> = SitePacks.skipHosts
+        skipHosts: Set<String> = SitePacks.skipHosts,
+        tagOverridesJson: String? = null
     ): String {
         val bpJson = JSONObject(blueprint.toJson())
+            .put("probeOnly", false)
             .put("skip", JSONArray(skipHosts.toList()))
+        if (!tagOverridesJson.isNullOrBlank()) {
+            try {
+                val arr = JSONArray(tagOverridesJson)
+                if (arr.length() > 0) bpJson.put("tagOverrides", arr)
+            } catch (_: Exception) {}
+        }
         return "(function(BP){$CORE\n})($bpJson);"
     }
 
@@ -2082,6 +2187,46 @@ start();
             .put("skip", JSONArray(skipHosts.toList()))
         return "(function(BP){$CORE\n})($probeBp);"
     }
+
+    /**
+     * Safe reset preamble prepended before injecting saved/imported/reverted scripts.
+     * Cancels any in-flight red-cross exit animation timers, purges any YOLO HUD,
+     * and deletes `window.__mydes` so even previously-saved SQLite themes (with older
+     * compiled JS) re-apply cleanly on the exact same page.
+     */
+    val PRE_INJECT_RESET_JS = """
+        (function(){
+          try {
+            window.__mydesYoloActive = false;
+            if (window.__mydesExitTimer1) { clearTimeout(window.__mydesExitTimer1); window.__mydesExitTimer1 = null; }
+            if (window.__mydesExitTimer2) { clearTimeout(window.__mydesExitTimer2); window.__mydesExitTimer2 = null; }
+            if (window.__mydesExitEls && window.__mydesExitEls.length) {
+              for (var ei = 0; ei < window.__mydesExitEls.length; ei++) {
+                var eel = window.__mydesExitEls[ei];
+                if (eel && eel.style) {
+                  eel.style.removeProperty('transition');
+                  eel.style.removeProperty('transform');
+                  eel.style.removeProperty('opacity');
+                  eel.style.removeProperty('filter');
+                }
+              }
+              window.__mydesExitEls = null;
+            }
+            var huds = document.querySelectorAll('#__mydes_yolo_hud, #__mydes_blind_mask, [data-mydes-hud]');
+            for (var i = 0; i < huds.length; i++) huds[i].remove();
+            var sels = document.querySelectorAll('[data-mydes-selected]');
+            for (var j = 0; j < sels.length; j++) sels[j].removeAttribute('data-mydes-selected');
+            var oldStyle = document.getElementById('__mydes_style');
+            if (oldStyle) oldStyle.remove();
+            var oldLegacy = document.getElementById('mydes-ai-styler-style');
+            if (oldLegacy) oldLegacy.remove();
+            if (window.__mydes && window.__mydes.clear) {
+              try { window.__mydes.clear(false); } catch (e) {}
+            }
+            try { delete window.__mydes; } catch (e) { window.__mydes = undefined; }
+          } catch (e) {}
+        })();
+    """.trimIndent()
 
     val OUTLINE_PROBE_JS = """
         (function(){
@@ -2105,10 +2250,10 @@ start();
     """
 
     /**
-     * Injects the Crystal-Clear YOLO Object-Detection Overlay:
-     * 1. Outer Containers (`header`, `bottom-bar`, `search`, `chip`, `card`) -> Solid 2.5px color-coded bounding boxes + Top-Left solid pill label.
-     * 2. Inner Anatomy (`media-box`, `heading`, `title`, `btn`, `nav-item`) -> 1.75px dotted inner lines + Bottom-Right mini-badge so labels NEVER collide with parent container labels.
-     * 3. Selected Element (`[data-mydes-selected="1"]`) -> High-visibility target frame during user inspection.
+     * Crystal-Clear Set-of-Mark (SoM) YOLO Inspector Overlay:
+     * - Tier 1 Outer Containers (`header`, `bottom-bar`, `search`, `chip`, `card`): Solid color-coded bounding boxes + Top-Left pill badge.
+     * - Tier 2 Inner Anatomy (`media-box`, `heading`, `title`, `btn`, `nav-item`): Dotted inner lines + Bottom-Right mini-badge.
+     * - Active Selection (`[data-mydes-selected="1"]`): High-visibility target highlight frame.
      */
     val APPLY_YOLO_INSPECTOR_HUD_JS = """
         (function(){
@@ -2116,14 +2261,16 @@ start();
             if (window.__mydes && window.__mydes.forceFullScan) {
               window.__mydes.forceFullScan();
             }
-            var existing = document.getElementById('__mydes_yolo_hud');
-            if (existing) existing.remove();
+            var old = document.querySelectorAll('#__mydes_yolo_hud, #__mydes_blind_mask, [data-mydes-hud]');
+            for (var i = 0; i < old.length; i++) old[i].remove();
+
             var s = document.createElement('style');
             s.id = '__mydes_yolo_hud';
+            s.setAttribute('data-mydes-hud', '1');
             s.textContent =
               '[data-mydes] { position: relative !important; }\n' +
 
-              /* --- TIER 1: OUTER CONTAINERS (Solid Bounding Boxes + Top-Left YOLO Label) --- */
+              /* --- TIER 1: OUTER CONTAINERS (Solid Bounding Boxes + Top-Left Label) --- */
               '[data-mydes="header"] { outline: 2.5px solid #00E5FF !important; outline-offset: -2px !important; }\n' +
               '[data-mydes="bottom-bar"] { outline: 2.5px solid #00B8D4 !important; outline-offset: -2px !important; }\n' +
               '[data-mydes="search"] { outline: 2.5px solid #FFD600 !important; outline-offset: -1px !important; }\n' +
@@ -2145,7 +2292,7 @@ start();
               '[data-mydes="chip"]::before { background: #FF4081 !important; color: #fff !important; }\n' +
               '[data-mydes="card"]::before { background: #00E676 !important; }\n' +
 
-              /* --- TIER 2: INNER ANATOMY (Dotted Lines + Bottom-Right Mini Badge) --- */
+              /* --- TIER 2: INNER ANATOMY (Dotted Inner Lines + Bottom-Right Mini Badge) --- */
               '[data-mydes="media-box"] { outline: 1.75px dotted #B388FF !important; outline-offset: -2px !important; }\n' +
               '[data-mydes="heading"], [data-mydes="title"] { outline: 1.5px dotted #FF9100 !important; outline-offset: 1px !important; }\n' +
               '[data-mydes="btn"] { outline: 1.75px dotted #FF5252 !important; outline-offset: 0px !important; }\n' +
@@ -2179,19 +2326,45 @@ start();
     val REMOVE_YOLO_INSPECTOR_HUD_JS = """
         (function(){
           try {
+            window.__mydesYoloActive = false;
             if (window.__mydes && window.__mydes.clearSelection) window.__mydes.clearSelection();
-            var el = document.getElementById('__mydes_yolo_hud');
-            if (el) el.remove();
-            var blindEl = document.getElementById('__mydes_blind_mask');
-            if (blindEl) blindEl.remove();
-            var sel = document.querySelectorAll('[data-mydes-selected]');
-            for (var i = 0; i < sel.length; i++) sel[i].removeAttribute('data-mydes-selected');
+            function cleanRoot(root) {
+              if (!root || !root.querySelectorAll) return;
+              var huds = root.querySelectorAll('#__mydes_yolo_hud, #__mydes_blind_mask, [data-mydes-hud]');
+              for (var i = 0; i < huds.length; i++) huds[i].remove();
+              var sel = root.querySelectorAll('[data-mydes-selected]');
+              for (var j = 0; j < sel.length; j++) sel[j].removeAttribute('data-mydes-selected');
+            }
+            cleanRoot(document);
+            if (document.body) {
+              var all = document.body.querySelectorAll('*');
+              for (var k = 0; k < all.length && k < 600; k++) {
+                if (all[k].shadowRoot) cleanRoot(all[k].shadowRoot);
+              }
+            }
             return true;
           } catch(e) { return false; }
         })();
     """
 
-    val APPLY_BLIND_MASK_JS = APPLY_YOLO_INSPECTOR_HUD_JS
+    val APPLY_BLIND_MASK_JS = """
+        (function(){
+          try {
+            if (document.getElementById('__mydes_blind_mask')) return true;
+            var s = document.createElement('style');
+            s.id = '__mydes_blind_mask';
+            s.setAttribute('data-mydes-hud', '1');
+            s.textContent =
+              '*, *::before, *::after { color: transparent !important; text-shadow: 0 0 7px rgba(120,130,145,0.55) !important; }\n' +
+              'img, video, picture, canvas, iframe, svg { filter: brightness(0) contrast(0) opacity(0.22) !important; background: rgba(128,128,128,0.18) !important; }\n' +
+              '[data-mydes], header, footer, nav, article, button, input[type="search"], [role="search"] { outline: 1.5px dashed rgba(0,220,130,0.75) !important; position: relative !important; }\n' +
+              '[data-mydes]::before { content: attr(data-mydes) !important; position: absolute !important; top: 0 !important; left: 0 !important; background: #000 !important; color: #00ff88 !important; font: bold 9px monospace !important; padding: 1px 4px !important; z-index: 2147483647 !important; text-shadow: none !important; line-height: 1.1 !important; pointer-events: none !important; }';
+            (document.head || document.documentElement).appendChild(s);
+            return true;
+          } catch(e) { return false; }
+        })();
+    """
+
     val REMOVE_BLIND_MASK_JS = REMOVE_YOLO_INSPECTOR_HUD_JS
 
     val SNAPSHOT_FRAME_1_JS = """
@@ -2267,7 +2440,6 @@ start();
               }
               var zi = parseInt(cs.zIndex, 10);
               var op = parseFloat(cs.opacity);
-              var bgi = cs.backgroundImage || '';
               var bgr = cs.backgroundRepeat || '';
               var anim = cs.animationName || 'none';
 
@@ -2378,58 +2550,104 @@ start();
     val CONTRAST_AUDIT_JS = VISUAL_AND_DOM_AUDIT_JS
 }
 
-fun WebView.captureJpegBase64(maxWidth: Int = 640): String? {
-    if (width <= 0 || height <= 0) return null
-    return try {
-        val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        draw(Canvas(bmp))
-        val scale = minOf(1f, maxWidth.toFloat() / width)
-        val out = if (scale < 1f) Bitmap.createScaledBitmap(bmp, (width * scale).toInt(), (height * scale).toInt(), true) else bmp
-        val bos = ByteArrayOutputStream()
-        out.compress(Bitmap.CompressFormat.JPEG, 70, bos)
-        Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP)
-    } catch (_: Throwable) {
-        null
-    }
-}
-
-suspend fun WebView.evaluateJsSuspend(script: String): String? = withContext(Dispatchers.Main) {
-    suspendCancellableCoroutine { cont ->
-        evaluateJavascript(script) { result ->
-            if (cont.isActive) cont.resume(result)
-        }
-    }
-}
-
-// ───────────────────── Interactive YOLO Inspector & Hit-Testing Extensions ─────────────────────
+// ───────────────────── WebView YOLO Inspector & Capture Helpers ─────────────────────
 
 @JsonClass(generateAdapter = true)
 data class InspectedElementInfo(
     val tag: String,
-    val assignedRole: String = "",
-    val isContainer: Boolean = false,
-    val matchingSiblings: Int = 0,
-    val canStepUp: Boolean = false,
-    val canStepDown: Boolean = false,
+    val assignedRole: String,
+    val isContainer: Boolean,
+    val matchingSiblings: Int,
+    val canStepUp: Boolean,
+    val canStepDown: Boolean,
     val rectX: Int = 0,
     val rectY: Int = 0,
     val rectW: Int = 0,
     val rectH: Int = 0
 )
 
+fun WebView.captureJpegBase64(maxWidth: Int = 640): String? {
+    if (width <= 0 || height <= 0) return null
+    return try {
+        val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        val sx = scrollX
+        val sy = scrollY
+        if (sx != 0 || sy != 0) {
+            canvas.save()
+            canvas.translate(-sx.toFloat(), -sy.toFloat())
+            draw(canvas)
+            canvas.restore()
+        } else {
+            draw(canvas)
+        }
+        val scale = minOf(1f, maxWidth.toFloat() / width)
+        val out = if (scale < 1f) Bitmap.createScaledBitmap(bmp, (width * scale).toInt(), (height * scale).toInt(), true) else bmp
+        val bos = ByteArrayOutputStream()
+        out.compress(Bitmap.CompressFormat.JPEG, 70, bos)
+        if (out !== bmp) out.recycle()
+        bmp.recycle()
+        Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP)
+    } catch (_: Throwable) {
+        null
+    }
+}
+
+suspend fun WebView.captureBlindWireframeBase64(maxDimension: Int = 384): String? {
+    return try {
+        evaluateJsSuspend(MydesRuntime.APPLY_BLIND_MASK_JS)
+        delay(24)
+        val base64 = withContext(Dispatchers.Main) {
+            if (width <= 0 || height <= 0) return@withContext null
+            val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bmp)
+            val sx = scrollX
+            val sy = scrollY
+            if (sx != 0 || sy != 0) {
+                canvas.save()
+                canvas.translate(-sx.toFloat(), -sy.toFloat())
+                draw(canvas)
+                canvas.restore()
+            } else {
+                draw(canvas)
+            }
+            val longestEdge = maxOf(width, height)
+            val scale = minOf(1f, maxDimension.toFloat() / longestEdge)
+            val out = if (scale < 1f) {
+                Bitmap.createScaledBitmap(
+                    bmp,
+                    (width * scale).toInt().coerceAtLeast(1),
+                    (height * scale).toInt().coerceAtLeast(1),
+                    true
+                )
+            } else bmp
+            val bos = ByteArrayOutputStream()
+            out.compress(Bitmap.CompressFormat.JPEG, 60, bos)
+            if (out !== bmp) out.recycle()
+            bmp.recycle()
+            Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP)
+        }
+        base64
+    } catch (_: Throwable) {
+        null
+    } finally {
+        try { evaluateJsSuspend(MydesRuntime.REMOVE_BLIND_MASK_JS) } catch (_: Throwable) {}
+    }
+}
+
 /**
- * Runs MydesRuntime in probeOnly mode (no palette CSS applied yet) and mounts the
- * interactive YOLO bounding-box & dotted-anatomy HUD for user inspection before Pass 1 begins.
+ * Runs MydesRuntime in probeOnly mode and mounts the interactive YOLO bounding-box HUD
+ * for user inspection before Pass 1 begins.
  */
 suspend fun WebView.startYoloInspectionSession(): String? {
     evaluateJsSuspend(MydesRuntime.probeScript())
-    delay(65)
+    delay(60)
     return evaluateJsSuspend(MydesRuntime.APPLY_YOLO_INSPECTOR_HUD_JS)
 }
 
 /**
  * Performs a viewport hit-test at CSS pixel coordinates (cssX, cssY) with automatic
- * ancestor-snapping and 0x0 unwrapping for unassigned leaf nodes.
+ * ancestor-snapping for unassigned leaf nodes.
  */
 suspend fun WebView.hitTestElementForInspection(cssX: Float, cssY: Float): InspectedElementInfo? {
     val raw = evaluateJsSuspend(
@@ -2451,18 +2669,20 @@ suspend fun WebView.stepInspectedElement(direction: String): InspectedElementInf
 
 /**
  * Assigns or changes the `data-mydes` tag on the currently selected element, propagating
- * across multi-level carousel/grid peers (`findRepeatingPeers`) when `propagateSiblings` is true.
+ * to direct siblings or deep carousel/grid cousins when `propagateSiblings` is true.
  */
 suspend fun WebView.assignRoleToInspectedElement(
     role: String,
     propagateSiblings: Boolean = true
 ): Pair<Int, InspectedElementInfo?> {
-    val cleanRole = role.trim().lowercase(Locale.US)
+    val cleanRole = role.trim().lowercase(Locale.US).replace(Regex("[^a-z-]"), "")
     val raw = evaluateJsSuspend(
         "(function(){ return window.__mydes ? window.__mydes.assignSelectedRole('$cleanRole', $propagateSiblings) : '{}'; })();"
     ) ?: return Pair(0, null)
     return try {
-        val unwrapped = unwrapJsString(raw) ?: return Pair(0, null)
+        val unwrapped = if (raw.startsWith("\"") && raw.endsWith("\"")) {
+            JSONObject("{\"v\":$raw}").optString("v", "{}")
+        } else raw
         val j = JSONObject(unwrapped)
         val count = j.optInt("updated", 0)
         val elObj = j.optJSONObject("element")
@@ -2473,20 +2693,30 @@ suspend fun WebView.assignRoleToInspectedElement(
     }
 }
 
-private fun unwrapJsString(raw: String): String? {
-    if (raw.isBlank() || raw == "null") return null
-    return if (raw.startsWith("\"") && raw.endsWith("\"")) {
-        try {
-            org.json.JSONTokener(raw).nextValue()?.toString() ?: raw
-        } catch (_: Exception) {
-            raw.substring(1, raw.length - 1).replace("\\\"", "\"").replace("\\\\", "\\")
-        }
-    } else raw
+/**
+ * Exports any manual tag overrides locked by the user during YOLO inspection mode
+ * so they can be embedded into the compiled theme script and replayed after page refresh.
+ */
+suspend fun WebView.exportYoloTagOverrides(): String? {
+    val raw = evaluateJsSuspend(
+        "(function(){ return (window.__mydes && window.__mydes.exportTagOverrides) ? window.__mydes.exportTagOverrides() : '[]'; })();"
+    ) ?: return null
+    return try {
+        val unwrapped = if (raw.startsWith("\"") && raw.endsWith("\"")) {
+            JSONObject("{\"v\":$raw}").optString("v", "[]")
+        } else raw
+        val arr = JSONArray(unwrapped)
+        if (arr.length() > 0) arr.toString() else null
+    } catch (_: Exception) {
+        null
+    }
 }
 
 private fun parseInspectedElementJson(raw: String): InspectedElementInfo? {
     return try {
-        val unwrapped = unwrapJsString(raw) ?: return null
+        val unwrapped = if (raw.startsWith("\"") && raw.endsWith("\"")) {
+            JSONObject("{\"v\":$raw}").optString("v", "{}")
+        } else raw
         val j = JSONObject(unwrapped)
         if (!j.optBoolean("found", false)) return null
         val elObj = j.optJSONObject("element") ?: return null
@@ -2507,24 +2737,42 @@ private fun parseElementObject(elObj: JSONObject): InspectedElementInfo {
         canStepDown = elObj.optBoolean("canStepDown", false),
         rectX = rect?.optInt("x", 0) ?: 0,
         rectY = rect?.optInt("y", 0) ?: 0,
-        rectW = rect?.optInt("w", elObj.optInt("rectW", 0)) ?: 0,
-        rectH = rect?.optInt("h", elObj.optInt("rectH", 0)) ?: 0
+        rectW = rect?.optInt("w", 0) ?: 0,
+        rectH = rect?.optInt("h", 0) ?: 0
     )
 }
 
 /**
- * Captures the user-approved, crystal-clear Set-of-Mark (SoM) YOLO screenshot with all
- * bounding boxes and dotted anatomy markers visible, and then IMMEDIATELY removes the
- * YOLO HUD overlay from the live WebView so the inspector markings disappear!
+ * Captures the exact scrolled, crystal-clear Set-of-Mark (SoM) YOLO screenshot approved by the user,
+ * then unconditionally removes the YOLO HUD overlay in `finally`.
  */
 suspend fun WebView.captureApprovedYoloBase64(maxDimension: Int = 640): String? {
     return try {
         evaluateJsSuspend("(function(){ if(window.__mydes && window.__mydes.clearSelection) window.__mydes.clearSelection(); })();")
         delay(24)
-        val base64 = withContext(Dispatchers.Main) {
+        withContext(Dispatchers.Main) {
             if (width <= 0 || height <= 0) return@withContext null
             val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-            draw(Canvas(bmp))
+            val canvas = Canvas(bmp)
+            val wasVert = isVerticalScrollBarEnabled
+            val wasHoriz = isHorizontalScrollBarEnabled
+            try {
+                isVerticalScrollBarEnabled = false
+                isHorizontalScrollBarEnabled = false
+                val sx = scrollX
+                val sy = scrollY
+                if (sx != 0 || sy != 0) {
+                    canvas.save()
+                    canvas.translate(-sx.toFloat(), -sy.toFloat())
+                    draw(canvas)
+                    canvas.restore()
+                } else {
+                    draw(canvas)
+                }
+            } finally {
+                isVerticalScrollBarEnabled = wasVert
+                isHorizontalScrollBarEnabled = wasHoriz
+            }
             val longestEdge = maxOf(width, height)
             val scale = minOf(1f, maxDimension.toFloat() / longestEdge)
             val out = if (scale < 1f) {
@@ -2537,19 +2785,24 @@ suspend fun WebView.captureApprovedYoloBase64(maxDimension: Int = 640): String? 
             } else bmp
             val bos = ByteArrayOutputStream()
             out.compress(Bitmap.CompressFormat.JPEG, 78, bos)
+            if (out !== bmp) out.recycle()
+            bmp.recycle()
             Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP)
         }
-        // Issue 5 Fix: Immediately remove the YOLO HUD right after capturing the screenshot!
-        evaluateJsSuspend(MydesRuntime.REMOVE_YOLO_INSPECTOR_HUD_JS)
-        base64
     } catch (_: Throwable) {
-        try { evaluateJsSuspend(MydesRuntime.REMOVE_YOLO_INSPECTOR_HUD_JS) } catch (_: Throwable) {}
         null
+    } finally {
+        try { evaluateJsSuspend(MydesRuntime.REMOVE_YOLO_INSPECTOR_HUD_JS) } catch (_: Throwable) {}
     }
 }
 
-suspend fun WebView.captureBlindWireframeBase64(maxDimension: Int = 384): String? =
-    captureApprovedYoloBase64(maxDimension)
+suspend fun WebView.evaluateJsSuspend(script: String): String? = withContext(Dispatchers.Main) {
+    suspendCancellableCoroutine { cont ->
+        evaluateJavascript(script) { result ->
+            if (cont.isActive) cont.resume(result)
+        }
+    }
+}
 
 // ───────────────────── Blueprint Cache ─────────────────────
 
@@ -2588,20 +2841,19 @@ class ThemeStore(context: Context) {
     }
 }
 
-// ───────────────────── The Gemini UI Synthesis Service (v23) ─────────────────────
+// ───────────────────── The Gemini UI Synthesis Service (v24) ─────────────────────
 
 class GeminiStylerService {
 
     companion object {
-        const val MODEL_GEMINI_35_FLASH_LITE = "gemini-3.5-flash-lite"
-        const val MODEL_GEMINI_38_FLASH = "gemini-3.8-flash"
-        const val MODEL_NVIDIA_NEMOTRON_3_ULTRA = "nvidia/nemotron-3-ultra-550b-a55b"
+        val MODEL_GEMINI_35_FLASH_LITE = "gemini-3.5-flash-lite"
+        val MODEL_GEMINI_38_FLASH = "gemini-3.8-flash"
+        val MODEL_NVIDIA_NEMOTRON_3_ULTRA = "nvidia/nemotron-3-ultra-550b-a55b"
 
-        const val CONCEPT_MODEL = MODEL_GEMINI_35_FLASH_LITE
-        const val SYNTHESIS_MODEL = MODEL_GEMINI_35_FLASH_LITE
-        const val REVIEW_MODEL = MODEL_GEMINI_35_FLASH_LITE
+        val CONCEPT_MODEL = MODEL_GEMINI_35_FLASH_LITE
+        val SYNTHESIS_MODEL = MODEL_GEMINI_35_FLASH_LITE
+        val REVIEW_MODEL = MODEL_GEMINI_35_FLASH_LITE
 
-        // ── Shared by both Pass 1 prompts: plain language, zero CSS vocabulary ──
         private val SHARED_UI_PARTS = """
 THE PAGE YOU ARE DESIGNING
 Whatever the website, its interface is reduced to these parts. Refer to them by these names:
@@ -2618,7 +2870,7 @@ Not every site shows every part, so design all of them.
 If an annotated Set-of-Mark (SoM) screenshot of the live page is attached, it displays the exact user-approved `[data-mydes]` element mapping:
 - Solid color-coded bounding boxes with top-left badges mark outer containers (`header` in cyan, `bottom-bar` in teal, `search` in yellow, `chip` in pink, `card` in green).
 - Dotted inner lines with bottom-right badges mark nested anatomy (`media-box` in purple, `heading`/`title` in orange, `btn` in red, `nav-item` in mint).
-IMPORTANT: Those colored inspection outlines and text badges (`card`, `heading`, `media-box`, etc.) are diagnostic markers ONLY so you can see the layout and density—NEVER include those diagnostic badges or dashed green outlines in your design decisions!
+Use the real page's visual hierarchy, spacing, density, and these exact annotated boxes to proportion your design decisions for every tagged part.
  
 WHAT IS POSSIBLE
 Styling and imagery only: colour, gradient, texture, light, shadow, borders, shape, vector artwork drawn behind or over existing elements, typefaces, text effects, text-based ornaments and animation of colour, light, opacity, shadow and imagery.
@@ -2734,8 +2986,7 @@ For every item in "elements", include a "rules" array containing the matching ta
     private fun sanitizeOutlineJson(outlineJson: String?): String? {
         if (outlineJson.isNullOrBlank() || outlineJson == "null") return null
         return try {
-            val unwrapped = unwrapJsString(outlineJson) ?: outlineJson
-            val obj = JSONObject(unwrapped)
+            val obj = JSONObject(outlineJson)
             obj.remove("url")
             obj.toString().take(700)
         } catch (_: Exception) {
@@ -3039,8 +3290,8 @@ For every item in "elements", include a "rules" array containing the matching ta
             if (!approvedScreenshotBase64.isNullOrBlank()) {
                 appendLine()
                 appendLine()
-                appendLine("=== ATTACHED USER-APPROVED YOLO SCREENSHOT ===")
-                appendLine("[Approved YOLO Set-of-Mark JPEG: ${approvedScreenshotBase64.length / 1024} KB base64]")
+                appendLine("=== ATTACHED APPROVED YOLO SET-OF-MARK SCREENSHOT ===")
+                appendLine("[Approved Annotated JPEG: ${approvedScreenshotBase64.length / 1024} KB base64]")
             }
         }
 
@@ -3444,7 +3695,7 @@ For every item in "elements", include a "rules" array containing the matching ta
             ?: previous
     }
 
-    // ───── v23 System Prompts: Ultra-Compact Core + Co-Located Micro-RAG ─────
+    // ───── v24 System Prompts: Ultra-Compact Core + Co-Located Micro-RAG ─────
 
     private val UI_REVIEW_SYSTEM_PROMPT = """
 You are the Pure-CSS QA Reviewer for a browser that restyles websites. You receive the original specification (with co-located element rules), live telemetry measured on the painted page, the current CSS, and sometimes a screenshot. Repair what is broken or missing. Do not redesign.
@@ -3847,7 +4098,6 @@ class SiteThemeController(
             webView.captureApprovedYoloBase64(maxDimension = 640)
         } else null
 
-        // 1. Run Pass 1 (with User-Approved YOLO Visual) + Pass 2 (with Co-Located Micro-RAG)
         val initialBlueprint = service.themeSpec(
             context = context,
             prompt = prompt,
@@ -3868,7 +4118,6 @@ class SiteThemeController(
             webView.evaluateJavascript(initialJs, null)
         }
 
-        // 2. Conditional Pass 3: Test live DOM + Decision Ledger. Skip Pass 3 if 0 defects & 0 skipped decisions!
         if (includeScreenshot) {
             delay(220)
             webView.evaluateJsSuspend(MydesRuntime.SNAPSHOT_FRAME_1_JS)
@@ -3929,7 +4178,7 @@ class SiteThemeController(
         script = null
         try { handler?.remove() } catch (_: Exception) {}
         handler = null
-        webView.evaluateJavascript("window.__mydes && window.__mydes.clear();", null)
+        webView.evaluateJavascript("window.__mydes && window.__mydes.clear(false);", null)
     }
 
     fun onPageFinished() {

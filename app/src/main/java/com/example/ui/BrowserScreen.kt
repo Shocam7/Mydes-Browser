@@ -55,6 +55,7 @@ import androidx.compose.ui.zIndex
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.example.ui.components.YoloInspectorOverlay
 import com.example.ui.components.AiStylerPillBar
 import com.example.ui.components.ApiRequestLogsSheet
 import com.example.ui.components.BookmarksSheet
@@ -75,7 +76,6 @@ import com.example.ui.components.TopPlateauNotch
 import com.example.ui.components.WebContainer
 import com.example.ui.viewmodel.BrowserViewModel
 import kotlinx.coroutines.delay
-import com.example.ui.components.YoloInspectorApprovalBar
 
 
 @Composable
@@ -142,11 +142,12 @@ fun BrowserScreen(
     var activeWebView by remember { mutableStateOf<WebView?>(null) }
 
     // Execute generated or exit user-script on the active WebView
-    LaunchedEffect(pendingUserScriptToInject) {
-        val script = pendingUserScriptToInject
-        if (script != null && activeWebView != null) {
-            activeWebView?.evaluateJavascript(script, null)
-            viewModel.onUserScriptInjected()
+    LaunchedEffect(pendingUserScriptToInject, activeWebView) {
+        val pending = pendingUserScriptToInject
+        val webView = activeWebView
+        if (pending != null && webView != null) {
+            webView.evaluateJavascript(pending.script, null)
+            viewModel.onUserScriptInjected(pending.id)
         }
     }
 
@@ -175,10 +176,7 @@ fun BrowserScreen(
         }
     }
 
-    val shouldShowButtons = !yoloInspectionState.isActive &&
-        (isStartPage || controlsVisible || isOptionsMenuExpanded || isAiStylerPillVisible)
-
-
+    val shouldShowButtons = !yoloInspectionState.isActive && (isStartPage || controlsVisible || isOptionsMenuExpanded || isAiStylerPillVisible)
 
     val settingsOffsetX by animateDpAsState(
         targetValue = if (shouldShowButtons) 0.dp else (-80).dp,
@@ -209,6 +207,7 @@ fun BrowserScreen(
 
     BackHandler {
         when {
+            yoloInspectionState.selectedElement != null -> viewModel.clearSelectedYoloElement()
             yoloInspectionState.isActive -> viewModel.declineYoloInspection()
             isImportRedesignDialogOpen -> viewModel.closeImportRedesignDialog()
             isAiStylerPillVisible -> viewModel.closeAiStylerPill()
@@ -293,7 +292,7 @@ fun BrowserScreen(
 
         // 4. Top Header Controls:
         // Hide settings, brush, new tab plus buttons and TopHeaderPill when SettingsSheet is open
-        if (!isSettingsOpen) {
+        if (!isSettingsOpen && !yoloInspectionState.isActive) {
             if (!isOptionsMenuExpanded) {
                 Box(
                     modifier = Modifier
@@ -503,21 +502,20 @@ fun BrowserScreen(
         )
 
         if (yoloInspectionState.isActive) {
-            YoloInspectorApprovalBar(
+            YoloInspectorOverlay(
                 state = yoloInspectionState,
                 onApprove = { viewModel.approveYoloInspectionAndSynthesize() },
                 onDecline = { viewModel.declineYoloInspection() },
-                onAssignRole = { role -> viewModel.assignRoleToSelectedYoloElement(role) },
+                onSaveRole = { role -> viewModel.assignRoleToSelectedYoloElement(role) },
+                onDismissPopup = { viewModel.clearSelectedYoloElement() },
                 onStepSelection = { dir -> viewModel.stepSelectedYoloElement(dir) },
                 onTogglePropagateSiblings = { viewModel.toggleYoloSiblingPropagation() },
-                onDismissPopup = { viewModel.dismissSelectedYoloPopup() },
                 modifier = Modifier
                     .fillMaxSize()
                     .then(bottomInsetsModifier)
                     .zIndex(35f)
             )
         }
-
 
 
         // 9. Fullscreen Modals and Sheets

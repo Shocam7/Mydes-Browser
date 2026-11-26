@@ -1027,42 +1027,38 @@ private val YOLO_ROLE_OPTIONS = listOf(
 )
 
 @Composable
-fun YoloInspectorApprovalBar(
+fun YoloInspectorOverlay(
     state: YoloInspectionState,
     onApprove: () -> Unit,
     onDecline: () -> Unit,
-    onAssignRole: (String) -> Unit,
+    onSaveRole: (String) -> Unit,
+    onDismissPopup: () -> Unit,
     onStepSelection: (String) -> Unit,
     onTogglePropagateSiblings: () -> Unit,
-    onDismissPopup: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     if (!state.isActive) return
 
     val selected = state.selectedElement
-    var pendingRole by remember(selected) {
-        mutableStateOf(selected?.assignedRole?.ifBlank { "card" } ?: "card")
-    }
-    var isDropdownOpen by remember(selected) { mutableStateOf(false) }
 
     Box(modifier = modifier.fillMaxSize()) {
-        // 1. Small Bottom-Left 'Cross' Button (Decline)
+        // 1. Bottom-Left: Small Cross Button (Decline & Cancel)
         Box(
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .padding(start = 18.dp, bottom = 18.dp)
-                .size(42.dp)
+                .size(46.dp)
                 .shadow(6.dp, CircleShape)
                 .clip(CircleShape)
-                .background(Color(0xFF22252A))
-                .border(0.8.dp, Color(0xFF686E78), CircleShape)
+                .background(Color(0xFF1F2227))
+                .border(1.dp, Color(0xFF4A4E57), CircleShape)
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = ripple(bounded = true),
                     onClick = onDecline
                 )
                 .testTag("yolo_decline_button")
-                .semantics { contentDescription = "Decline and cancel YOLO inspection" },
+                .semantics { contentDescription = "Decline and cancel inspection" },
             contentAlignment = Alignment.Center
         ) {
             Icon(
@@ -1073,16 +1069,16 @@ fun YoloInspectorApprovalBar(
             )
         }
 
-        // 2. Small Bottom-Right 'Tick' Button (Approve Whole Selection)
+        // 2. Bottom-Right: Small Tick Button (Approve & Synthesize)
         Box(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(end = 18.dp, bottom = 18.dp)
-                .size(42.dp)
+                .size(46.dp)
                 .shadow(6.dp, CircleShape)
                 .clip(CircleShape)
-                .background(Color(0xFF22252A))
-                .border(0.8.dp, Color(0xFF686E78), CircleShape)
+                .background(Color(0xFF1F2227))
+                .border(1.dp, Color(0xFF4A4E57), CircleShape)
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = ripple(bounded = true),
@@ -1100,30 +1096,36 @@ fun YoloInspectorApprovalBar(
             )
         }
 
-        // 3. Popup Modal ONLY when the user taps an element on the page
+        // 3. On-Demand Floating Popup (appears ONLY when an element is tapped; disappears on Save)
         AnimatedVisibility(
             visible = selected != null,
-            enter = fadeIn(tween(150)) + slideInVertically(initialOffsetY = { it / 4 }),
-            exit = fadeOut(tween(120)) + slideOutVertically(targetOffsetY = { it / 4 }),
-            modifier = Modifier.align(Alignment.Center)
+            enter = fadeIn(tween(150)) + slideInVertically(initialOffsetY = { it / 3 }),
+            exit = fadeOut(tween(130)) + slideOutVertically(targetOffsetY = { it / 3 }),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(start = 16.dp, end = 16.dp, bottom = 78.dp)
         ) {
             if (selected != null) {
+                var stagedRole by remember(selected.tag, selected.assignedRole, selected.rectX, selected.rectY) {
+                    mutableStateOf(selected.assignedRole.ifBlank { "card" })
+                }
+                var isDropdownOpen by remember(selected) { mutableStateOf(false) }
+
                 Box(
                     modifier = Modifier
-                        .padding(horizontal = 24.dp)
                         .fillMaxWidth()
-                        .shadow(20.dp, RoundedCornerShape(20.dp))
+                        .shadow(16.dp, RoundedCornerShape(20.dp))
                         .clip(RoundedCornerShape(20.dp))
-                        .background(Color(0xFF1E2024))
-                        .border(0.8.dp, Color(0xFF5A606A), RoundedCornerShape(20.dp))
-                        .padding(16.dp)
-                        .testTag("yolo_element_popup")
+                        .background(Color(0xFF171A20).copy(alpha = 0.97f))
+                        .border(1.dp, Color(0xFF4A4E57), RoundedCornerShape(20.dp))
+                        .padding(14.dp)
+                        .testTag("yolo_element_editor_popup")
                 ) {
                     Column(
                         modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        // Header: Element Tag + Close Popup 'X'
+                        // Header row with element tag + close button
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1133,7 +1135,7 @@ fun YoloInspectorApprovalBar(
                                 Text(
                                     text = "<${selected.tag}> (${selected.rectW}×${selected.rectH}px)",
                                     color = Color.White,
-                                    fontSize = 13.5.sp,
+                                    fontSize = 12.5.sp,
                                     fontWeight = FontWeight.Bold,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
@@ -1146,74 +1148,104 @@ fun YoloInspectorApprovalBar(
                                 )
                             }
 
-                            IconButton(
-                                onClick = onDismissPopup,
-                                modifier = Modifier.size(28.dp)
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = "Close popup",
-                                    tint = Color(0xFFB0BEC5),
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
-
-                        // Hierarchy Stepper (↑ Parent / ↓ Child) + Siblings Toggle
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 Box(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(8.dp))
-                                        .background(if (selected.canStepUp) Color(0xFF2C313A) else Color(0xFF181A1F))
-                                        .border(0.6.dp, Color(0xFF4A505A), RoundedCornerShape(8.dp))
+                                        .background(if (selected.canStepUp) Color(0xFF2B303A) else Color(0xFF1C1F25))
                                         .clickable(enabled = selected.canStepUp) { onStepSelection("up") }
-                                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                                        .padding(horizontal = 8.dp, vertical = 4.dp)
                                 ) {
                                     Text(
                                         text = "↑ Parent",
-                                        color = if (selected.canStepUp) Color.White else Color(0xFF555B66),
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.SemiBold
+                                        color = if (selected.canStepUp) Color(0xFF80D8FF) else Color(0xFF546E7A),
+                                        fontSize = 10.5.sp,
+                                        fontWeight = FontWeight.Bold
                                     )
                                 }
                                 Box(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(8.dp))
-                                        .background(if (selected.canStepDown) Color(0xFF2C313A) else Color(0xFF181A1F))
-                                        .border(0.6.dp, Color(0xFF4A505A), RoundedCornerShape(8.dp))
+                                        .background(if (selected.canStepDown) Color(0xFF2B303A) else Color(0xFF1C1F25))
                                         .clickable(enabled = selected.canStepDown) { onStepSelection("down") }
-                                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                                        .padding(horizontal = 8.dp, vertical = 4.dp)
                                 ) {
                                     Text(
                                         text = "↓ Child",
-                                        color = if (selected.canStepDown) Color.White else Color(0xFF555B66),
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.SemiBold
+                                        color = if (selected.canStepDown) Color(0xFF80D8FF) else Color(0xFF546E7A),
+                                        fontSize = 10.5.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                IconButton(
+                                    onClick = onDismissPopup,
+                                    modifier = Modifier.size(26.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Close popup",
+                                        tint = Color(0xFF9EA6B4),
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        // Dropdown trigger + Sibling toggle
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(Color(0xFF262A33))
+                                    .border(1.dp, Color(0xFFF6C343), RoundedCornerShape(10.dp))
+                                    .clickable { isDropdownOpen = !isDropdownOpen }
+                                    .padding(horizontal = 10.dp, vertical = 7.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = if (stagedRole == "none") "Tag: Clear (Unassign)" else "Tag: $stagedRole",
+                                        color = Color(0xFFF6C343),
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Icon(
+                                        imageVector = if (isDropdownOpen) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                        contentDescription = "Toggle role dropdown",
+                                        tint = Color(0xFFF6C343),
+                                        modifier = Modifier.size(16.dp)
                                     )
                                 }
                             }
 
                             Box(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
+                                    .clip(RoundedCornerShape(10.dp))
                                     .background(
-                                        if (state.propagateToSiblings) Color(0xFF2E3830) else Color(0xFF262930)
+                                        if (state.propagateToSiblings) Color(0xFF00E676).copy(alpha = 0.18f)
+                                        else Color(0xFF262A33)
                                     )
                                     .border(
-                                        0.8.dp,
-                                        if (state.propagateToSiblings) Color(0xFF00E676) else Color(0xFF4A505A),
-                                        RoundedCornerShape(8.dp)
+                                        1.dp,
+                                        if (state.propagateToSiblings) Color(0xFF00E676) else Color(0xFF4A4E57),
+                                        RoundedCornerShape(10.dp)
                                     )
                                     .clickable { onTogglePropagateSiblings() }
-                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                                    .padding(horizontal = 10.dp, vertical = 7.dp)
                             ) {
                                 Text(
-                                    text = if (state.propagateToSiblings) "Siblings: ON" else "Siblings: OFF",
+                                    text = if (state.propagateToSiblings) "⚡ Peers: ON" else "Peers: OFF",
                                     color = if (state.propagateToSiblings) Color(0xFF00E676) else Color(0xFF9EA6B4),
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold
@@ -1221,36 +1253,7 @@ fun YoloInspectorApprovalBar(
                             }
                         }
 
-                        // Dropdown Box for Role Selection
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(Color(0xFF282C34))
-                                .border(0.8.dp, Color(0xFF686E78), RoundedCornerShape(10.dp))
-                                .clickable { isDropdownOpen = !isDropdownOpen }
-                                .padding(horizontal = 12.dp, vertical = 10.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "Tag: ${if (pendingRole == "none") "Clear (Unassign)" else pendingRole}",
-                                    color = Color.White,
-                                    fontSize = 12.5.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Icon(
-                                    imageVector = if (isDropdownOpen) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                                    contentDescription = "Expand dropdown",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
-
+                        // Dropdown options row
                         AnimatedVisibility(visible = isDropdownOpen) {
                             Row(
                                 modifier = Modifier
@@ -1259,17 +1262,17 @@ fun YoloInspectorApprovalBar(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 YOLO_ROLE_OPTIONS.forEach { (roleName, roleColor) ->
-                                    val isChosen = pendingRole == roleName
+                                    val isChosen = stagedRole == roleName
                                     Box(
                                         modifier = Modifier
                                             .clip(RoundedCornerShape(8.dp))
-                                            .background(if (isChosen) roleColor else Color(0xFF282C34))
-                                            .border(0.8.dp, roleColor, RoundedCornerShape(8.dp))
+                                            .background(if (isChosen) roleColor else roleColor.copy(alpha = 0.16f))
+                                            .border(1.dp, roleColor, RoundedCornerShape(8.dp))
                                             .clickable {
-                                                pendingRole = roleName
+                                                stagedRole = roleName
                                                 isDropdownOpen = false
                                             }
-                                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                                            .padding(horizontal = 10.dp, vertical = 5.dp)
                                     ) {
                                         Text(
                                             text = if (roleName == "none") "✕ Clear" else roleName,
@@ -1282,22 +1285,22 @@ fun YoloInspectorApprovalBar(
                             }
                         }
 
-                        // Save Button (Applies Tag & Closes Popup)
+                        // Save button (applies role & closes popup)
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
-                                .background(Color(0xFF2C313A))
-                                .border(0.8.dp, Color(0xFF8A919E), RoundedCornerShape(12.dp))
-                                .clickable { onAssignRole(pendingRole) }
-                                .padding(vertical = 10.dp)
-                                .testTag("yolo_popup_save_button"),
+                                .background(Color(0xFF2A2F38))
+                                .border(1.dp, Color(0xFF6B7280), RoundedCornerShape(12.dp))
+                                .clickable { onSaveRole(stagedRole) }
+                                .padding(vertical = 9.dp)
+                                .testTag("yolo_save_element_button"),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = "Save",
+                                text = "Save Tag",
                                 color = Color.White,
-                                fontSize = 13.sp,
+                                fontSize = 12.5.sp,
                                 fontWeight = FontWeight.Bold
                             )
                         }
@@ -1307,4 +1310,3 @@ fun YoloInspectorApprovalBar(
         }
     }
 }
-

@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -56,6 +57,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -549,10 +553,20 @@ fun SettingsSheet(
                     contentAlignment = Alignment.Center
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        val logoBitmap = rememberTransparentLogo(com.example.R.drawable.ic_logo)
+                        Image(
+                            bitmap = logoBitmap,
+                            contentDescription = "Mydes Logo",
+                            modifier = Modifier
+                                .height(26.dp)
+                                .widthIn(max = 120.dp),
+                            colorFilter = ColorFilter.tint(Color.White)
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Mydes Browser v1.0",
-                            color = Color.White,
-                            fontSize = 13.sp,
+                            text = "Browser v1.0",
+                            color = Color(0xFF8E9297),
+                            fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold
                         )
                         Text(

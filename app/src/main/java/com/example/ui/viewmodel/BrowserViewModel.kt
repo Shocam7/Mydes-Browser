@@ -44,10 +44,16 @@ import kotlinx.coroutines.launch
 import com.example.data.api.InspectedElementInfo
 import com.example.data.api.assignRoleToInspectedElement
 import com.example.data.api.captureApprovedYoloBase64
+import com.example.data.api.exportYoloTagOverrides
 import com.example.data.api.hitTestElementForInspection
 import com.example.data.api.startYoloInspectionSession
 import com.example.data.api.stepInspectedElement
+import java.util.concurrent.atomic.AtomicLong
 
+data class PendingUserScript(
+    val id: Long,
+    val script: String
+)
 
 data class AiThinkingState(
     val isActive: Boolean = false,
@@ -305,9 +311,36 @@ class BrowserViewModel(
     val aiThinkingState: StateFlow<AiThinkingState> = _aiThinkingState.asStateFlow()
 
     private var thinkingTimerJob: kotlinx.coroutines.Job? = null
+    private var yoloSessionJob: kotlinx.coroutines.Job? = null
+    private val scriptDispatchCounter = AtomicLong(0L)
 
-    private val _pendingUserScriptToInject = MutableStateFlow<String?>(null)
-    val pendingUserScriptToInject: StateFlow<String?> = _pendingUserScriptToInject.asStateFlow()
+    private val _pendingUserScriptToInject = MutableStateFlow<PendingUserScript?>(null)
+    val pendingUserScriptToInject: StateFlow<PendingUserScript?> = _pendingUserScriptToInject.asStateFlow()
+
+    private fun dispatchUserScript(script: String) {
+        _pendingUserScriptToInject.value = PendingUserScript(
+            id = scriptDispatchCounter.incrementAndGet(),
+            script = script
+        )
+    }
+
+    private fun dismissYoloInspectionIfActive(clearProbeTags: Boolean = false) {
+        yoloSessionJob?.cancel()
+        yoloSessionJob = null
+        val wasActive = _yoloInspectionState.value.isActive
+        if (wasActive) {
+            _yoloInspectionState.value = YoloInspectionState(isActive = false)
+            val wv = activeWebViewRef
+            viewModelScope.launch {
+                try {
+                    wv?.evaluateJsSuspend(MydesRuntime.REMOVE_YOLO_INSPECTOR_HUD_JS)
+                    if (clearProbeTags) {
+                        wv?.evaluateJsSuspend("if(window.__mydes && window.__mydes.clear){ window.__mydes.clear(false); } try{ delete window.__mydes; }catch(e){}")
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+    }
 
     val isCustomStyleApplied: StateFlow<Boolean> = combine(activeTab, _websiteThemes) { tab, themes ->
         val domain = extractDomain(tab?.url ?: "")
@@ -482,6 +515,7 @@ class BrowserViewModel(
         val domain = if (currentTabDomain.isNotBlank()) currentTabDomain else themeDomain
         if (domain.isBlank()) return
 
+        dismissYoloInspectionIfActive(clearProbeTags = false)
         backgroundAdaptationJob?.cancel()
         thinkingTimerJob?.cancel()
         _isThemeUpdatingInBackground.value = false
@@ -539,7 +573,7 @@ class BrowserViewModel(
         }
         _websiteThemes.value = updatedThemes
 
-        _pendingUserScriptToInject.value = theme.script
+        dispatchUserScript("${MydesRuntime.PRE_INJECT_RESET_JS}\n${theme.script}")
 
         setDefaultModelForContinuedChat()
 
@@ -623,8 +657,9 @@ class BrowserViewModel(
             bg = parsedBlueprint.bg,
             fg = parsedBlueprint.fg
         )
+        dismissYoloInspectionIfActive(clearProbeTags = false)
         _websiteThemes.value = _websiteThemes.value + (domain to websiteTheme)
-        _pendingUserScriptToInject.value = script
+        dispatchUserScript("${MydesRuntime.PRE_INJECT_RESET_JS}\n$script")
 
         setDefaultModelForContinuedChat()
 
@@ -750,13 +785,18 @@ class BrowserViewModel(
             return
         }
 
-        viewModelScope.launch {
+        yoloSessionJob?.cancel()
+        yoloSessionJob = viewModelScope.launch {
             _isAiStylerLoading.value = true
             _aiStylerErrorMessage.value = null
             val outlineRaw = try {
                 wv.startYoloInspectionSession()
             } catch (_: Exception) {
                 null
+            }
+            if (!isActive) {
+                try { wv.evaluateJsSuspend(MydesRuntime.REMOVE_YOLO_INSPECTOR_HUD_JS) } catch (_: Exception) {}
+                return@launch
             }
             _isAiStylerLoading.value = false
             val counts = parseRoleCountsFromOutline(outlineRaw)
@@ -781,15 +821,41 @@ class BrowserViewModel(
         if (!state.isActive || state.pendingPrompt.isBlank()) return
         val prompt = state.pendingPrompt
         val wv = activeWebViewRef
+        yoloSessionJob?.cancel()
+        yoloSessionJob = null
 
         viewModelScope.launch {
             _yoloInspectionState.value = YoloInspectionState(isActive = false)
+            val tagOverridesJson = try {
+                wv?.exportYoloTagOverrides()
+            } catch (_: Exception) {
+                null
+            }
             val approvedYoloBase64 = try {
                 wv?.captureApprovedYoloBase64(maxDimension = 640)
             } catch (_: Exception) {
                 null
+            } finally {
+                // Guarantee the YOLO overlay disappears immediately after screenshot capture
+                try {
+                    wv?.evaluateJsSuspend(MydesRuntime.REMOVE_YOLO_INSPECTOR_HUD_JS)
+                } catch (_: Exception) {}
             }
-            executeAiStylePipeline(prompt, preApprovedYoloScreenshot = approvedYoloBase64)
+            executeAiStylePipeline(
+                prompt = prompt,
+                preApprovedYoloScreenshot = approvedYoloBase64,
+                yoloTagOverridesJson = tagOverridesJson
+            )
+        }
+    }
+
+    fun clearSelectedYoloElement() {
+        val wv = activeWebViewRef
+        _yoloInspectionState.update { it.copy(selectedElement = null) }
+        viewModelScope.launch {
+            try {
+                wv?.evaluateJsSuspend("(function(){ if(window.__mydes && window.__mydes.clearSelection) window.__mydes.clearSelection(); })();")
+            } catch (_: Exception) {}
         }
     }
 
@@ -797,13 +863,15 @@ class BrowserViewModel(
      * Choice 2: User Declines & Cancels the whole process -> Removes YOLO HUD and clears probe tags.
      */
     fun declineYoloInspection() {
+        yoloSessionJob?.cancel()
+        yoloSessionJob = null
         val wv = activeWebViewRef
         _yoloInspectionState.value = YoloInspectionState(isActive = false)
         _isAiStylerLoading.value = false
         viewModelScope.launch {
             try {
                 wv?.evaluateJsSuspend(MydesRuntime.REMOVE_YOLO_INSPECTOR_HUD_JS)
-                wv?.evaluateJsSuspend("window.__mydes && window.__mydes.clear(false);")
+                wv?.evaluateJsSuspend("if(window.__mydes && window.__mydes.clear){ window.__mydes.clear(false); } try{ delete window.__mydes; }catch(e){}")
             } catch (_: Exception) {}
         }
         Toast.makeText(getApplication(), "Redesign cancelled", Toast.LENGTH_SHORT).show()
@@ -858,7 +926,7 @@ class BrowserViewModel(
      * Choice 3 & 4 (Assignment): User assigns or changes the tag of the selected element via dropdown,
      * automatically propagating to matching siblings (`sig(e)`) if enabled.
      */
-     fun assignRoleToSelectedYoloElement(newRole: String) {
+    fun assignRoleToSelectedYoloElement(newRole: String) {
         val state = _yoloInspectionState.value
         if (!state.isActive || state.selectedElement == null) return
         val wv = activeWebViewRef ?: return
@@ -867,6 +935,7 @@ class BrowserViewModel(
                 role = newRole,
                 propagateSiblings = state.propagateToSiblings
             )
+            // Clear selection ring & dismiss popup immediately after saving
             try {
                 wv.evaluateJsSuspend("(function(){ if(window.__mydes && window.__mydes.clearSelection) window.__mydes.clearSelection(); })();")
             } catch (_: Exception) {}
@@ -880,28 +949,23 @@ class BrowserViewModel(
             _yoloInspectionState.update {
                 it.copy(
                     roleCounts = if (newCounts.isNotEmpty()) newCounts else it.roleCounts,
-                    selectedElement = null // Auto-close popup on Save!
+                    selectedElement = null, // Popup disappears on Save!
+                    statusToast = if (updatedCount > 1) {
+                        "Updated $updatedCount matching elements to '$displayRole'"
+                    } else {
+                        "Updated element to '$displayRole'"
+                    }
                 )
             }
-            Toast.makeText(
-                getApplication(),
-                if (updatedCount > 1) "Saved '$displayRole' on $updatedCount elements" else "Saved '$displayRole'",
-                Toast.LENGTH_SHORT
-            ).show()
+            if (updatedCount > 0) {
+                Toast.makeText(
+                    getApplication(),
+                    if (updatedCount > 1) "Tagged $updatedCount peers as '$displayRole'" else "Tagged as '$displayRole'",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
         }
     }
-
-
-    fun dismissSelectedYoloPopup() {
-        val wv = activeWebViewRef
-        _yoloInspectionState.update { it.copy(selectedElement = null) }
-        viewModelScope.launch {
-            try {
-                wv?.evaluateJsSuspend("(function(){ if(window.__mydes && window.__mydes.clearSelection) window.__mydes.clearSelection(); })();")
-            } catch (_: Exception) {}
-        }
-    }
-
 
 
     /**
@@ -914,7 +978,8 @@ class BrowserViewModel(
      */
     private fun executeAiStylePipeline(
         prompt: String,
-        preApprovedYoloScreenshot: String? = null
+        preApprovedYoloScreenshot: String? = null,
+        yoloTagOverridesJson: String? = null
     )  {
         val tab = activeTab.value ?: return
         val domain = extractDomain(tab.url)
@@ -1132,7 +1197,7 @@ class BrowserViewModel(
                     }
 
                     val finalHistory = _aiThinkingState.value.chatHistory
-                    _pendingUserScriptToInject.value = script
+                    dispatchUserScript("${MydesRuntime.REMOVE_YOLO_INSPECTOR_HUD_JS}\n$script")
 
                     val wv = activeWebViewRef
                     val newScreenshotPath = if (wv != null) {
@@ -1286,9 +1351,12 @@ class BrowserViewModel(
                 )
 
                 pass2Result.onSuccess { initialBlueprint ->
-                    val initialScript = MydesRuntime.script(initialBlueprint)
-                    // Inject Pass 2 CSS immediately so the WebView paints it
-                    _pendingUserScriptToInject.value = initialScript
+                    val initialScript = MydesRuntime.script(
+                        blueprint = initialBlueprint,
+                        tagOverridesJson = yoloTagOverridesJson
+                    )
+                    // Ensure YOLO HUD is stripped and inject Pass 2 CSS immediately
+                    dispatchUserScript("${MydesRuntime.REMOVE_YOLO_INSPECTOR_HUD_JS}\n$initialScript")
 
                     var finalBlueprint = initialBlueprint
                     var finalScript = initialScript
@@ -1299,6 +1367,7 @@ class BrowserViewModel(
                     if (wv != null) {
                         onThinkingProgress("Pass 3: Auditing live render & animations...", "", false)
                         delay(350L) // Allow WebView to paint Pass 2 CSS
+                        try { wv.evaluateJsSuspend(MydesRuntime.REMOVE_YOLO_INSPECTOR_HUD_JS) } catch (_: Exception) {}
                         try { wv.evaluateJsSuspend(MydesRuntime.SNAPSHOT_FRAME_1_JS) } catch (_: Exception) {}
                         delay(280L) // Advance keyframes by 280ms for Frame 2 differential check
                         val auditJson = try { wv.evaluateJsSuspend(MydesRuntime.VISUAL_AND_DOM_AUDIT_JS) } catch (_: Exception) { null }
@@ -1322,8 +1391,11 @@ class BrowserViewModel(
                         pass3Result.getOrNull()?.let { stitchedBp ->
                             if (stitchedBp.customCss != initialBlueprint.customCss) {
                                 finalBlueprint = stitchedBp
-                                finalScript = MydesRuntime.script(stitchedBp)
-                                _pendingUserScriptToInject.value = finalScript
+                                finalScript = MydesRuntime.script(
+                                    blueprint = stitchedBp,
+                                    tagOverridesJson = yoloTagOverridesJson
+                                )
+                                dispatchUserScript("${MydesRuntime.REMOVE_YOLO_INSPECTOR_HUD_JS}\n$finalScript")
                             }
                         }
                     }
@@ -1454,7 +1526,8 @@ class BrowserViewModel(
         if (domain.isBlank()) return
         val activeTheme = _websiteThemes.value[domain] ?: return
 
-        _pendingUserScriptToInject.value = iteration.script
+        dismissYoloInspectionIfActive(clearProbeTags = false)
+        dispatchUserScript("${MydesRuntime.PRE_INJECT_RESET_JS}\n${iteration.script}")
 
         val updatedTheme = activeTheme.copy(
             prompt = iteration.title,
@@ -1614,6 +1687,7 @@ class BrowserViewModel(
     }
 
     fun resetCustomStyle() {
+        dismissYoloInspectionIfActive(clearProbeTags = false)
         val domain = extractDomain(activeTab.value?.url ?: "")
         if (domain.isNotBlank()) {
             _websiteThemes.value = _websiteThemes.value.filterKeys { extractDomain(it) != domain }
@@ -1621,12 +1695,23 @@ class BrowserViewModel(
         backgroundAdaptationJob?.cancel()
         _isThemeUpdatingInBackground.value = false
         dismissMorphOverlay()
-        _pendingUserScriptToInject.value = """
+        dispatchUserScript(
+            """
             (function() {
+                try {
+                    window.__mydesYoloActive = false;
+                    if (window.__mydesExitTimer1) { clearTimeout(window.__mydesExitTimer1); window.__mydesExitTimer1 = null; }
+                    if (window.__mydesExitTimer2) { clearTimeout(window.__mydesExitTimer2); window.__mydesExitTimer2 = null; }
+                    var huds = document.querySelectorAll('#__mydes_yolo_hud, #__mydes_blind_mask, [data-mydes-hud]');
+                    for (var hi = 0; hi < huds.length; hi++) huds[hi].remove();
+                    var sels = document.querySelectorAll('[data-mydes-selected]');
+                    for (var si = 0; si < sels.length; si++) sels[si].removeAttribute('data-mydes-selected');
+                } catch (e) {}
                 if (window.__mydes && window.__mydes.exit) {
-                    try { window.__mydes.exit(); return; } catch (e) {}
+                    try { window.__mydes.exit(); try { delete window.__mydes; } catch (e2) {} return; } catch (e) {}
                 }
-                var styledEls = document.querySelectorAll('[data-mydes], header, footer');
+                var styledEls = Array.prototype.slice.call(document.querySelectorAll('[data-mydes], header, footer'));
+                window.__mydesExitEls = styledEls;
                 styledEls.forEach(function(el, idx) {
                     var stagger = Math.min(idx * 18, 220);
                     el.style.setProperty('transition', 'all 0.42s cubic-bezier(0.22, 1, 0.36, 1) ' + stagger + 'ms', 'important');
@@ -1634,18 +1719,24 @@ class BrowserViewModel(
                     el.style.setProperty('opacity', '0.15', 'important');
                     el.style.setProperty('filter', 'blur(2px)', 'important');
                 });
-                setTimeout(function() {
+                window.__mydesExitTimer1 = setTimeout(function() {
+                    window.__mydesExitTimer1 = null;
                     var existing = document.getElementById('__mydes_style') || document.getElementById('mydes-ai-styler-style');
                     if (existing) existing.remove();
+                    if (window.__mydes && window.__mydes.clear) { try { window.__mydes.clear(false); } catch (e) {} }
+                    try { delete window.__mydes; } catch (e) { window.__mydes = undefined; }
                     styledEls.forEach(function(el) {
                         el.style.setProperty('transform', 'scale(1) translateY(0)', 'important');
                         el.style.setProperty('opacity', '1', 'important');
                         el.style.setProperty('filter', 'none', 'important');
                     });
-                    setTimeout(function() {
-                        if (window.__mydes && window.__mydes.clear) { try { window.__mydes.clear(); } catch (e) {} }
+                    window.__mydesExitTimer2 = setTimeout(function() {
+                        window.__mydesExitTimer2 = null;
+                        window.__mydesExitEls = null;
                         styledEls.forEach(function(el) {
                             el.removeAttribute('data-mydes');
+                            el.removeAttribute('data-mydes-state');
+                            el.removeAttribute('data-mydes-locked');
                             el.style.removeProperty('transition');
                             el.style.removeProperty('transform');
                             el.style.removeProperty('opacity');
@@ -1654,14 +1745,20 @@ class BrowserViewModel(
                     }, 320);
                 }, 380);
             })();
-        """.trimIndent()
+            """.trimIndent()
+        )
     }
 
-    fun onUserScriptInjected() {
-        _pendingUserScriptToInject.value = null
+    fun onUserScriptInjected(scriptId: Long) {
+        if (_pendingUserScriptToInject.value?.id == scriptId) {
+            _pendingUserScriptToInject.value = null
+        }
     }
 
     fun onPageLoaded(tabId: String, url: String, title: String) {
+        if (_yoloInspectionState.value.isActive) {
+            _yoloInspectionState.value = YoloInspectionState(isActive = false)
+        }
         val domain = extractDomain(url)
         if (domain.isBlank()) return
 
@@ -1669,7 +1766,7 @@ class BrowserViewModel(
 
         val cachedPageScript = activeTheme.pageScripts[url]
         val initialScript = cachedPageScript ?: activeTheme.baseScript
-        _pendingUserScriptToInject.value = initialScript
+        dispatchUserScript("${MydesRuntime.PRE_INJECT_RESET_JS}\n$initialScript")
 
         if (!activeTheme.isImported && !activeTheme.isSavedTheme && cachedPageScript == null && url != lastAdaptedUrl) {
             lastAdaptedUrl = url
@@ -1699,7 +1796,7 @@ class BrowserViewModel(
 
                         val currentUrl = activeTab.value?.url ?: ""
                         if (extractDomain(currentUrl) == domain) {
-                            _pendingUserScriptToInject.value = adaptedScript
+                            dispatchUserScript("${MydesRuntime.PRE_INJECT_RESET_JS}\n$adaptedScript")
                         }
                     }
                 } finally {
@@ -1725,6 +1822,7 @@ class BrowserViewModel(
     }
 
     fun closeTab(tabId: String) {
+        dismissYoloInspectionIfActive(clearProbeTags = false)
         val currentTabs = _tabs.value
         if (currentTabs.size <= 1) {
             val freshTab = TabItem()
@@ -1744,12 +1842,14 @@ class BrowserViewModel(
     }
 
     fun selectTab(tabId: String) {
+        dismissYoloInspectionIfActive(clearProbeTags = false)
         _activeTabId.value = tabId
         _isTabGridOpen.value = false
         _isOptionsMenuExpanded.value = false
     }
 
     fun navigateActiveTab(input: String) {
+        dismissYoloInspectionIfActive(clearProbeTags = false)
         val active = activeTab.value ?: return
         val trimmed = input.trim()
         if (trimmed.isEmpty()) return
